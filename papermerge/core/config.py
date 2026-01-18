@@ -40,6 +40,27 @@ class Settings(BaseSettings):
     linode_bucket_name: str | None = None
     linode_cluster_id: str | None = None  # e.g., us-east-1, eu-central-1
 
+    # Search backend settings
+    search_backend: str = 'postgres'  # postgres | elasticsearch | meilisearch
+
+    # Elasticsearch settings
+    elasticsearch_hosts: str | None = None  # comma-separated hosts
+    elasticsearch_api_key: str | None = None
+    elasticsearch_index: str = 'documents'
+
+    # Meilisearch settings
+    meilisearch_host: str = 'http://localhost:7700'
+    meilisearch_api_key: str | None = None
+    meilisearch_index: str = 'documents'
+
+    # Semantic search / embeddings settings
+    embedding_provider: str = 'ollama'
+    embedding_model: str = 'nomic-embed-text'
+    ollama_base_url: str = 'http://localhost:11434'
+    semantic_search_enabled: bool = False
+    semantic_search_threshold: float = 0.5
+    hybrid_search_semantic_weight: float = 0.5  # 0 = pure FTS, 1 = pure semantic
+
     preview_page_size_sm: int = Field(gt=0, default=200)
 
     # Multitenant prefix
