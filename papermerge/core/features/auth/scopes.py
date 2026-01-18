@@ -22,6 +22,16 @@ class ScopeCategory(Enum):
     AUDIT_LOG = "audit_log"
     SYSTEM_PREFERENCE = "system_preference"
     API_TOKEN = "api_token"
+    TENANT = "tenant"
+    SYSTEM = "system"
+    WORKFLOW = "workflow"
+    PORTFOLIO = "portfolio"
+    CASE = "case"
+    BUNDLE = "bundle"
+    ROUTING = "routing"
+    ENCRYPTION = "encryption"
+    INGESTION = "ingestion"
+    FORM = "form"
 
 
 class Action(Enum):
@@ -139,6 +149,60 @@ class Scopes:
     API_TOKEN_VIEW = "api_token.view"
     API_TOKEN_CREATE = "api_token.create"
     API_TOKEN_DELETE = "api_token.delete"
+
+    # Tenant administration
+    TENANT_ADMIN = "tenant.admin"
+    TENANT_VIEW = "tenant.view"
+    TENANT_UPDATE = "tenant.update"
+
+    # System administration (super admin)
+    SYSTEM_ADMIN = "system.admin"
+
+    # Workflow permissions
+    WORKFLOW_CREATE = "workflow.create"
+    WORKFLOW_VIEW = "workflow.view"
+    WORKFLOW_UPDATE = "workflow.update"
+    WORKFLOW_DELETE = "workflow.delete"
+
+    # Portfolio permissions
+    PORTFOLIO_CREATE = "portfolio.create"
+    PORTFOLIO_VIEW = "portfolio.view"
+    PORTFOLIO_UPDATE = "portfolio.update"
+    PORTFOLIO_DELETE = "portfolio.delete"
+
+    # Case permissions
+    CASE_CREATE = "case.create"
+    CASE_VIEW = "case.view"
+    CASE_UPDATE = "case.update"
+    CASE_DELETE = "case.delete"
+
+    # Bundle permissions
+    BUNDLE_CREATE = "bundle.create"
+    BUNDLE_VIEW = "bundle.view"
+    BUNDLE_UPDATE = "bundle.update"
+    BUNDLE_DELETE = "bundle.delete"
+
+    # Routing permissions
+    ROUTING_CREATE = "routing.create"
+    ROUTING_VIEW = "routing.view"
+    ROUTING_UPDATE = "routing.update"
+    ROUTING_DELETE = "routing.delete"
+
+    # Encryption permissions
+    ENCRYPTION_VIEW = "encryption.view"
+    ENCRYPTION_MANAGE = "encryption.manage"
+
+    # Ingestion permissions
+    INGESTION_CREATE = "ingestion.create"
+    INGESTION_VIEW = "ingestion.view"
+    INGESTION_UPDATE = "ingestion.update"
+    INGESTION_DELETE = "ingestion.delete"
+
+    # Form recognition permissions
+    FORM_CREATE = "form.create"
+    FORM_VIEW = "form.view"
+    FORM_UPDATE = "form.update"
+    FORM_DELETE = "form.delete"
 
     @classmethod
     def all_scopes(cls) -> Set[str]:

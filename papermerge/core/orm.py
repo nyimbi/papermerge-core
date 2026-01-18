@@ -1,3 +1,5 @@
+# (c) Copyright Datacraft, 2026
+"""Central ORM model exports."""
 from .features.users.db.orm import User
 from .features.document.db.orm import Document, DocumentVersion, Page
 from .features.nodes.db.orm import Folder, Node
@@ -11,28 +13,81 @@ from .features.audit.db.orm import AuditLog
 from .features.special_folders.db.orm import SpecialFolder
 from .features.ownership.db.orm import Ownership
 
+# New dArchiva models
+from .features.tenants.db.orm import Tenant, TenantBranding, TenantSettings
+from .features.workflows.db.orm import (
+	Workflow, WorkflowStep, WorkflowInstance, WorkflowStepExecution
+)
+from .features.routing.db.orm import RoutingRule, RoutingLog
+from .features.bundles.db.orm import Bundle, BundleDocument, BundleSection
+from .features.cases.db.orm import Case, CaseDocument, CaseAccess
+from .features.portfolios.db.orm import Portfolio, PortfolioAccess
+from .features.form_recognition.db.orm import (
+	FormTemplate, FormField, FormExtraction, ExtractedFieldValue, Signature
+)
+from .features.encryption.db.orm import (
+	KeyEncryptionKey, DocumentEncryptionKey, HiddenDocumentAccess
+)
+from .features.ingestion.db.orm import IngestionSource, IngestionJob
+
 __all__ = [
-    'User',
-    'Document',
-    'DocumentVersion',
-    'Page',
-    'Folder',
-    'Node',
-    'Tag',
-    'NodeTagsAssociation',
-    'CustomField',
-    'CustomFieldValue',
-    'Group',
-    'UserGroup',
-    'Role',
-    'UserRole',
-    'UserGroup',
-    'roles_permissions_association',
-    'Permission',
-    'DocumentType',
-    'DocumentTypeCustomField',
-    'SharedNode',
-    'AuditLog',
-    'SpecialFolder',
-    'Ownership'
+	# Existing models
+	'User',
+	'Document',
+	'DocumentVersion',
+	'Page',
+	'Folder',
+	'Node',
+	'Tag',
+	'NodeTagsAssociation',
+	'CustomField',
+	'CustomFieldValue',
+	'Group',
+	'UserGroup',
+	'Role',
+	'UserRole',
+	'roles_permissions_association',
+	'Permission',
+	'DocumentType',
+	'DocumentTypeCustomField',
+	'SharedNode',
+	'AuditLog',
+	'SpecialFolder',
+	'Ownership',
+	# Tenants
+	'Tenant',
+	'TenantBranding',
+	'TenantSettings',
+	# Workflows
+	'Workflow',
+	'WorkflowStep',
+	'WorkflowInstance',
+	'WorkflowStepExecution',
+	# Routing
+	'RoutingRule',
+	'RoutingLog',
+	# Bundles
+	'Bundle',
+	'BundleDocument',
+	'BundleSection',
+	# Cases
+	'Case',
+	'CaseDocument',
+	'CaseAccess',
+	# Portfolios
+	'Portfolio',
+	'PortfolioAccess',
+	# Form Recognition
+	'FormTemplate',
+	'FormField',
+	'FormExtraction',
+	'ExtractedFieldValue',
+	'Signature',
+	# Encryption
+	'KeyEncryptionKey',
+	'DocumentEncryptionKey',
+	'HiddenDocumentAccess',
+	# Ingestion
+	'IngestionSource',
+	'IngestionJob',
 ]
