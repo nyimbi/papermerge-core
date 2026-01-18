@@ -235,4 +235,12 @@ class DocumentLang(str, Enum):
 class StorageBackend(str, Enum):
     S3 = 's3'
     R2 = 'r2'
+    LINODE = 'linode'
     LOCAL = 'local'
+
+
+class StorageTier(str, Enum):
+    """Storage tier for lifecycle policies"""
+    HOT = 'hot'
+    COLD = 'cold'
+    ARCHIVE = 'archive'

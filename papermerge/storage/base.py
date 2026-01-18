@@ -65,6 +65,9 @@ def get_storage_backend() -> StorageBackend:
     elif settings.storage_backend == types.StorageBackend.R2:
         from papermerge.storage.backends.r2 import R2Backend
         return R2Backend()
+    elif settings.storage_backend == types.StorageBackend.LINODE:
+        from papermerge.storage.backends.linode import LinodeBackend
+        return LinodeBackend()
     else:
         from papermerge.storage.backends.local import LocalBackend
         return LocalBackend()

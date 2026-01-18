@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     r2_secret_access_key: str | None = None
     bucket_name: str | None = None
 
+    # Linode Object Storage settings
+    linode_access_key_id: str | None = None
+    linode_secret_access_key: str | None = None
+    linode_bucket_name: str | None = None
+    linode_cluster_id: str | None = None  # e.g., us-east-1, eu-central-1
+
     preview_page_size_sm: int = Field(gt=0, default=200)
 
     # Multitenant prefix
@@ -56,6 +62,13 @@ class Settings(BaseSettings):
     def r2_endpoint_url(self) -> str | None:
         if self.r2_account_id:
             return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+        return None
+
+    @computed_field
+    @property
+    def linode_endpoint_url(self) -> str | None:
+        if self.linode_cluster_id:
+            return f"https://{self.linode_cluster_id}.linodeobjects.com"
         return None
 
     model_config = SettingsConfigDict(env_prefix='pm_')
