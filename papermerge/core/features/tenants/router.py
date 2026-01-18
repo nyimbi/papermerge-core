@@ -262,20 +262,33 @@ async def create_tenant(
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.TenantDetail:
 	"""Create a new tenant (system admin only)."""
+	from papermerge.core.config import get_settings
+
 	# Check if slug already exists
 	stmt = select(Tenant).where(Tenant.slug == tenant_data.slug)
 	result = await db_session.execute(stmt)
 	if result.scalar():
 		raise HTTPException(status_code=400, detail="Slug already exists")
 
+	# Check if custom domain already exists
+	if tenant_data.custom_domain:
+		stmt = select(Tenant).where(Tenant.custom_domain == tenant_data.custom_domain)
+		result = await db_session.execute(stmt)
+		if result.scalar():
+			raise HTTPException(status_code=400, detail="Custom domain already exists")
+
 	tenant = Tenant(
 		name=tenant_data.name,
 		slug=tenant_data.slug,
+		plan=tenant_data.plan,
+		custom_domain=tenant_data.custom_domain,
+		subdomain=tenant_data.subdomain,
 		contact_email=tenant_data.contact_email,
 		contact_phone=tenant_data.contact_phone,
 		billing_email=tenant_data.billing_email,
 		max_users=tenant_data.max_users,
 		max_storage_gb=tenant_data.max_storage_gb,
+		features=tenant_data.features,
 	)
 	db_session.add(tenant)
 	await db_session.flush()
@@ -291,16 +304,33 @@ async def create_tenant(
 	await db_session.commit()
 	await db_session.refresh(tenant)
 
+	# Create tenant schema for multi-tenant deployments
+	config = get_settings()
+	if config.deployment_mode == 'multi_tenant':
+		from papermerge.core.tenancy import TenantSchemaManager
+		from papermerge.core.db.engine import engine
+
+		schema_manager = TenantSchemaManager(engine)
+		await schema_manager.create_tenant_schema(
+			db_session=db_session,
+			tenant_id=tenant.id,
+			tenant_slug=tenant.slug,
+		)
+
 	return schema.TenantDetail(
 		id=tenant.id,
 		name=tenant.name,
 		slug=tenant.slug,
 		status=tenant.status,
+		plan=tenant.plan,
+		custom_domain=tenant.custom_domain,
+		subdomain=tenant.subdomain,
 		contact_email=tenant.contact_email,
 		contact_phone=tenant.contact_phone,
 		billing_email=tenant.billing_email,
 		max_users=tenant.max_users,
 		max_storage_gb=tenant.max_storage_gb,
+		features=tenant.features,
 		created_at=tenant.created_at,
 		updated_at=tenant.updated_at,
 	)

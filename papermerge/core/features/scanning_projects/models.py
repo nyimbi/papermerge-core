@@ -171,3 +171,145 @@ class ScanningResourceModel(Base):
 	connected_scanner_id: Mapped[str | None] = mapped_column(String(36))
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ProjectPhaseModel(Base):
+	"""Project phases for tracking scanning stages."""
+	__tablename__ = "project_phases"
+
+	id: Mapped[str] = mapped_column(String(36), primary_key=True)
+	project_id: Mapped[str] = mapped_column(
+		String(36),
+		ForeignKey("scanning_projects.id", ondelete="CASCADE"),
+		index=True,
+	)
+	name: Mapped[str] = mapped_column(String(255))
+	description: Mapped[str | None] = mapped_column(String(1000))
+	sequence_order: Mapped[int] = mapped_column(Integer, default=0)
+	status: Mapped[str] = mapped_column(String(50), default="pending")
+	estimated_pages: Mapped[int] = mapped_column(Integer, default=0)
+	scanned_pages: Mapped[int] = mapped_column(Integer, default=0)
+	start_date: Mapped[datetime | None] = mapped_column(DateTime)
+	end_date: Mapped[datetime | None] = mapped_column(DateTime)
+	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ScanningSesssionModel(Base):
+	"""Individual scanning session tracking."""
+	__tablename__ = "scanning_sessions"
+
+	id: Mapped[str] = mapped_column(String(36), primary_key=True)
+	project_id: Mapped[str] = mapped_column(
+		String(36),
+		ForeignKey("scanning_projects.id", ondelete="CASCADE"),
+		index=True,
+	)
+	batch_id: Mapped[str | None] = mapped_column(
+		String(36),
+		ForeignKey("scanning_batches.id", ondelete="SET NULL"),
+	)
+	operator_id: Mapped[str] = mapped_column(String(36), index=True)
+	operator_name: Mapped[str | None] = mapped_column(String(255))
+	scanner_id: Mapped[str | None] = mapped_column(String(36))
+	scanner_name: Mapped[str | None] = mapped_column(String(255))
+	started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+	ended_at: Mapped[datetime | None] = mapped_column(DateTime)
+	documents_scanned: Mapped[int] = mapped_column(Integer, default=0)
+	pages_scanned: Mapped[int] = mapped_column(Integer, default=0)
+	pages_rejected: Mapped[int] = mapped_column(Integer, default=0)
+	average_pages_per_hour: Mapped[float] = mapped_column(Float, default=0.0)
+	notes: Mapped[str | None] = mapped_column(String(1000))
+
+
+class ProgressSnapshotModel(Base):
+	"""Progress snapshots for trend analysis."""
+	__tablename__ = "progress_snapshots"
+
+	id: Mapped[str] = mapped_column(String(36), primary_key=True)
+	project_id: Mapped[str] = mapped_column(
+		String(36),
+		ForeignKey("scanning_projects.id", ondelete="CASCADE"),
+		index=True,
+	)
+	snapshot_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+	total_pages_scanned: Mapped[int] = mapped_column(Integer, default=0)
+	pages_verified: Mapped[int] = mapped_column(Integer, default=0)
+	pages_rejected: Mapped[int] = mapped_column(Integer, default=0)
+	pages_per_hour: Mapped[float] = mapped_column(Float, default=0.0)
+	active_operators: Mapped[int] = mapped_column(Integer, default=0)
+	active_scanners: Mapped[int] = mapped_column(Integer, default=0)
+	average_quality_score: Mapped[float | None] = mapped_column(Float)
+
+
+class DailyProjectMetricsModel(Base):
+	"""Daily aggregated project metrics."""
+	__tablename__ = "daily_project_metrics"
+
+	id: Mapped[str] = mapped_column(String(36), primary_key=True)
+	project_id: Mapped[str] = mapped_column(
+		String(36),
+		ForeignKey("scanning_projects.id", ondelete="CASCADE"),
+		index=True,
+	)
+	metric_date: Mapped[datetime] = mapped_column(DateTime, index=True)
+	pages_scanned: Mapped[int] = mapped_column(Integer, default=0)
+	pages_verified: Mapped[int] = mapped_column(Integer, default=0)
+	pages_rejected: Mapped[int] = mapped_column(Integer, default=0)
+	documents_completed: Mapped[int] = mapped_column(Integer, default=0)
+	batches_completed: Mapped[int] = mapped_column(Integer, default=0)
+	operator_count: Mapped[int] = mapped_column(Integer, default=0)
+	scanner_count: Mapped[int] = mapped_column(Integer, default=0)
+	total_session_hours: Mapped[float] = mapped_column(Float, default=0.0)
+	average_quality_score: Mapped[float | None] = mapped_column(Float)
+	issues_found: Mapped[int] = mapped_column(Integer, default=0)
+	issues_resolved: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class OperatorDailyMetricsModel(Base):
+	"""Daily metrics per operator."""
+	__tablename__ = "operator_daily_metrics"
+
+	id: Mapped[str] = mapped_column(String(36), primary_key=True)
+	project_id: Mapped[str] = mapped_column(
+		String(36),
+		ForeignKey("scanning_projects.id", ondelete="CASCADE"),
+		index=True,
+	)
+	operator_id: Mapped[str] = mapped_column(String(36), index=True)
+	operator_name: Mapped[str | None] = mapped_column(String(255))
+	metric_date: Mapped[datetime] = mapped_column(DateTime, index=True)
+	pages_scanned: Mapped[int] = mapped_column(Integer, default=0)
+	pages_verified: Mapped[int] = mapped_column(Integer, default=0)
+	pages_rejected: Mapped[int] = mapped_column(Integer, default=0)
+	documents_completed: Mapped[int] = mapped_column(Integer, default=0)
+	session_hours: Mapped[float] = mapped_column(Float, default=0.0)
+	pages_per_hour: Mapped[float] = mapped_column(Float, default=0.0)
+	quality_score: Mapped[float | None] = mapped_column(Float)
+	issues_caused: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ProjectIssueModel(Base):
+	"""Project-level issues and problems."""
+	__tablename__ = "project_issues"
+
+	id: Mapped[str] = mapped_column(String(36), primary_key=True)
+	project_id: Mapped[str] = mapped_column(
+		String(36),
+		ForeignKey("scanning_projects.id", ondelete="CASCADE"),
+		index=True,
+	)
+	batch_id: Mapped[str | None] = mapped_column(String(36))
+	title: Mapped[str] = mapped_column(String(255))
+	description: Mapped[str | None] = mapped_column(String(2000))
+	issue_type: Mapped[str] = mapped_column(String(50))
+	severity: Mapped[str] = mapped_column(String(50), default="minor")
+	status: Mapped[str] = mapped_column(String(50), default="open")
+	reported_by_id: Mapped[str | None] = mapped_column(String(36))
+	reported_by_name: Mapped[str | None] = mapped_column(String(255))
+	assigned_to_id: Mapped[str | None] = mapped_column(String(36))
+	assigned_to_name: Mapped[str | None] = mapped_column(String(255))
+	resolution: Mapped[str | None] = mapped_column(String(2000))
+	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+	resolved_at: Mapped[datetime | None] = mapped_column(DateTime)

@@ -29,6 +29,14 @@ class Tenant(Base):
 	slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
 	status: Mapped[str] = mapped_column(String(20), default=TenantStatus.ACTIVE.value)
 
+	# Domain configuration
+	custom_domain: Mapped[str | None] = mapped_column(String(255), unique=True)
+	subdomain: Mapped[str | None] = mapped_column(String(100))
+
+	# Plan and features
+	plan: Mapped[str] = mapped_column(String(50), default="free")
+	features: Mapped[dict | None] = mapped_column(JSONB)  # Feature flag overrides
+
 	# Contact
 	contact_email: Mapped[str | None] = mapped_column(String(255))
 	contact_phone: Mapped[str | None] = mapped_column(String(50))

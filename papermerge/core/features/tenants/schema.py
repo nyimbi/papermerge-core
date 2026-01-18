@@ -9,22 +9,30 @@ class TenantCreate(BaseModel):
 	"""Schema for creating a tenant."""
 	name: str
 	slug: str
+	plan: str = "free"
+	custom_domain: str | None = None
+	subdomain: str | None = None
 	contact_email: str | None = None
 	contact_phone: str | None = None
 	billing_email: str | None = None
 	max_users: int | None = None
 	max_storage_gb: int | None = None
+	features: dict[str, bool] | None = None
 
 
 class TenantUpdate(BaseModel):
 	"""Schema for updating a tenant."""
 	name: str | None = None
+	plan: str | None = None
+	custom_domain: str | None = None
+	subdomain: str | None = None
 	contact_email: str | None = None
 	contact_phone: str | None = None
 	billing_email: str | None = None
 	max_users: int | None = None
 	max_storage_gb: int | None = None
 	status: str | None = None
+	features: dict[str, bool] | None = None
 
 
 class TenantInfo(BaseModel):
@@ -33,6 +41,7 @@ class TenantInfo(BaseModel):
 	name: str
 	slug: str
 	status: str
+	plan: str = "free"
 	created_at: datetime | None = None
 
 	model_config = ConfigDict(from_attributes=True)
@@ -73,6 +82,9 @@ class TenantDetail(BaseModel):
 	name: str
 	slug: str
 	status: str
+	plan: str = "free"
+	custom_domain: str | None = None
+	subdomain: str | None = None
 	contact_email: str | None = None
 	contact_phone: str | None = None
 	billing_email: str | None = None
@@ -82,6 +94,7 @@ class TenantDetail(BaseModel):
 	trial_ends_at: datetime | None = None
 	created_at: datetime | None = None
 	updated_at: datetime | None = None
+	features: dict[str, bool] | None = None
 	branding: TenantBrandingInfo | None = None
 	settings: TenantSettingsInfo | None = None
 

@@ -17,6 +17,7 @@ config = get_settings()
 prefix = config.api_prefix
 app = FastAPI(title="Papermerge DMS REST API", version=__version__)
 
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,6 +33,39 @@ app.add_middleware(
         "ETag"
     ]
 )
+
+# Add tenant middleware for multi-tenant deployments
+if config.deployment_mode == 'multi_tenant':
+    from papermerge.core.tenancy.middleware import (
+        TenantMiddleware,
+        ChainedStrategy,
+        TokenClaimStrategy,
+        HeaderStrategy,
+        HostHeaderStrategy,
+        PathPrefixStrategy,
+    )
+
+    # Build resolution strategy based on config
+    strategies = []
+    if 'token' in config.tenant_resolution:
+        strategies.append(TokenClaimStrategy())
+    if 'header' in config.tenant_resolution:
+        strategies.append(HeaderStrategy())
+    if 'host' in config.tenant_resolution:
+        strategies.append(HostHeaderStrategy(base_domain=config.tenant_base_domain))
+    if 'path' in config.tenant_resolution:
+        strategies.append(PathPrefixStrategy())
+
+    # Default strategy if none configured
+    if not strategies:
+        strategies = [TokenClaimStrategy(), HeaderStrategy()]
+
+    app.add_middleware(
+        TenantMiddleware,
+        strategy=ChainedStrategy(strategies),
+        require_tenant=config.require_tenant,
+        default_tenant_slug=config.default_tenant_slug,
+    )
 
 # Auto-discover and register all feature routers
 features_path = Path(__file__).parent / "core"

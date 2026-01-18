@@ -5,7 +5,7 @@ from datetime import datetime
 from uuid import UUID
 from enum import Enum
 
-from sqlalchemy import String, ForeignKey, Integer, Boolean, Text, func, Index, UniqueConstraint
+from sqlalchemy import Boolean, String, ForeignKey, Integer, Text, func, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import TIMESTAMP, JSONB
 
@@ -74,7 +74,9 @@ class BundleSection(Base):
 		ForeignKey("bundles.id", ondelete="CASCADE"), nullable=False, index=True
 	)
 
+	name: Mapped[str] = mapped_column(String(255), nullable=False)
 	title: Mapped[str] = mapped_column(String(255), nullable=False)
+	position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 	sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
 
 	# Timestamps
@@ -99,6 +101,7 @@ class BundleDocument(Base):
 	)
 
 	# Ordering
+	position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 	sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
 
 	# Section (optional)
@@ -109,6 +112,11 @@ class BundleDocument(Base):
 	# Display overrides
 	display_title: Mapped[str | None] = mapped_column(String(255))
 	exhibit_number: Mapped[str | None] = mapped_column(String(50))
+
+	# Pagination control
+	include_in_pagination: Mapped[bool] = mapped_column(Boolean, default=True)
+	bundle_page_start: Mapped[int | None] = mapped_column(Integer)
+	bundle_page_end: Mapped[int | None] = mapped_column(Integer)
 
 	# Page range (for partial inclusion)
 	start_page: Mapped[int | None] = mapped_column(Integer)

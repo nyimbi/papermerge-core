@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # Multitenant prefix
     prefix: str = ''
 
+    # Multi-tenancy configuration
+    deployment_mode: str = 'single_tenant'  # single_tenant | multi_tenant
+    tenant_resolution: str = 'token'  # token | header | host | path
+    tenant_base_domain: str = 'localhost'  # For subdomain-based resolution
+    default_tenant_slug: str | None = None  # Fall back to this tenant
+    require_tenant: bool = False  # Require tenant context for all requests
+
     # Remote user config
     remote_user_header: str = "X-Forwarded-User"
     remote_groups_header: str = "X-Forwarded-Groups"

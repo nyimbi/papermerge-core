@@ -1,7 +1,7 @@
 # (c) Copyright Datacraft, 2026
 """Service layer for Scanning Projects feature."""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Sequence
 from uuid_extensions import uuid7str
 
@@ -14,6 +14,12 @@ from .models import (
 	ScanningMilestoneModel,
 	QualityControlSampleModel,
 	ScanningResourceModel,
+	ProjectPhaseModel,
+	ScanningSesssionModel,
+	ProgressSnapshotModel,
+	DailyProjectMetricsModel,
+	OperatorDailyMetricsModel,
+	ProjectIssueModel,
 )
 from .views import (
 	ScanningProject,
@@ -36,6 +42,21 @@ from .views import (
 	ScanningResourceCreate,
 	ScanningResourceUpdate,
 	ScanningProjectMetrics,
+	# New views
+	ProjectPhase,
+	ProjectPhaseCreate,
+	ProjectPhaseUpdate,
+	PhaseStatus,
+	ScanningSession,
+	ScanningSessionCreate,
+	ScanningSessionEnd,
+	ProgressSnapshot,
+	DailyProjectMetrics,
+	OperatorDailyMetrics,
+	ProjectIssue,
+	ProjectIssueCreate,
+	ProjectIssueUpdate,
+	IssueStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -586,3 +607,354 @@ async def get_project_metrics(
 		avg_image_quality=round(qc_stats["avg_quality"], 1),
 		avg_ocr_accuracy=round(qc_stats["avg_ocr"], 1) if qc_stats["avg_ocr"] else None,
 	)
+
+
+# =====================================================
+# Phase Service
+# =====================================================
+
+
+async def get_project_phases(
+	session: AsyncSession,
+	project_id: str,
+) -> Sequence[ProjectPhase]:
+	"""Get all phases for a project."""
+	stmt = select(ProjectPhaseModel).where(
+		ProjectPhaseModel.project_id == project_id
+	).order_by(ProjectPhaseModel.sequence_order)
+	result = await session.execute(stmt)
+	return [ProjectPhase.model_validate(row) for row in result.scalars().all()]
+
+
+async def create_phase(
+	session: AsyncSession,
+	project_id: str,
+	data: ProjectPhaseCreate,
+) -> ProjectPhase:
+	"""Create a new phase."""
+	phase = ProjectPhaseModel(
+		id=uuid7str(),
+		project_id=project_id,
+		**data.model_dump(),
+	)
+	session.add(phase)
+	await session.commit()
+	await session.refresh(phase)
+	return ProjectPhase.model_validate(phase)
+
+
+async def update_phase(
+	session: AsyncSession,
+	phase_id: str,
+	data: ProjectPhaseUpdate,
+) -> ProjectPhase | None:
+	"""Update a phase."""
+	stmt = select(ProjectPhaseModel).where(ProjectPhaseModel.id == phase_id)
+	result = await session.execute(stmt)
+	phase = result.scalar_one_or_none()
+	if not phase:
+		return None
+
+	update_data = data.model_dump(exclude_unset=True)
+	for key, value in update_data.items():
+		setattr(phase, key, value)
+	phase.updated_at = datetime.utcnow()
+
+	await session.commit()
+	await session.refresh(phase)
+	return ProjectPhase.model_validate(phase)
+
+
+async def delete_phase(
+	session: AsyncSession,
+	phase_id: str,
+) -> bool:
+	"""Delete a phase."""
+	stmt = select(ProjectPhaseModel).where(ProjectPhaseModel.id == phase_id)
+	result = await session.execute(stmt)
+	phase = result.scalar_one_or_none()
+	if not phase:
+		return False
+
+	await session.delete(phase)
+	await session.commit()
+	return True
+
+
+# =====================================================
+# Session Service
+# =====================================================
+
+
+async def get_project_sessions(
+	session: AsyncSession,
+	project_id: str,
+	active_only: bool = False,
+) -> Sequence[ScanningSession]:
+	"""Get scanning sessions for a project."""
+	stmt = select(ScanningSesssionModel).where(
+		ScanningSesssionModel.project_id == project_id
+	)
+	if active_only:
+		stmt = stmt.where(ScanningSesssionModel.ended_at.is_(None))
+	stmt = stmt.order_by(ScanningSesssionModel.started_at.desc())
+	result = await session.execute(stmt)
+	return [ScanningSession.model_validate(row) for row in result.scalars().all()]
+
+
+async def start_session(
+	session: AsyncSession,
+	project_id: str,
+	data: ScanningSessionCreate,
+) -> ScanningSession:
+	"""Start a new scanning session."""
+	scan_session = ScanningSesssionModel(
+		id=uuid7str(),
+		project_id=project_id,
+		**data.model_dump(),
+		started_at=datetime.utcnow(),
+	)
+	session.add(scan_session)
+	await session.commit()
+	await session.refresh(scan_session)
+	logger.info(f"Started scanning session {scan_session.id[:8]}...")
+	return ScanningSession.model_validate(scan_session)
+
+
+async def end_session(
+	session: AsyncSession,
+	session_id: str,
+	data: ScanningSessionEnd,
+) -> ScanningSession | None:
+	"""End a scanning session."""
+	stmt = select(ScanningSesssionModel).where(ScanningSesssionModel.id == session_id)
+	result = await session.execute(stmt)
+	scan_session = result.scalar_one_or_none()
+	if not scan_session:
+		return None
+
+	now = datetime.utcnow()
+	scan_session.ended_at = now
+	scan_session.documents_scanned = data.documents_scanned
+	scan_session.pages_scanned = data.pages_scanned
+	scan_session.pages_rejected = data.pages_rejected
+	if data.notes:
+		scan_session.notes = data.notes
+
+	# Calculate pages per hour
+	duration_hours = (now - scan_session.started_at).total_seconds() / 3600
+	if duration_hours > 0:
+		scan_session.average_pages_per_hour = data.pages_scanned / duration_hours
+
+	# Update project totals
+	project_stmt = select(ScanningProjectModel).where(
+		ScanningProjectModel.id == scan_session.project_id
+	)
+	project_result = await session.execute(project_stmt)
+	project = project_result.scalar_one_or_none()
+	if project:
+		project.scanned_pages += data.pages_scanned
+		project.rejected_pages += data.pages_rejected
+		project.updated_at = now
+
+	await session.commit()
+	await session.refresh(scan_session)
+	logger.info(f"Ended scanning session {scan_session.id[:8]}... ({data.pages_scanned} pages)")
+	return ScanningSession.model_validate(scan_session)
+
+
+# =====================================================
+# Issue Service
+# =====================================================
+
+
+async def get_project_issues(
+	session: AsyncSession,
+	project_id: str,
+	open_only: bool = False,
+) -> Sequence[ProjectIssue]:
+	"""Get issues for a project."""
+	stmt = select(ProjectIssueModel).where(ProjectIssueModel.project_id == project_id)
+	if open_only:
+		stmt = stmt.where(ProjectIssueModel.status.in_(["open", "in_progress"]))
+	stmt = stmt.order_by(ProjectIssueModel.created_at.desc())
+	result = await session.execute(stmt)
+	return [ProjectIssue.model_validate(row) for row in result.scalars().all()]
+
+
+async def create_issue(
+	session: AsyncSession,
+	project_id: str,
+	reporter_id: str,
+	reporter_name: str,
+	data: ProjectIssueCreate,
+) -> ProjectIssue:
+	"""Create a new issue."""
+	issue = ProjectIssueModel(
+		id=uuid7str(),
+		project_id=project_id,
+		reported_by_id=reporter_id,
+		reported_by_name=reporter_name,
+		**data.model_dump(),
+	)
+	session.add(issue)
+	await session.commit()
+	await session.refresh(issue)
+	logger.info(f"Created issue {issue.id[:8]}... ({issue.title})")
+	return ProjectIssue.model_validate(issue)
+
+
+async def update_issue(
+	session: AsyncSession,
+	issue_id: str,
+	data: ProjectIssueUpdate,
+) -> ProjectIssue | None:
+	"""Update an issue."""
+	stmt = select(ProjectIssueModel).where(ProjectIssueModel.id == issue_id)
+	result = await session.execute(stmt)
+	issue = result.scalar_one_or_none()
+	if not issue:
+		return None
+
+	update_data = data.model_dump(exclude_unset=True)
+	for key, value in update_data.items():
+		setattr(issue, key, value)
+	issue.updated_at = datetime.utcnow()
+
+	# Set resolved_at if status changed to resolved/closed
+	if data.status in (IssueStatus.RESOLVED, IssueStatus.CLOSED) and not issue.resolved_at:
+		issue.resolved_at = datetime.utcnow()
+
+	await session.commit()
+	await session.refresh(issue)
+	return ProjectIssue.model_validate(issue)
+
+
+# =====================================================
+# Snapshot Service
+# =====================================================
+
+
+async def create_snapshot(
+	session: AsyncSession,
+	project_id: str,
+) -> ProgressSnapshot:
+	"""Create a progress snapshot for a project."""
+	# Get current project state
+	project_stmt = select(ScanningProjectModel).where(
+		ScanningProjectModel.id == project_id
+	)
+	project_result = await session.execute(project_stmt)
+	project = project_result.scalar_one()
+
+	# Count active sessions
+	active_stmt = select(func.count(ScanningSesssionModel.id)).where(
+		and_(
+			ScanningSesssionModel.project_id == project_id,
+			ScanningSesssionModel.ended_at.is_(None),
+		)
+	)
+	active_result = await session.execute(active_stmt)
+	active_operators = active_result.scalar() or 0
+
+	# Get average quality
+	batch_ids_stmt = select(ScanningBatchModel.id).where(
+		ScanningBatchModel.project_id == project_id
+	)
+	batch_ids_result = await session.execute(batch_ids_stmt)
+	batch_ids = [r for r in batch_ids_result.scalars().all()]
+
+	avg_quality = None
+	if batch_ids:
+		qc_stmt = select(func.avg(QualityControlSampleModel.image_quality)).where(
+			QualityControlSampleModel.batch_id.in_(batch_ids)
+		)
+		qc_result = await session.execute(qc_stmt)
+		avg_quality = qc_result.scalar()
+
+	# Calculate pages per hour from recent sessions
+	one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+	recent_stmt = select(func.sum(ScanningSesssionModel.pages_scanned)).where(
+		and_(
+			ScanningSesssionModel.project_id == project_id,
+			ScanningSesssionModel.ended_at >= one_hour_ago,
+		)
+	)
+	recent_result = await session.execute(recent_stmt)
+	pages_last_hour = recent_result.scalar() or 0
+
+	snapshot = ProgressSnapshotModel(
+		id=uuid7str(),
+		project_id=project_id,
+		snapshot_time=datetime.utcnow(),
+		total_pages_scanned=project.scanned_pages,
+		pages_verified=project.verified_pages,
+		pages_rejected=project.rejected_pages,
+		pages_per_hour=float(pages_last_hour),
+		active_operators=active_operators,
+		active_scanners=active_operators,  # Simplified
+		average_quality_score=float(avg_quality) if avg_quality else None,
+	)
+	session.add(snapshot)
+	await session.commit()
+	await session.refresh(snapshot)
+	return ProgressSnapshot.model_validate(snapshot)
+
+
+async def get_project_snapshots(
+	session: AsyncSession,
+	project_id: str,
+	limit: int = 100,
+) -> Sequence[ProgressSnapshot]:
+	"""Get progress snapshots for a project."""
+	stmt = select(ProgressSnapshotModel).where(
+		ProgressSnapshotModel.project_id == project_id
+	).order_by(ProgressSnapshotModel.snapshot_time.desc()).limit(limit)
+	result = await session.execute(stmt)
+	return [ProgressSnapshot.model_validate(row) for row in result.scalars().all()]
+
+
+# =====================================================
+# Daily Metrics Service
+# =====================================================
+
+
+async def get_daily_metrics(
+	session: AsyncSession,
+	project_id: str,
+	start_date: date | None = None,
+	end_date: date | None = None,
+) -> Sequence[DailyProjectMetrics]:
+	"""Get daily project metrics."""
+	stmt = select(DailyProjectMetricsModel).where(
+		DailyProjectMetricsModel.project_id == project_id
+	)
+	if start_date:
+		stmt = stmt.where(DailyProjectMetricsModel.metric_date >= datetime.combine(start_date, datetime.min.time()))
+	if end_date:
+		stmt = stmt.where(DailyProjectMetricsModel.metric_date <= datetime.combine(end_date, datetime.max.time()))
+	stmt = stmt.order_by(DailyProjectMetricsModel.metric_date.desc())
+	result = await session.execute(stmt)
+	return [DailyProjectMetrics.model_validate(row) for row in result.scalars().all()]
+
+
+async def get_operator_metrics(
+	session: AsyncSession,
+	project_id: str,
+	operator_id: str | None = None,
+	start_date: date | None = None,
+	end_date: date | None = None,
+) -> Sequence[OperatorDailyMetrics]:
+	"""Get operator daily metrics."""
+	stmt = select(OperatorDailyMetricsModel).where(
+		OperatorDailyMetricsModel.project_id == project_id
+	)
+	if operator_id:
+		stmt = stmt.where(OperatorDailyMetricsModel.operator_id == operator_id)
+	if start_date:
+		stmt = stmt.where(OperatorDailyMetricsModel.metric_date >= datetime.combine(start_date, datetime.min.time()))
+	if end_date:
+		stmt = stmt.where(OperatorDailyMetricsModel.metric_date <= datetime.combine(end_date, datetime.max.time()))
+	stmt = stmt.order_by(OperatorDailyMetricsModel.metric_date.desc())
+	result = await session.execute(stmt)
+	return [OperatorDailyMetrics.model_validate(row) for row in result.scalars().all()]

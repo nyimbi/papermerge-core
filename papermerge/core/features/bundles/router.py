@@ -211,25 +211,52 @@ async def generate_pagination(
 	if not bundle:
 		raise HTTPException(status_code=404, detail="Bundle not found")
 
+	from papermerge.core.features.document.db.orm import Document, DocumentVersion
+
 	# Get documents that should be paginated
 	stmt = select(BundleDocument).where(
 		BundleDocument.bundle_id == bundle_id,
 		BundleDocument.include_in_pagination == True,
 	).order_by(BundleDocument.position)
 	result = await db_session.execute(stmt)
-	documents = result.scalars().all()
+	bundle_docs = result.scalars().all()
 
-	# Calculate pagination
+	# Calculate pagination using actual page counts
 	current_page = 1
-	for doc in documents:
-		doc.bundle_page_start = current_page
-		# Would need to get actual page count from document
-		doc.bundle_page_end = current_page + 10  # Placeholder
-		current_page = doc.bundle_page_end + 1
+	for bundle_doc in bundle_docs:
+		# Get the document's latest version to determine page count
+		doc_result = await db_session.execute(
+			select(Document).where(Document.id == bundle_doc.document_id)
+		)
+		document = doc_result.scalar_one_or_none()
+
+		page_count = 0
+		if document:
+			# Get latest document version for page count
+			ver_result = await db_session.execute(
+				select(DocumentVersion)
+				.where(DocumentVersion.document_id == document.id)
+				.order_by(DocumentVersion.number.desc())
+				.limit(1)
+			)
+			version = ver_result.scalar_one_or_none()
+
+			if version:
+				# If partial inclusion, use specified range
+				if bundle_doc.start_page is not None and bundle_doc.end_page is not None:
+					page_count = bundle_doc.end_page - bundle_doc.start_page + 1
+				else:
+					# Use the page_count from document version
+					page_count = version.page_count if hasattr(version, 'page_count') else len(version.pages)
+
+		# Set pagination values
+		bundle_doc.bundle_page_start = current_page
+		bundle_doc.bundle_page_end = current_page + max(page_count - 1, 0)
+		current_page = bundle_doc.bundle_page_end + 1
 
 	await db_session.commit()
 
 	return schema.PaginationResult(
 		total_pages=current_page - 1,
-		document_count=len(documents),
+		document_count=len(bundle_docs),
 	)
