@@ -44,7 +44,7 @@ async def list_scanners(
 	"""List all registered scanners for the tenant."""
 	return await service.get_scanners(
 		session=session,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 		include_inactive=include_inactive,
 	)
 
@@ -58,7 +58,7 @@ async def register_scanner(
 	"""Register a new scanner."""
 	return await service.create_scanner(
 		session=session,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 		data=data,
 	)
 
@@ -73,7 +73,7 @@ async def get_scanner(
 	scanner = await service.get_scanner_by_id(
 		session=session,
 		scanner_id=scanner_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not scanner:
 		raise HTTPException(status_code=404, detail="Scanner not found")
@@ -91,7 +91,7 @@ async def update_scanner(
 	scanner = await service.update_scanner(
 		session=session,
 		scanner_id=scanner_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 		data=data,
 	)
 	if not scanner:
@@ -109,7 +109,7 @@ async def delete_scanner(
 	deleted = await service.delete_scanner(
 		session=session,
 		scanner_id=scanner_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not deleted:
 		raise HTTPException(status_code=404, detail="Scanner not found")
@@ -125,7 +125,7 @@ async def generate_scanner_api_key(
 	result = await service.generate_scanner_api_key(
 		session=session,
 		scanner_id=scanner_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not result:
 		raise HTTPException(status_code=404, detail="Scanner not found")
@@ -144,7 +144,7 @@ async def get_scanner_status(
 	status = await service.get_scanner_status(
 		session=session,
 		scanner_id=scanner_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not status:
 		raise HTTPException(status_code=404, detail="Scanner not found")
@@ -161,7 +161,7 @@ async def get_scanner_capabilities(
 	capabilities = await service.get_scanner_capabilities(
 		session=session,
 		scanner_id=scanner_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not capabilities:
 		raise HTTPException(status_code=404, detail="Scanner not found or capabilities unavailable")
@@ -178,7 +178,7 @@ async def refresh_scanner_capabilities(
 	capabilities = await service.refresh_scanner_capabilities(
 		session=session,
 		scanner_id=scanner_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not capabilities:
 		raise HTTPException(status_code=404, detail="Scanner not found or unreachable")
@@ -197,8 +197,8 @@ async def create_scan_job(
 	"""Create and start a new scan job."""
 	job = await service.create_scan_job(
 		session=session,
-		tenant_id=user.tenant_id,
-		user_id=user.id,
+		tenant_id=str(user.tenant_id),
+		user_id=str(user.id),
 		data=data,
 	)
 	# Execute scan in background
@@ -206,7 +206,7 @@ async def create_scan_job(
 		service.execute_scan_job,
 		session=session,
 		job_id=job.id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	return job
 
@@ -222,8 +222,8 @@ async def list_scan_jobs(
 	"""List scan jobs."""
 	return await service.get_scan_jobs(
 		session=session,
-		tenant_id=user.tenant_id,
-		user_id=user.id,
+		tenant_id=str(user.tenant_id),
+		user_id=str(user.id),
 		scanner_id=scanner_id,
 		status=status,
 		limit=limit,
@@ -240,7 +240,7 @@ async def get_scan_job(
 	job = await service.get_scan_job_by_id(
 		session=session,
 		job_id=job_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not job:
 		raise HTTPException(status_code=404, detail="Scan job not found")
@@ -257,7 +257,7 @@ async def cancel_scan_job(
 	job = await service.cancel_scan_job(
 		session=session,
 		job_id=job_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not job:
 		raise HTTPException(status_code=404, detail="Scan job not found")
@@ -274,7 +274,7 @@ async def get_scan_job_result(
 	result = await service.get_scan_job_result(
 		session=session,
 		job_id=job_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not result:
 		raise HTTPException(status_code=404, detail="Scan job not found or not completed")
@@ -291,7 +291,7 @@ async def list_scan_profiles(
 	"""List scan profiles."""
 	return await service.get_scan_profiles(
 		session=session,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 
 
@@ -304,8 +304,8 @@ async def create_scan_profile(
 	"""Create a scan profile."""
 	return await service.create_scan_profile(
 		session=session,
-		tenant_id=user.tenant_id,
-		created_by_id=user.id,
+		tenant_id=str(user.tenant_id),
+		created_by_id=str(user.id),
 		data=data,
 	)
 
@@ -320,7 +320,7 @@ async def get_scan_profile(
 	profile = await service.get_scan_profile_by_id(
 		session=session,
 		profile_id=profile_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not profile:
 		raise HTTPException(status_code=404, detail="Scan profile not found")
@@ -338,7 +338,7 @@ async def update_scan_profile(
 	profile = await service.update_scan_profile(
 		session=session,
 		profile_id=profile_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 		data=data,
 	)
 	if not profile:
@@ -356,7 +356,7 @@ async def delete_scan_profile(
 	deleted = await service.delete_scan_profile(
 		session=session,
 		profile_id=profile_id,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 	if not deleted:
 		raise HTTPException(status_code=404, detail="Scan profile not found")
@@ -372,7 +372,7 @@ async def get_scanner_settings(
 	"""Get global scanner settings."""
 	return await service.get_scanner_settings(
 		session=session,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 
 
@@ -385,7 +385,7 @@ async def update_scanner_settings(
 	"""Update global scanner settings."""
 	return await service.update_scanner_settings(
 		session=session,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 		data=data,
 	)
 
@@ -400,7 +400,7 @@ async def get_scanner_dashboard(
 	"""Get scanner dashboard overview."""
 	return await service.get_scanner_dashboard(
 		session=session,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 	)
 
 
@@ -413,6 +413,6 @@ async def get_scanner_usage_stats(
 	"""Get scanner usage statistics."""
 	return await service.get_scanner_usage_stats(
 		session=session,
-		tenant_id=user.tenant_id,
+		tenant_id=str(user.tenant_id),
 		days=days,
 	)
