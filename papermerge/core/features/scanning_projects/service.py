@@ -6,7 +6,7 @@ from typing import Sequence
 from uuid import UUID
 from papermerge.core.utils.uuid_compat import uuid7, uuid7str
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
@@ -612,13 +612,13 @@ async def get_project_metrics(
 	batch_stmt = select(
 		func.count(ScanningBatchModel.id).label("total"),
 		func.sum(
-			func.case((ScanningBatchModel.status == ScanningBatchStatus.COMPLETED, 1), else_=0)
+			case((ScanningBatchModel.status == ScanningBatchStatus.COMPLETED, 1), else_=0)
 		).label("completed"),
 		func.sum(
-			func.case((ScanningBatchModel.status == ScanningBatchStatus.PENDING, 1), else_=0)
+			case((ScanningBatchModel.status == ScanningBatchStatus.PENDING, 1), else_=0)
 		).label("pending"),
 		func.sum(
-			func.case(
+			case(
 				(ScanningBatchModel.status.in_([
 					ScanningBatchStatus.SCANNING,
 					ScanningBatchStatus.OCR_PROCESSING,
@@ -656,7 +656,7 @@ async def get_project_metrics(
 		qc_stmt = select(
 			func.count(QualityControlSampleModel.id).label("total"),
 			func.sum(
-				func.case((QualityControlSampleModel.review_status == QCReviewStatus.PASSED, 1), else_=0)
+				case((QualityControlSampleModel.review_status == QCReviewStatus.PASSED, 1), else_=0)
 			).label("passed"),
 			func.avg(QualityControlSampleModel.image_quality).label("avg_quality"),
 			func.avg(QualityControlSampleModel.ocr_accuracy).label("avg_ocr"),
@@ -2444,7 +2444,7 @@ async def get_project_dashboard(
 		qc_stmt = select(
 			func.count(QualityControlSampleModel.id).label("total"),
 			func.sum(
-				func.case((QualityControlSampleModel.review_status == "passed", 1), else_=0)
+				case((QualityControlSampleModel.review_status == "passed", 1), else_=0)
 			).label("passed"),
 			func.avg(QualityControlSampleModel.image_quality).label("avg_quality"),
 		).where(QualityControlSampleModel.batch_id.in_(batch_ids))

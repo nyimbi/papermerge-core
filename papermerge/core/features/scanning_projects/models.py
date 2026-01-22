@@ -58,9 +58,9 @@ class ScanningProjectModel(Base):
 class ScanningBatchModel(Base):
 	__tablename__ = "scanning_batches"
 
-	id: Mapped[str] = mapped_column(String(36), primary_key=True)
-	project_id: Mapped[str] = mapped_column(
-		String(36),
+	id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+	project_id: Mapped[UUID] = mapped_column(
+		PG_UUID(as_uuid=True),
 		ForeignKey("scanning_projects.id", ondelete="CASCADE"),
 		index=True,
 	)
@@ -78,9 +78,9 @@ class ScanningBatchModel(Base):
 		Enum(ScanningBatchStatus),
 		default=ScanningBatchStatus.PENDING,
 	)
-	assigned_operator_id: Mapped[str | None] = mapped_column(String(36))
+	assigned_operator_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 	assigned_operator_name: Mapped[str | None] = mapped_column(String(255))
-	assigned_scanner_id: Mapped[str | None] = mapped_column(String(36))
+	assigned_scanner_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 	assigned_scanner_name: Mapped[str | None] = mapped_column(String(255))
 	notes: Mapped[str | None] = mapped_column(String(1000))
 	started_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -98,9 +98,9 @@ class ScanningBatchModel(Base):
 class ScanningMilestoneModel(Base):
 	__tablename__ = "scanning_milestones"
 
-	id: Mapped[str] = mapped_column(String(36), primary_key=True)
-	project_id: Mapped[str] = mapped_column(
-		String(36),
+	id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+	project_id: Mapped[UUID] = mapped_column(
+		PG_UUID(as_uuid=True),
 		ForeignKey("scanning_projects.id", ondelete="CASCADE"),
 		index=True,
 	)
@@ -122,9 +122,9 @@ class ScanningMilestoneModel(Base):
 class QualityControlSampleModel(Base):
 	__tablename__ = "qc_samples"
 
-	id: Mapped[str] = mapped_column(String(36), primary_key=True)
-	batch_id: Mapped[str] = mapped_column(
-		String(36),
+	id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+	batch_id: Mapped[UUID] = mapped_column(
+		PG_UUID(as_uuid=True),
 		ForeignKey("scanning_batches.id", ondelete="CASCADE"),
 		index=True,
 	)

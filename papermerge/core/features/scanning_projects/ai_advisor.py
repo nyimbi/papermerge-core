@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.llm import get_llm_client, LLMConfig
@@ -77,9 +77,9 @@ class ProjectAIAdvisor:
 		# Get batch statistics
 		batch_stmt = select(
 			func.count(ScanningBatchModel.id).label("total"),
-			func.sum(func.case((ScanningBatchModel.status == ScanningBatchStatus.COMPLETED, 1), else_=0)).label("completed"),
-			func.sum(func.case((ScanningBatchModel.status == ScanningBatchStatus.PENDING, 1), else_=0)).label("pending"),
-			func.sum(func.case((ScanningBatchModel.status == ScanningBatchStatus.SCANNING, 1), else_=0)).label("scanning"),
+			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.COMPLETED, 1), else_=0)).label("completed"),
+			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.PENDING, 1), else_=0)).label("pending"),
+			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.SCANNING, 1), else_=0)).label("scanning"),
 			func.sum(ScanningBatchModel.estimated_pages).label("estimated_pages"),
 			func.sum(ScanningBatchModel.actual_pages).label("actual_pages"),
 		).where(ScanningBatchModel.project_id == project_id)
@@ -113,8 +113,8 @@ class ProjectAIAdvisor:
 		if batch_ids:
 			qc_stmt = select(
 				func.count(QualityControlSampleModel.id).label("total"),
-				func.sum(func.case((QualityControlSampleModel.review_status == QCReviewStatus.PASSED, 1), else_=0)).label("passed"),
-				func.sum(func.case((QualityControlSampleModel.review_status == QCReviewStatus.FAILED, 1), else_=0)).label("failed"),
+				func.sum(case((QualityControlSampleModel.review_status == QCReviewStatus.PASSED, 1), else_=0)).label("passed"),
+				func.sum(case((QualityControlSampleModel.review_status == QCReviewStatus.FAILED, 1), else_=0)).label("failed"),
 				func.avg(QualityControlSampleModel.image_quality).label("avg_quality"),
 			).where(
 				and_(
