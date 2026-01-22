@@ -72,4 +72,23 @@ app.conf.task_routes = {
     "s3preview": {"queue": s3preview_queue_name()},
     "ocr": {"queue": prefixed("ocr")},
     "path_tmpl": {"queue": prefixed("path_tmpl")},
+    "workflow.deadline_monitor": {"queue": prefixed("workflow")},
+    "workflow.metrics_collector": {"queue": prefixed("workflow")},
+    "workflow.sla_dashboard_refresh": {"queue": prefixed("workflow")},
+}
+
+# Celery beat schedule for periodic tasks
+app.conf.beat_schedule = {
+    "workflow-deadline-monitor": {
+        "task": "workflow.deadline_monitor",
+        "schedule": 300.0,  # Every 5 minutes
+    },
+    "workflow-metrics-collector": {
+        "task": "workflow.metrics_collector",
+        "schedule": 900.0,  # Every 15 minutes
+    },
+    "workflow-sla-dashboard-refresh": {
+        "task": "workflow.sla_dashboard_refresh",
+        "schedule": 3600.0,  # Every hour
+    },
 }
