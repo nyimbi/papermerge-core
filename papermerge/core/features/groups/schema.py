@@ -57,6 +57,22 @@ class GroupEx(Group):
     deleted_by: ByUser | None = None
 
 
+class GroupTreeItem(BaseModel):
+    """Group item for tree view."""
+    id: uuid.UUID
+    name: str
+    description: str | None = None
+    parent_id: uuid.UUID | None = None
+    member_count: int = 0
+    permissions: list[str] = Field(default_factory=list)
+    roles: list[GroupShort] = Field(default_factory=list)
+    children: list["GroupTreeItem"] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CreateGroup(BaseModel):
     name: str
     # create special folders (inbox & home) as well

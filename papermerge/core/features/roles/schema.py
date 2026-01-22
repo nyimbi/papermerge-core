@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Literal
 
 from fastapi import Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from papermerge.core.schemas.common import ByUser
 
@@ -90,10 +90,11 @@ class RoleDetails(BaseModel):
 
 class CreateRole(BaseModel):
     name: str
-    scopes: list[str]
+    description: str | None = None
+    scopes: list[str] = Field(default_factory=list, validation_alias="permission_ids")
 
     # Config
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class UpdateRole(BaseModel):

@@ -13,7 +13,7 @@ from papermerge.core.features.groups.db import api as dbapi
 from papermerge.core.routers.common import OPEN_API_GENERIC_JSON_DETAIL
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.audit.db.audit_context import AsyncAuditContext
-from .schema import GroupParams
+from .schema import GroupParams, GroupTreeItem
 
 router = APIRouter(
     prefix="/groups",
@@ -21,6 +21,37 @@ router = APIRouter(
 )
 
 logger = logging.getLogger(__name__)
+
+
+@router.get("/tree")
+@utils.docstring_parameter(scope=scopes.GROUP_VIEW)
+async def get_groups_tree(
+    user: Annotated[
+        schema.User, Security(get_current_user, scopes=[scopes.GROUP_VIEW])
+    ],
+    db_session: AsyncSession = Depends(get_db),
+) -> list[GroupTreeItem]:
+    """Get groups in tree structure.
+
+    Required scope: `{scope}`
+    """
+    groups = await dbapi.get_groups_without_pagination(db_session)
+    # Convert to tree items (flat list, no hierarchy in current model)
+    return [
+        GroupTreeItem(
+            id=g.id,
+            name=g.name,
+            description=None,
+            parent_id=None,
+            member_count=0,
+            permissions=[],
+            roles=[],
+            children=[],
+            created_at=None,
+            updated_at=None,
+        )
+        for g in groups
+    ]
 
 
 @router.get("/all")
