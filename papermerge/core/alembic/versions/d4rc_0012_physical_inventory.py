@@ -18,18 +18,36 @@ depends_on = None
 
 
 def upgrade():
-	# Create enum types
+	# Create enum types using raw SQL with existence check
+	op.execute("""
+		DO $$ BEGIN
+			CREATE TYPE container_type_enum AS ENUM (
+				'box', 'folder', 'crate', 'shelf', 'cabinet', 'pallet', 'room', 'building'
+			);
+		EXCEPTION
+			WHEN duplicate_object THEN null;
+		END $$;
+	""")
+
+	op.execute("""
+		DO $$ BEGIN
+			CREATE TYPE inventory_status_enum AS ENUM (
+				'in_storage', 'checked_out', 'in_transit', 'missing', 'destroyed', 'transferred', 'pending_review'
+			);
+		EXCEPTION
+			WHEN duplicate_object THEN null;
+		END $$;
+	""")
+
+	# Define enum types for SQLAlchemy column references
 	container_type_enum = postgresql.ENUM(
 		'box', 'folder', 'crate', 'shelf', 'cabinet', 'pallet', 'room', 'building',
-		name='container_type_enum'
+		name='container_type_enum', create_type=False
 	)
-	container_type_enum.create(op.get_bind(), checkfirst=True)
-
 	inventory_status_enum = postgresql.ENUM(
 		'in_storage', 'checked_out', 'in_transit', 'missing', 'destroyed', 'transferred', 'pending_review',
-		name='inventory_status_enum'
+		name='inventory_status_enum', create_type=False
 	)
-	inventory_status_enum.create(op.get_bind(), checkfirst=True)
 
 	# Warehouse locations table
 	op.create_table(
@@ -86,7 +104,7 @@ def upgrade():
 		'container_documents',
 		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
 		sa.Column('container_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('physical_containers.id', ondelete='CASCADE'), nullable=False, index=True),
-		sa.Column('document_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('documents.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('document_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('documents.node_id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('sequence_number', sa.Integer),
 		sa.Column('page_count', sa.Integer),
 		sa.Column('has_physical', sa.Boolean, default=True),
@@ -123,7 +141,7 @@ def upgrade():
 		sa.Column('code_type', sa.String(20)),
 		sa.Column('success', sa.Boolean, default=True),
 		sa.Column('resolved_container_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('physical_containers.id', ondelete='SET NULL')),
-		sa.Column('resolved_document_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('documents.id', ondelete='SET NULL')),
+		sa.Column('resolved_document_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('documents.node_id', ondelete='SET NULL')),
 		sa.Column('resolved_location_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('warehouse_locations.id', ondelete='SET NULL')),
 		sa.Column('error_message', sa.Text),
 		sa.Column('scan_purpose', sa.String(50)),
@@ -155,5 +173,5 @@ def downgrade():
 	op.drop_table('warehouse_locations')
 
 	# Drop enum types
-	postgresql.ENUM(name='inventory_status_enum').drop(op.get_bind(), checkfirst=True)
-	postgresql.ENUM(name='container_type_enum').drop(op.get_bind(), checkfirst=True)
+	op.execute('DROP TYPE IF EXISTS inventory_status_enum')
+	op.execute('DROP TYPE IF EXISTS container_type_enum')
