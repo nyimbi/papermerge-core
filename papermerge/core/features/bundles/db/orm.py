@@ -4,10 +4,14 @@ import uuid
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, String, ForeignKey, Integer, Text, func, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import TIMESTAMP, JSONB
+
+if TYPE_CHECKING:
+	from papermerge.core.features.cases.db.orm import Case
 
 from papermerge.core.db.base import Base
 from papermerge.core.db.mixins import AuditColumns
@@ -46,10 +50,13 @@ class Bundle(Base, AuditColumns):
 		ForeignKey("cases.id", ondelete="SET NULL"), index=True
 	)
 
-	# Metadata
-	metadata: Mapped[dict | None] = mapped_column(JSONB)
+	# Bundle metadata
+	bundle_metadata: Mapped[dict | None] = mapped_column(JSONB)
 
 	# Relationships
+	case: Mapped["Case"] = relationship(
+		"Case", back_populates="bundles", foreign_keys=[case_id]
+	)
 	documents: Mapped[list["BundleDocument"]] = relationship(
 		"BundleDocument", back_populates="bundle", cascade="all, delete-orphan",
 		order_by="BundleDocument.sort_order"

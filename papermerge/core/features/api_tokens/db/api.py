@@ -6,7 +6,7 @@ Provides CRUD operations for Personal Access Tokens.
 import hashlib
 import secrets
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import delete, func, select, update
@@ -14,6 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.features.api_tokens.db.orm import APIToken
 from papermerge.core.types import PaginatedResponse
+
+# Type alias for paginated response to avoid Pydantic issues with ORM models
+PaginatedTokens = PaginatedResponse[Any]
 
 # Token prefix for easy identification
 TOKEN_PREFIX = "pm_"
@@ -147,7 +150,7 @@ async def get_user_tokens_paginated(
     sort_by: str | None = None,
     sort_direction: Literal["asc", "desc"] | None = None,
     filter_free_text: str | None = None,
-) -> PaginatedResponse[APIToken]:
+) -> PaginatedTokens:
     """
     Get paginated API tokens for a user.
 

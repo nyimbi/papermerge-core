@@ -29,6 +29,10 @@ from .features.encryption.db.orm import (
 	KeyEncryptionKey, DocumentEncryptionKey, HiddenDocumentAccess
 )
 from .features.ingestion.db.orm import IngestionSource, IngestionJob
+from .features.api_tokens.db.orm import APIToken
+from .features.departments.db.orm import Department, UserDepartment, DepartmentAccessRule
+from .features.inventory.db.orm import PhysicalManifest
+from .features.provenance.db.orm import DocumentProvenance, ProvenanceEvent
 
 __all__ = [
 	# Existing models
@@ -90,4 +94,15 @@ __all__ = [
 	# Ingestion
 	'IngestionSource',
 	'IngestionJob',
+	# API Tokens
+	'APIToken',
+	# Departments
+	'Department',
+	'UserDepartment',
+	'DepartmentAccessRule',
+	# Inventory
+	'PhysicalManifest',
+	# Provenance
+	'DocumentProvenance',
+	'ProvenanceEvent',
 ]

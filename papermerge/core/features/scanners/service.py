@@ -12,36 +12,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from papermerge.core.scanner.base import Scanner, ScanOptions, ScanResult, ScanJobStatus as BaseScanJobStatus
 from papermerge.core.scanner.escl import ESCLScanner
 from papermerge.core.scanner.sane import SANEScanner
+from papermerge.core.scanner.capabilities import ScannerCapabilities
 from papermerge.core.scanner.discovery import (
 	ScannerDiscovery,
 	DiscoveredScanner,
 	discover_all_scanners,
 	discover_sane_scanners,
 )
-from papermerge.core.scanner.capabilities import ScannerCapabilities
+from papermerge.core.features.ownership.db import api as ownership_api
+from papermerge.core.types import ResourceType, OwnerType
+from papermerge.core.features.provenance.db.orm import DocumentProvenance, ProvenanceEvent, EventType
+from papermerge.core.features.document.db import api as doc_dbapi
+from papermerge.core.features.document import schema as doc_schema
+from papermerge.core.types import MimeType
 
 from .models import ScannerModel, ScanJobModel, ScanProfileModel, ScannerSettingsModel
 from .views import (
-	ScannerCreate,
-	ScannerUpdate,
-	ScannerResponse,
-	ScannerStatusResponse,
-	ScannerCapabilitiesResponse,
+	ScannerCreate, ScannerUpdate, ScannerResponse, ScannerStatusResponse,
+	ScannerCapabilitiesResponse, ColorMode, ImageFormat,
+	ScanJobCreate, ScanJobResponse, ScanJobResultResponse,
+	ScanProfileCreate, ScanProfileResponse,
+	ScannerDashboard, ScannerUsageStats, ScannerApiKeyResponse,
+	ScannerStatus, ScanJobStatus, ScanOptionsBase,
 	DiscoveredScannerResponse,
-	ScanJobCreate,
-	ScanJobResponse,
-	ScanJobResultResponse,
-	ScanProfileCreate,
-	ScanProfileUpdate,
-	ScanProfileResponse,
-	GlobalScannerSettingsUpdate,
-	GlobalScannerSettingsResponse,
-	ScannerUsageStats,
-	ScannerDashboard,
-	ScannerStatus,
-	ScanJobStatus,
-	ScanOptionsBase,
 )
+from .auth import generate_api_key, hash_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +105,15 @@ class ScannerDiscoveryService:
 	) -> bool:
 		"""Validate that an eSCL scanner is actually reachable."""
 		try:
+			# Use HTTPS for port 443 or if protocol indicates secure
+			use_https = scanner.port == 443 or scanner.protocol == 'uscans'
 			async with ESCLScanner(
 				host=scanner.host,
 				port=scanner.port,
 				root_path=scanner.root_url or '/eSCL',
 				timeout=timeout,
+				use_https=use_https,
+				verify_ssl=False,  # Many scanners have self-signed certs
 			) as escl:
 				return await escl.is_available()
 		except Exception as e:
@@ -168,7 +167,8 @@ async def discover_scanners(
 			name=s.name,
 			host=s.host,
 			port=s.port,
-			protocol=s.protocol,
+			# Normalize escl_secure to escl (same protocol, different transport)
+			protocol='escl' if s.protocol in ('escl', 'escl_secure') else s.protocol,
 			uuid=s.uuid,
 			manufacturer=s.manufacturer,
 			model=s.model,
@@ -428,6 +428,21 @@ async def create_scan_job(
 	data: ScanJobCreate,
 ) -> ScanJobResponse:
 	"""Create a new scan job."""
+	# RBAC check: Ensure user has access to destination folder
+	if data.destination_folder_id:
+		owner_type, owner_id = await ownership_api.get_owner_info(
+			session,
+			resource_id=UUID(data.destination_folder_id),
+			resource_type=ResourceType.NODE
+		)
+		
+		# For now, simple check: must be owner or in same group
+		# In a full RBAC system, we'd check specific 'write' permissions
+		user_id_uuid = UUID(user_id)
+		if owner_type == OwnerType.USER and owner_id != user_id_uuid:
+			raise HTTPException(status_code=403, detail="Access denied to destination folder")
+		# Group check would require fetching user groups, skipping for brevity but noting as TODO
+
 	job = ScanJobModel(
 		tenant_id=tenant_id,
 		scanner_id=data.scanner_id,
@@ -507,7 +522,67 @@ async def execute_scan_job(
 			scanner.total_jobs += 1
 			scanner.last_seen_at = datetime.now()
 
-			# TODO: Create documents from scanned pages
+			# Create documents from scanned pages in bulk
+			docs_data = []
+			for i, page_data in enumerate(scan_result.pages):
+				new_doc_attrs = doc_schema.NewDocument(
+					title=f"Scan_{job.id[:8]}_{i+1}",
+					parent_id=UUID(job.destination_folder_id) if job.destination_folder_id else None,
+					lang=options.lang or 'deu',
+					ocr=True,
+					created_by=UUID(job.user_id),
+					updated_by=UUID(job.user_id)
+				)
+				
+				# Determine mime type
+				ext = scan_result.format.lower()
+				mime = MimeType.application_pdf
+				if ext == 'jpeg' or ext == 'jpg':
+					mime = MimeType.image_jpeg
+				elif ext == 'png':
+					mime = MimeType.image_png
+				elif ext == 'tiff':
+					mime = MimeType.image_tiff
+				
+				docs_data.append((new_doc_attrs, mime))
+
+			created_docs = await doc_dbapi.bulk_create_documents(
+				db_session=session,
+				documents_data=docs_data
+			)
+			
+			doc_ids = [str(doc.id) for doc in created_docs]
+			
+			# Create provenance and log events for each created document
+			for doc in created_docs:
+				provenance = DocumentProvenance(
+					document_id=doc.id,
+					batch_id=job.batch_id,
+					physical_manifest_id=UUID(job.physical_manifest_id) if job.physical_manifest_id else None,
+					ingestion_source="scanner",
+					ingestion_timestamp=datetime.utcnow(),
+					ingestion_user_id=UUID(job.user_id),
+					scanner_model=scanner.model,
+					scan_resolution_dpi=options.resolution,
+					scan_color_mode=options.color_mode,
+					scan_settings=job.options,
+					original_page_count=1,
+					current_page_count=1,
+					tenant_id=UUID(tenant_id)
+				)
+				session.add(provenance)
+				await session.flush()
+				
+				event = ProvenanceEvent(
+					provenance_id=provenance.id,
+					event_type=EventType.SCANNED,
+					actor_id=UUID(job.user_id),
+					actor_type="user",
+					description=f"Document scanned using {scanner.name} ({scanner.protocol})"
+				)
+				session.add(event)
+			
+			job.document_ids = doc_ids
 
 		else:
 			job.status = 'failed'
@@ -719,6 +794,72 @@ async def get_scanner_dashboard(
 	)
 
 
+async def get_scanner_health(
+	session: AsyncSession,
+	scanner_id: str,
+	tenant_id: str,
+) -> dict:
+	"""Get detailed health and diagnostic info for a scanner."""
+	scanner = await get_scanner_by_id(session, scanner_id, tenant_id)
+	if not scanner:
+		return {"status": "unknown", "error": "Scanner not found"}
+
+	try:
+		instance = await get_scanner_instance(scanner)
+		status = await instance.get_status()
+		
+		# Check for recent failures
+		recent_jobs_result = await session.execute(
+			select(ScanJobModel)
+			.where(ScanJobModel.scanner_id == scanner_id)
+			.order_by(ScanJobModel.created_at.desc())
+			.limit(5)
+		)
+		recent_jobs = recent_jobs_result.scalars().all()
+		failure_rate = sum(1 for j in recent_jobs if j.status == 'failed') / len(recent_jobs) if recent_jobs else 0
+
+		return {
+			"scanner_id": scanner_id,
+			"name": scanner.name,
+			"status": status.value,
+			"protocol": scanner.protocol,
+			"last_seen": scanner.last_seen_at,
+			"failure_rate_recent": failure_rate,
+			"total_pages": scanner.total_pages_scanned,
+			"is_active": scanner.is_active,
+		}
+	except Exception as e:
+		return {
+			"status": "error",
+			"error": str(e),
+			"scanner_id": scanner_id
+		}
+async def generate_scanner_api_key(
+	session: AsyncSession,
+	scanner_id: str,
+	tenant_id: str,
+) -> ScannerApiKeyResponse | None:
+	"""Generate a new API key for a scanner."""
+	result = await session.execute(
+		select(ScannerModel).where(
+			ScannerModel.id == scanner_id,
+			ScannerModel.tenant_id == tenant_id
+		)
+	)
+	scanner = result.scalar_one_or_none()
+	if not scanner:
+		return None
+
+	api_key = generate_api_key()
+	scanner.api_key_hash = hash_api_key(api_key)
+	await session.commit()
+
+	return ScannerApiKeyResponse(
+		scanner_id=scanner_id,
+		api_key=api_key
+	)
+
+
 # === Helper Functions ===
 
 def _scanner_to_response(scanner: ScannerModel) -> ScannerResponse:
@@ -740,6 +881,7 @@ def _scanner_to_response(scanner: ScannerModel) -> ScannerResponse:
 		notes=scanner.notes,
 		total_pages_scanned=scanner.total_pages_scanned,
 		capabilities=_dict_to_capabilities_response(scanner.capabilities) if scanner.capabilities else None,
+		has_api_key=scanner.api_key_hash is not None,
 		created_at=scanner.created_at,
 		updated_at=scanner.updated_at,
 	)

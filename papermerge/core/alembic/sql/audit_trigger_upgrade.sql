@@ -1,3 +1,6 @@
+-- Enable pgcrypto for SHA-256 hashing
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- Generic audit trigger function for PostgreSQL
 -- This function can be reused across multiple tables
 
@@ -8,6 +11,7 @@ DECLARE
     old_data jsonb;
     new_data jsonb;
     changed_fields jsonb;
+    v_previous_hash text;
 BEGIN
     -- Determine operation and set up data
     IF TG_OP = 'DELETE' THEN
@@ -67,6 +71,29 @@ BEGIN
     EXCEPTION WHEN OTHERS THEN
         audit_row.reason = NULL;
     END;
+
+    -- Cryptographic Chaining
+    -- Get the hash of the most recent audit log entry
+    SELECT hash INTO v_previous_hash
+    FROM audit_log
+    ORDER BY timestamp DESC, id DESC
+    LIMIT 1;
+
+    audit_row.previous_hash = v_previous_hash;
+    
+    -- Calculate hash of current entry
+    -- We hash: timestamp, table_name, record_id, operation, user_id, old_values, new_values, previous_hash
+    audit_row.hash = encode(digest(
+        coalesce(audit_row.timestamp::text, '') ||
+        coalesce(audit_row.table_name, '') ||
+        coalesce(audit_row.record_id::text, '') ||
+        coalesce(audit_row.operation, '') ||
+        coalesce(audit_row.user_id::text, '') ||
+        coalesce(audit_row.old_values::text, '') ||
+        coalesce(audit_row.new_values::text, '') ||
+        coalesce(audit_row.previous_hash, ''),
+        'sha256'
+    ), 'hex');
 
     -- Insert audit record
     INSERT INTO audit_log VALUES (audit_row.*);

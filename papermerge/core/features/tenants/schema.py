@@ -144,3 +144,172 @@ class TenantUsageInfo(BaseModel):
 	storage_used_bytes: int
 	storage_quota_bytes: int | None = None
 	storage_percentage: float | None = None
+
+
+# Storage Configuration Schemas
+
+class StorageConfigCreate(BaseModel):
+	"""Create storage configuration."""
+	provider: str = "local"  # local, s3, linode, azure, gcs
+	bucket_name: str | None = None
+	region: str | None = None
+	endpoint_url: str | None = None
+	access_key_id: str | None = None
+	secret_access_key: str | None = None
+	base_path: str = "documents/"
+	archive_path: str | None = None
+
+
+class StorageConfigInfo(BaseModel):
+	"""Storage configuration (without secrets)."""
+	provider: str = "local"
+	bucket_name: str | None = None
+	region: str | None = None
+	endpoint_url: str | None = None
+	base_path: str = "documents/"
+	archive_path: str | None = None
+	is_verified: bool = False
+	last_verified_at: datetime | None = None
+
+	model_config = ConfigDict(from_attributes=True)
+
+
+class StorageConfigUpdate(BaseModel):
+	"""Update storage configuration."""
+	provider: str | None = None
+	bucket_name: str | None = None
+	region: str | None = None
+	endpoint_url: str | None = None
+	access_key_id: str | None = None
+	secret_access_key: str | None = None
+	base_path: str | None = None
+	archive_path: str | None = None
+
+
+# AI Configuration Schemas
+
+class AIConfigCreate(BaseModel):
+	"""Create AI configuration."""
+	provider: str = "openai"  # openai, anthropic, azure_openai, local
+	api_key: str | None = None
+	endpoint_url: str | None = None
+	default_model: str = "gpt-4o-mini"
+	embedding_model: str = "text-embedding-3-small"
+	monthly_token_limit: int | None = None
+	classification_enabled: bool = True
+	extraction_enabled: bool = True
+	summarization_enabled: bool = True
+	chat_enabled: bool = False
+
+
+class AIConfigInfo(BaseModel):
+	"""AI configuration (without secrets)."""
+	provider: str = "openai"
+	endpoint_url: str | None = None
+	default_model: str = "gpt-4o-mini"
+	embedding_model: str = "text-embedding-3-small"
+	monthly_token_limit: int | None = None
+	tokens_used_this_month: int = 0
+	classification_enabled: bool = True
+	extraction_enabled: bool = True
+	summarization_enabled: bool = True
+	chat_enabled: bool = False
+
+	model_config = ConfigDict(from_attributes=True)
+
+
+class AIConfigUpdate(BaseModel):
+	"""Update AI configuration."""
+	provider: str | None = None
+	api_key: str | None = None
+	endpoint_url: str | None = None
+	default_model: str | None = None
+	embedding_model: str | None = None
+	monthly_token_limit: int | None = None
+	classification_enabled: bool | None = None
+	extraction_enabled: bool | None = None
+	summarization_enabled: bool | None = None
+	chat_enabled: bool | None = None
+
+
+# Subscription Schemas
+
+class SubscriptionCreate(BaseModel):
+	"""Create subscription."""
+	plan: str = "free"  # free, starter, professional, enterprise, custom
+	billing_cycle: str = "monthly"  # monthly, annual
+	max_users: int | None = None
+	max_storage_gb: int | None = None
+	max_documents: int | None = None
+	ai_tokens_per_month: int | None = None
+	addons: dict | None = None
+
+
+class SubscriptionInfo(BaseModel):
+	"""Subscription information."""
+	plan: str = "free"
+	billing_cycle: str = "monthly"
+	current_period_start: datetime | None = None
+	current_period_end: datetime | None = None
+	cancel_at_period_end: bool = False
+	max_users: int | None = None
+	max_storage_gb: int | None = None
+	max_documents: int | None = None
+	ai_tokens_per_month: int | None = None
+	addons: dict | None = None
+
+	model_config = ConfigDict(from_attributes=True)
+
+
+class SubscriptionUpdate(BaseModel):
+	"""Update subscription."""
+	plan: str | None = None
+	billing_cycle: str | None = None
+	max_users: int | None = None
+	max_storage_gb: int | None = None
+	max_documents: int | None = None
+	ai_tokens_per_month: int | None = None
+	cancel_at_period_end: bool | None = None
+	addons: dict | None = None
+
+
+# Full tenant provisioning schema
+
+class TenantProvisionRequest(BaseModel):
+	"""Full tenant provisioning request (system admin)."""
+	# Basic info
+	name: str
+	slug: str
+	contact_email: str
+	billing_email: str | None = None
+
+	# Subscription
+	plan: str = "starter"
+	billing_cycle: str = "monthly"
+
+	# Storage
+	storage_provider: str = "s3"
+	storage_bucket: str | None = None
+	storage_region: str = "us-east-1"
+	storage_endpoint: str | None = None  # For Linode/MinIO
+
+	# AI
+	ai_provider: str = "openai"
+	ai_monthly_tokens: int | None = None
+
+	# Limits
+	max_users: int = 5
+	max_storage_gb: int = 10
+
+	# Initial admin user
+	admin_email: str
+	admin_password: str | None = None  # If None, send setup email
+
+
+class TenantProvisionResponse(BaseModel):
+	"""Tenant provisioning response."""
+	tenant: TenantInfo
+	storage_configured: bool
+	ai_configured: bool
+	admin_user_id: UUID | None = None
+	setup_link: str | None = None

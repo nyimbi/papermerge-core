@@ -285,6 +285,7 @@ async def get_users(
     *,
     page_size: int,
     page_number: int,
+    tenant_id: uuid.UUID | None = None,
     sort_by: Optional[str] = None,
     sort_direction: Optional[str] = None,
     filters: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -307,6 +308,10 @@ async def get_users(
     )
 
     where_conditions = []
+
+    # Tenant isolation - critical for multi-tenancy security
+    if tenant_id:
+        where_conditions.append(orm.User.tenant_id == tenant_id)
 
     if not include_deleted:
         where_conditions.append(orm.User.deleted_at.is_(None))
@@ -500,6 +505,7 @@ async def create_user(
     username: str,
     email: str,
     password: str,
+    tenant_id: uuid.UUID | None = None,
     role_ids: list[uuid.UUID] | None = None,
     group_ids: list[uuid.UUID] | None = None,
     is_superuser: bool = False,
@@ -510,19 +516,22 @@ async def create_user(
     """
     Create a new user with special folders.
 
-    REMOVED: No longer requires SET CONSTRAINTS ALL DEFERRED
-    The circular dependency has been eliminated!
+    Args:
+        tenant_id: Tenant to associate user with (defaults to DEFAULT_TENANT_ID)
     """
+    from .orm import DEFAULT_TENANT_ID
 
     group_ids = group_ids or []
     role_ids = role_ids or []
     _user_id = user_id or uuid.uuid4()
+    _tenant_id = tenant_id or uuid.UUID(DEFAULT_TENANT_ID)
 
     user = orm.User(
         id=_user_id,
         username=username,
         email=email,
         password=password,
+        tenant_id=_tenant_id,
         is_superuser=is_superuser,
         is_active=is_active,
         created_by=created_by,

@@ -57,6 +57,8 @@ class StorageBackend(ABC):
 		content_type: str | None = None,
 		metadata: dict[str, str] | None = None,
 		tier: StorageTier = StorageTier.HOT,
+		object_lock_mode: str | None = None,
+		object_lock_retain_until: datetime | None = None,
 	) -> UploadResult:
 		"""Upload data to storage.
 
@@ -80,6 +82,8 @@ class StorageBackend(ABC):
 		content_type: str | None = None,
 		metadata: dict[str, str] | None = None,
 		tier: StorageTier = StorageTier.HOT,
+		object_lock_mode: str | None = None,
+		object_lock_retain_until: datetime | None = None,
 	) -> UploadResult:
 		"""Upload a file to storage.
 
@@ -96,7 +100,7 @@ class StorageBackend(ABC):
 		...
 
 	@abstractmethod
-	async def get(self, key: str) -> bytes:
+	async def get(self, key: str, version_id: str | None = None) -> bytes:
 		"""Download object data.
 
 		Args:
@@ -111,7 +115,7 @@ class StorageBackend(ABC):
 		...
 
 	@abstractmethod
-	async def get_stream(self, key: str) -> AsyncIterator[bytes]:
+	async def get_stream(self, key: str, version_id: str | None = None) -> AsyncIterator[bytes]:
 		"""Stream object data in chunks.
 
 		Args:
@@ -126,7 +130,7 @@ class StorageBackend(ABC):
 		...
 
 	@abstractmethod
-	async def get_to_file(self, key: str, file_path: Path) -> None:
+	async def get_to_file(self, key: str, file_path: Path, version_id: str | None = None) -> None:
 		"""Download object to a local file.
 
 		Args:
@@ -139,7 +143,7 @@ class StorageBackend(ABC):
 		...
 
 	@abstractmethod
-	async def delete(self, key: str) -> None:
+	async def delete(self, key: str, version_id: str | None = None) -> None:
 		"""Delete an object.
 
 		Args:

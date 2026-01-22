@@ -28,6 +28,10 @@ class RemoteUser(BaseModel):
     roles: list[str] | None = None
 
 
+# Default tenant ID for single-tenant / local development deployments
+DEFAULT_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
 class User(BaseModel):
     id: UUID | str
     username: str
@@ -40,6 +44,8 @@ class User(BaseModel):
     is_active: bool = False
     scopes: list[str] = []
     preferences: Preferences = Preferences()
+    # Tenant ID for multi-tenant features; defaults to default tenant for local dev
+    tenant_id: UUID = DEFAULT_TENANT_ID
 
     @field_validator("scopes")
     @classmethod

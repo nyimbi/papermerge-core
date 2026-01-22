@@ -76,7 +76,12 @@ class DocumentEncryptionKey(Base):
 
 
 class HiddenDocumentAccess(Base):
-	"""Access request for hidden documents."""
+	"""Access request/grant for hidden documents.
+
+	Supports two use cases:
+	1. Access request workflow (requested_by -> approved_by)
+	2. Single-view access links (access_code with view tracking)
+	"""
 	__tablename__ = "hidden_document_access"
 
 	id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -84,16 +89,16 @@ class HiddenDocumentAccess(Base):
 		ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, index=True
 	)
 
-	# Request
+	# Request/Creator
 	requested_by: Mapped[UUID] = mapped_column(
 		ForeignKey("users.id", ondelete="CASCADE"), nullable=False
 	)
 	requested_at: Mapped[datetime] = mapped_column(
 		TIMESTAMP(timezone=True), default=utc_now, nullable=False
 	)
-	reason: Mapped[str] = mapped_column(Text, nullable=False)
+	reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-	# Approval
+	# Approval workflow
 	approved_by: Mapped[UUID | None] = mapped_column(
 		ForeignKey("users.id", ondelete="SET NULL")
 	)
@@ -104,6 +109,24 @@ class HiddenDocumentAccess(Base):
 	)
 	expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
+	# Single-view access fields
+	access_code: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+	max_views: Mapped[int | None] = mapped_column(Integer, default=1)
+	require_auth: Mapped[bool] = mapped_column(Boolean, default=False)
+	allowed_actions: Mapped[list | None] = mapped_column(Text, nullable=True)  # JSON stored as text
+
+	# View tracking
+	view_count: Mapped[int] = mapped_column(Integer, default=0)
+	last_accessed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+	access_log: Mapped[list | None] = mapped_column(Text, nullable=True)  # JSON stored as text
+
+	# Revocation
+	is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+	revoked_by: Mapped[UUID | None] = mapped_column(
+		ForeignKey("users.id", ondelete="SET NULL")
+	)
+	revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
 	# Timestamps
 	created_at: Mapped[datetime] = mapped_column(
 		TIMESTAMP(timezone=True), default=utc_now, nullable=False
@@ -112,4 +135,5 @@ class HiddenDocumentAccess(Base):
 	__table_args__ = (
 		Index("idx_hidden_access_document", "document_id"),
 		Index("idx_hidden_access_status", "status"),
+		Index("idx_hidden_access_code", "access_code"),
 	)

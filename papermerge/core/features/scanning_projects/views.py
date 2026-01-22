@@ -2,10 +2,18 @@
 """Pydantic models for Scanning Projects feature."""
 from datetime import datetime
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Any
+from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict, AfterValidator
-from uuid_extensions import uuid7str
+from pydantic import BaseModel, Field, ConfigDict, AfterValidator, field_serializer
+from papermerge.core.utils.uuid_compat import uuid7str
+
+
+def uuid_to_str(v: Any) -> str:
+	"""Convert UUID to string."""
+	if isinstance(v, UUID):
+		return str(v)
+	return v
 
 
 def validate_positive(v: int) -> int:
@@ -26,7 +34,10 @@ class ScanningProjectStatus(str, Enum):
 
 class ScanningBatchStatus(str, Enum):
 	PENDING = "pending"
+	UNBUNDLING = "unbundling"
 	SCANNING = "scanning"
+	REPACKING = "repacking"
+	RETURNED = "returned"
 	OCR_PROCESSING = "ocr_processing"
 	QC_PENDING = "qc_pending"
 	QC_PASSED = "qc_passed"
@@ -96,14 +107,27 @@ class IssueType(str, Enum):
 
 
 class ScanningProjectBase(BaseModel):
-	model_config = ConfigDict(extra="forbid", populate_by_name=True)
+	"""Base schema matching database schema from d4rc migrations."""
+	model_config = ConfigDict(extra="forbid", populate_by_name=True, from_attributes=True)
 
+	code: str = Field(..., min_length=1, max_length=50)
 	name: str = Field(..., min_length=1, max_length=255)
 	description: str | None = None
-	total_estimated_pages: PositiveInt = 0
+	priority: str | None = "normal"
+	project_type: str | None = None
+	client_name: str | None = None
+	client_reference: str | None = None
+	estimated_pages: int | None = None
+	estimated_documents: int | None = None
+	daily_page_target: int | None = None
 	target_dpi: int = Field(default=300, ge=100, le=1200)
-	color_mode: ColorMode = ColorMode.GRAYSCALE
-	quality_sample_rate: int = Field(default=5, ge=1, le=100)
+	color_mode: str | None = "color"
+	duplex_mode: str | None = "duplex"
+	file_format: str | None = "pdf"
+	ocr_enabled: bool = True
+	quality_sampling_rate: float | None = 0.1
+	destination_folder_id: str | None = None
+	project_metadata: dict | None = None
 	start_date: datetime | None = None
 	target_end_date: datetime | None = None
 
@@ -115,26 +139,47 @@ class ScanningProjectCreate(ScanningProjectBase):
 class ScanningProjectUpdate(BaseModel):
 	model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+	code: str | None = None
 	name: str | None = None
 	description: str | None = None
-	status: ScanningProjectStatus | None = None
-	total_estimated_pages: PositiveInt | None = None
+	status: str | None = None
+	priority: str | None = None
+	project_type: str | None = None
+	client_name: str | None = None
+	client_reference: str | None = None
+	estimated_pages: int | None = None
+	estimated_documents: int | None = None
+	daily_page_target: int | None = None
 	target_dpi: int | None = None
-	color_mode: ColorMode | None = None
-	quality_sample_rate: int | None = None
+	color_mode: str | None = None
+	duplex_mode: str | None = None
+	file_format: str | None = None
+	ocr_enabled: bool | None = None
+	quality_sampling_rate: float | None = None
+	destination_folder_id: str | None = None
+	project_metadata: dict | None = None
 	start_date: datetime | None = None
 	target_end_date: datetime | None = None
 
 
 class ScanningProject(ScanningProjectBase):
-	id: str = Field(default_factory=uuid7str)
-	status: ScanningProjectStatus = ScanningProjectStatus.PLANNING
-	scanned_pages: PositiveInt = 0
-	verified_pages: PositiveInt = 0
-	rejected_pages: PositiveInt = 0
+	model_config = ConfigDict(extra="forbid", populate_by_name=True, from_attributes=True)
+
+	id: str | UUID = Field(default_factory=uuid7str)
+	tenant_id: str | UUID
+	status: str = "planning"
 	actual_end_date: datetime | None = None
 	created_at: datetime = Field(default_factory=datetime.utcnow)
 	updated_at: datetime = Field(default_factory=datetime.utcnow)
+	deleted_at: datetime | None = None
+	created_by: str | UUID
+	updated_by: str | UUID
+
+	@field_serializer("id", "tenant_id", "created_by", "updated_by")
+	def serialize_uuid(self, v: str | UUID) -> str:
+		if isinstance(v, UUID):
+			return str(v)
+		return v
 
 
 # =====================================================
@@ -217,6 +262,8 @@ class ScanningMilestoneUpdate(BaseModel):
 
 
 class ScanningMilestone(ScanningMilestoneBase):
+	model_config = ConfigDict(extra="forbid", populate_by_name=True, from_attributes=True)
+
 	id: str = Field(default_factory=uuid7str)
 	project_id: str
 	actual_pages: PositiveInt = 0
@@ -894,6 +941,12 @@ class ShiftAssignmentBase(BaseModel):
 
 class ShiftAssignmentCreate(ShiftAssignmentBase):
 	pass
+
+
+class ShiftAssignmentBulkCreate(BaseModel):
+	model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+	assignments: list[ShiftAssignmentCreate]
 
 
 class ShiftAssignment(ShiftAssignmentBase):

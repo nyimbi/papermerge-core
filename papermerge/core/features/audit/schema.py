@@ -152,3 +152,96 @@ class AuditLogParams(BaseModel):
             filters["timestamp"] = timestamp_filter
 
         return filters if filters else None
+
+
+# --- Analytics Response Schemas ---
+
+class TrendDataPoint(BaseModel):
+	"""Single data point in activity trend."""
+	timestamp: str
+	count: int
+	breakdown: dict[str, int] = {}
+
+
+class TrendPeak(BaseModel):
+	"""Peak activity point."""
+	timestamp: str
+	count: int
+
+
+class ActivityTrendResponse(BaseModel):
+	"""Response for activity trend analytics."""
+	period: str
+	data: list[TrendDataPoint]
+	total: int
+	average: float
+	peak: TrendPeak | None = None
+	trend_direction: str
+
+	model_config = ConfigDict(extra='forbid')
+
+
+class TopUserItem(BaseModel):
+	"""Single user in top users list."""
+	user_id: str
+	username: str
+	action_count: int
+	operations: dict[str, int] = {}
+
+
+class TopUsersResponse(BaseModel):
+	"""Response for top active users."""
+	items: list[TopUserItem]
+	period_days: int
+
+	model_config = ConfigDict(extra='forbid')
+
+
+class UserActivityResponse(BaseModel):
+	"""Response for user activity summary."""
+	user_id: str
+	username: str
+	total_actions: int
+	operations: dict[str, int]
+	tables_accessed: dict[str, int]
+	first_activity: str | None = None
+	last_activity: str | None = None
+	avg_daily_actions: float
+	unusual_patterns: list[str] = []
+
+	model_config = ConfigDict(extra='forbid')
+
+
+class OperationDistributionResponse(BaseModel):
+	"""Response for operation distribution."""
+	operations: dict[str, int]
+	period_days: int
+
+	model_config = ConfigDict(extra='forbid')
+
+
+class SecurityAlertResponse(BaseModel):
+	"""Response for security alert."""
+	alert_type: str
+	severity: str
+	timestamp: str
+	description: str
+	affected_resources: list[str] = []
+	user_id: str | None = None
+	details: dict[str, Any] = {}
+
+	model_config = ConfigDict(extra='forbid')
+
+
+class ComplianceReportResponse(BaseModel):
+	"""Response for compliance audit report."""
+	report_period_start: str
+	report_period_end: str
+	total_events: int
+	events_by_operation: dict[str, int]
+	events_by_table: dict[str, int]
+	users_active: int
+	security_alerts_count: int
+	data_retention_status: dict[str, Any]
+
+	model_config = ConfigDict(extra='forbid')

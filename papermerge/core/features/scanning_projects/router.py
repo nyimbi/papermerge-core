@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.auth import get_current_user
 from papermerge.core.db.engine import get_db
-from papermerge.core.schemas import User
+from papermerge.core.features.users.schema import User
 
 from . import service
 from .ai_advisor import get_project_advisor
@@ -55,6 +55,7 @@ from .views import (
 	ShiftUpdate,
 	ShiftAssignment,
 	ShiftAssignmentCreate,
+	ShiftAssignmentBulkCreate,
 	ProjectCost,
 	ProjectCostCreate,
 	ProjectBudget,
@@ -135,7 +136,7 @@ async def create_project(
 	session: Annotated[AsyncSession, Depends(get_db)],
 ) -> ScanningProject:
 	"""Create a new scanning project."""
-	return await service.create_scanning_project(session, user.tenant_id, data)
+	return await service.create_scanning_project(session, str(user.tenant_id), str(user.id), data)
 
 
 @router.patch("/{project_id}", response_model=ScanningProject)
@@ -890,6 +891,16 @@ async def create_shift_assignment(
 	return await service.create_shift_assignment(session, data)
 
 
+@router.post("/shifts/assignments/bulk", response_model=list[ShiftAssignment])
+async def bulk_create_shift_assignments(
+	data: ShiftAssignmentBulkCreate,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> list[ShiftAssignment]:
+	"""Bulk assign operators to shifts."""
+	return await service.bulk_create_shift_assignments(session, data)
+
+
 # =====================================================
 # Cost Tracking Endpoints
 # =====================================================
@@ -1497,3 +1508,26 @@ async def get_multi_location_dashboard(
 ) -> MultiLocationDashboard:
 	"""Get multi-location dashboard for a project."""
 	return await service.get_multi_location_dashboard(session, project_id, user.tenant_id)
+
+# =====================================================
+# Gamification Endpoints
+# =====================================================
+
+
+@router.get("/gamification/leaderboard", response_model=list[OperatorDailyMetrics])
+async def get_leaderboard(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+	limit: int = Query(10, ge=1, le=50),
+) -> list[OperatorDailyMetrics]:
+	"""Get the daily leaderboard."""
+	return await service.get_leaderboard(session, user.tenant_id, limit)
+
+
+@router.get("/gamification/performance", response_model=list[dict])
+async def get_operator_performance(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> list[dict]:
+	"""Get hourly performance for the current operator."""
+	return await service.get_hourly_performance(session, user.id)

@@ -43,8 +43,8 @@ class Portfolio(Base, AuditColumns):
 	client_name: Mapped[str | None] = mapped_column(String(255))
 	client_id: Mapped[str | None] = mapped_column(String(100))
 
-	# Metadata
-	metadata: Mapped[dict | None] = mapped_column(JSONB)
+	# Portfolio metadata
+	portfolio_metadata: Mapped[dict | None] = mapped_column(JSONB)
 
 	# Relationships
 	cases: Mapped[list["Case"]] = relationship(

@@ -68,7 +68,7 @@ async def create_case(
 		title=case.title,
 		description=case.description,
 		status="open",
-		metadata=case.metadata,
+		case_metadata=case.metadata,
 		created_by=user.id,
 		updated_by=user.id,
 	)
@@ -102,7 +102,7 @@ async def get_case(
 		description=case.description,
 		status=case.status,
 		portfolio_id=case.portfolio_id,
-		metadata=case.metadata,
+		metadata=case.case_metadata,
 		documents=[schema.CaseDocumentInfo.model_validate(d) for d in documents],
 		created_at=case.created_at,
 	)
@@ -127,7 +127,7 @@ async def update_case(
 	if update.status is not None:
 		case.status = update.status
 	if update.metadata is not None:
-		case.metadata = update.metadata
+		case.case_metadata = update.metadata
 
 	case.updated_by = user.id
 	await db_session.commit()

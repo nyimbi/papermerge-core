@@ -3,7 +3,7 @@
 Scanning projects feature test fixtures.
 """
 import pytest
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import date
 

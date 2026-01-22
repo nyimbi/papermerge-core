@@ -119,7 +119,7 @@ class ScannerDiscovery:
 
 			info = ServiceInfo(service_type, name)
 			if await asyncio.to_thread(
-				info.request, zc.zeroconf, 3000
+				info.request, zc, 3000
 			):
 				scanner = self._parse_service_info(name, service_type, info)
 				if scanner:
@@ -173,6 +173,11 @@ class ScannerDiscovery:
 			if '_uscans' in service_type:
 				protocol = 'escl_secure'
 
+			# Ensure root_url has leading slash
+			root_url = txt_records.get('rs', '/eSCL')
+			if root_url and not root_url.startswith('/'):
+				root_url = '/' + root_url
+
 			return DiscoveredScanner(
 				name=name.split('.')[0],  # Remove service suffix
 				host=host,
@@ -182,7 +187,7 @@ class ScannerDiscovery:
 				manufacturer=txt_records.get('mfg') or txt_records.get('manufacturer'),
 				model=txt_records.get('mdl') or txt_records.get('model'),
 				serial=txt_records.get('serialNumber'),
-				root_url=txt_records.get('rs', '/eSCL'),
+				root_url=root_url,
 				txt_records=txt_records,
 			)
 

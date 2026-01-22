@@ -123,8 +123,17 @@ class ScannerResponse(ScannerBase):
 	last_seen_at: datetime | None = None
 	total_pages_scanned: int = 0
 	capabilities: ScannerCapabilitiesResponse | None = None
+	has_api_key: bool = False
 	created_at: datetime
 	updated_at: datetime
+
+
+class ScannerApiKeyResponse(BaseModel):
+	model_config = ConfigDict(extra='forbid')
+
+	scanner_id: str
+	api_key: str
+	message: str = "Store this key securely. It will not be shown again."
 
 
 class ScannerStatusResponse(BaseModel):

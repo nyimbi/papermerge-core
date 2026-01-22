@@ -37,6 +37,7 @@ class ScannerModel(Base):
 	location_id: Mapped[str | None] = mapped_column(String(36))  # Link to scanning_locations
 	is_default: Mapped[bool] = mapped_column(Boolean, default=False)
 	is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+	api_key_hash: Mapped[str | None] = mapped_column(String(128), index=True)
 	notes: Mapped[str | None] = mapped_column(Text)
 
 	# Capabilities cached as JSON
@@ -75,6 +76,7 @@ class ScanJobModel(Base):
 	# Associations
 	project_id: Mapped[str | None] = mapped_column(String(36))
 	batch_id: Mapped[str | None] = mapped_column(String(36))
+	physical_manifest_id: Mapped[str | None] = mapped_column(String(36))
 	destination_folder_id: Mapped[str | None] = mapped_column(String(36))
 
 	# Timestamps

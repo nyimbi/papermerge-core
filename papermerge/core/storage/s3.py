@@ -88,6 +88,8 @@ class S3StorageBackend(StorageBackend):
 		content_type: str | None = None,
 		metadata: dict[str, str] | None = None,
 		tier: StorageTier = StorageTier.HOT,
+		object_lock_mode: str | None = None,
+		object_lock_retain_until: datetime | None = None,
 	) -> UploadResult:
 		full_key = self._full_key(key)
 		body = data if isinstance(data, bytes) else data.read()
@@ -103,6 +105,10 @@ class S3StorageBackend(StorageBackend):
 			params["ContentType"] = content_type
 		if metadata:
 			params["Metadata"] = metadata
+		if object_lock_mode:
+			params["ObjectLockMode"] = object_lock_mode
+		if object_lock_retain_until:
+			params["ObjectLockRetainUntilDate"] = object_lock_retain_until
 
 		try:
 			async with await self._get_client() as client:
@@ -123,6 +129,8 @@ class S3StorageBackend(StorageBackend):
 		content_type: str | None = None,
 		metadata: dict[str, str] | None = None,
 		tier: StorageTier = StorageTier.HOT,
+		object_lock_mode: str | None = None,
+		object_lock_retain_until: datetime | None = None,
 	) -> UploadResult:
 		if not content_type:
 			content_type, _ = mimetypes.guess_type(str(file_path))
@@ -139,6 +147,10 @@ class S3StorageBackend(StorageBackend):
 			params["ContentType"] = content_type
 		if metadata:
 			params["Metadata"] = metadata
+		if object_lock_mode:
+			params["ObjectLockMode"] = object_lock_mode
+		if object_lock_retain_until:
+			params["ObjectLockRetainUntilDate"] = object_lock_retain_until
 
 		try:
 			async with await self._get_client() as client:
@@ -155,12 +167,16 @@ class S3StorageBackend(StorageBackend):
 		except Exception as e:
 			raise StorageError(f"Failed to upload file {key}", e) from e
 
-	async def get(self, key: str) -> bytes:
+	async def get(self, key: str, version_id: str | None = None) -> bytes:
 		full_key = self._full_key(key)
+
+		params = {"Bucket": self.bucket, "Key": full_key}
+		if version_id:
+			params["VersionId"] = version_id
 
 		try:
 			async with await self._get_client() as client:
-				response = await client.get_object(Bucket=self.bucket, Key=full_key)
+				response = await client.get_object(**params)
 				async with response["Body"] as stream:
 					return await stream.read()
 		except Exception as e:
@@ -168,12 +184,16 @@ class S3StorageBackend(StorageBackend):
 				raise ObjectNotFoundError(key)
 			raise StorageError(f"Failed to get {key}", e) from e
 
-	async def get_stream(self, key: str) -> AsyncIterator[bytes]:
+	async def get_stream(self, key: str, version_id: str | None = None) -> AsyncIterator[bytes]:
 		full_key = self._full_key(key)
+
+		params = {"Bucket": self.bucket, "Key": full_key}
+		if version_id:
+			params["VersionId"] = version_id
 
 		try:
 			async with await self._get_client() as client:
-				response = await client.get_object(Bucket=self.bucket, Key=full_key)
+				response = await client.get_object(**params)
 				async with response["Body"] as stream:
 					async for chunk in stream.iter_chunks():
 						yield chunk
@@ -182,12 +202,16 @@ class S3StorageBackend(StorageBackend):
 				raise ObjectNotFoundError(key)
 			raise StorageError(f"Failed to stream {key}", e) from e
 
-	async def get_to_file(self, key: str, file_path: Path) -> None:
+	async def get_to_file(self, key: str, file_path: Path, version_id: str | None = None) -> None:
 		full_key = self._full_key(key)
+
+		params = {"Bucket": self.bucket, "Key": full_key}
+		if version_id:
+			params["VersionId"] = version_id
 
 		try:
 			async with await self._get_client() as client:
-				response = await client.get_object(Bucket=self.bucket, Key=full_key)
+				response = await client.get_object(**params)
 				file_path.parent.mkdir(parents=True, exist_ok=True)
 				with open(file_path, "wb") as f:
 					async with response["Body"] as stream:
@@ -198,12 +222,16 @@ class S3StorageBackend(StorageBackend):
 				raise ObjectNotFoundError(key)
 			raise StorageError(f"Failed to download {key}", e) from e
 
-	async def delete(self, key: str) -> None:
+	async def delete(self, key: str, version_id: str | None = None) -> None:
 		full_key = self._full_key(key)
+
+		params = {"Bucket": self.bucket, "Key": full_key}
+		if version_id:
+			params["VersionId"] = version_id
 
 		try:
 			async with await self._get_client() as client:
-				await client.delete_object(Bucket=self.bucket, Key=full_key)
+				await client.delete_object(**params)
 		except Exception as e:
 			raise StorageError(f"Failed to delete {key}", e) from e
 

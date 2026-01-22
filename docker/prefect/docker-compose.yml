@@ -1,0 +1,51 @@
+# (c) Copyright Datacraft, 2026
+# Prefect services for dArchiva workflow engine
+# This can be composed with the main docker-compose.yml
+
+services:
+  prefect-server:
+    image: prefecthq/prefect:3-python3.13
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4200:4200"
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://pm:pm@postgres:5432/pmdb
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_SERVER_API_PORT: 4200
+      PREFECT_LOGGING_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - darchiva-network
+
+  prefect-worker:
+    build:
+      context: ../..
+      dockerfile: docker/prefect/Dockerfile.worker
+    command: prefect worker start --pool darchiva-workflows
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PM_DB_URL: postgresql://pm:pm@postgres:5432/pmdb
+      PREFECT_LOGGING_LEVEL: INFO
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - papermerge_data:/app/media
+    networks:
+      - darchiva-network
+
+networks:
+  darchiva-network:
+    driver: bridge
+
+# Note: This file is meant to be used with docker compose -f:
+# docker compose -f docker/standard/docker-compose.yml -f docker/prefect/docker-compose.yml up

@@ -30,7 +30,8 @@ from papermerge.core.db import common as dbapi_common
 from papermerge.core.routers.common import OPEN_API_GENERIC_JSON_DETAIL
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.audit.db.audit_context import AsyncAuditContext
-from .schema import DocumentParams
+from .schema import DocumentParams, AnomalyResult
+from .anomaly import AnomalyDetectionService
 from .mime_detection import (
     UnsupportedFileTypeError,
     InvalidFileError,
@@ -435,6 +436,38 @@ async def get_document_details(
     except NoResultFound:
         raise exc.HTTP404NotFound()
     return doc
+
+
+@router.get(
+    "/{document_id}/anomaly",
+    response_model=AnomalyResult,
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_VIEW}` permission on the node",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        }
+    },
+)
+async def detect_document_anomalies(
+        document_id: uuid.UUID,
+        user: require_scopes(scopes.NODE_VIEW),
+        db_session: AsyncSession = Depends(get_db),
+) -> AnomalyResult:
+    """Detect anomalies in document metadata"""
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    service = AnomalyDetectionService(db_session)
+    # Get user's tenant_id if applicable
+    tenant_id = getattr(user, 'tenant_id', None)
+    
+    result = await service.detect_anomalies(document_id, tenant_id=tenant_id)
+    return result
 
 
 @router.patch(

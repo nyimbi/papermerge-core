@@ -1,7 +1,7 @@
 import ConditionalTooltip from "@/components/ConditionalTooltip"
-import {Group, TextInput} from "@mantine/core"
-import type {ChangeEvent, KeyboardEvent} from "react"
-import {RefObject} from "react"
+import { Group, TextInput } from "@mantine/core"
+import type { ChangeEvent, KeyboardEvent } from "react"
+import { RefObject } from "react"
 import EnterKeyButton from "./EnterKeyButton"
 
 import styles from "./Search.module.css"
@@ -48,6 +48,7 @@ export default function SearchInput({
           ref={inputRef}
           variant="unstyled"
           placeholder="Search..."
+          aria-label="Search documents"
           value={inputValue}
           onFocus={handleInputFocus}
           onBlur={handleInputBlur}

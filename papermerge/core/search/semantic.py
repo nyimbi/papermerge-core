@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .backends.base import SearchHit, SearchResult, SearchQuery
 from .embeddings.service import EmbeddingService
+from papermerge.core.features.search.db.orm import DocumentEmbeddingModel
 
 logger = logging.getLogger(__name__)
 
@@ -283,41 +284,22 @@ class SemanticSearch:
 
 		# Store in database
 		async with self.session_factory() as session:
-			from uuid_extensions import uuid7str
-
+			from uuid_extensions import uuid7
+			
 			for i, (chunk, embedding_result) in enumerate(zip(chunks, embeddings)):
-				await session.execute(
-					text("""
-						INSERT INTO document_embeddings (
-							id, document_id, document_version_id, page_id,
-							chunk_index, chunk_text, embedding,
-							model_name, model_version, embedding_dimension,
-							created_at, updated_at
-						) VALUES (
-							:id, :document_id, :document_version_id, :page_id,
-							:chunk_index, :chunk_text, :embedding::float[],
-							:model_name, :model_version, :dimension,
-							NOW(), NOW()
-						)
-						ON CONFLICT (document_id, chunk_index)
-						DO UPDATE SET
-							embedding = EXCLUDED.embedding,
-							chunk_text = EXCLUDED.chunk_text,
-							updated_at = NOW()
-					"""),
-					{
-						'id': uuid7str(),
-						'document_id': document_id,
-						'document_version_id': document_version_id,
-						'page_id': page_id,
-						'chunk_index': i,
-						'chunk_text': chunk,
-						'embedding': embedding_result.embedding,
-						'model_name': embedding_result.model,
-						'model_version': None,
-						'dimension': embedding_result.dimension
-					}
+				embedding_obj = DocumentEmbeddingModel(
+					id=uuid7(),
+					document_id=document_id,
+					document_version_id=document_version_id,
+					page_id=page_id,
+					chunk_index=i,
+					chunk_text=chunk,
+					embedding=embedding_result.embedding,
+					model_name=embedding_result.model,
+					model_version=None,
+					embedding_dimension=embedding_result.dimension
 				)
+				await session.merge(embedding_obj)
 
 			await session.commit()
 

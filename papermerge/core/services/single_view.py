@@ -1,5 +1,6 @@
 # (c) Copyright Datacraft, 2026
 """Single-view (hidden) document access service."""
+import json
 import logging
 import os
 import hashlib
@@ -58,11 +59,11 @@ class SingleViewService:
 		access = HiddenDocumentAccess(
 			document_id=document_id,
 			access_code=access_code,
-			created_by=created_by,
+			requested_by=created_by,
 			expires_at=expires_at,
 			max_views=max_views,
 			require_auth=require_auth,
-			allowed_actions=allowed_actions or ["view"],
+			allowed_actions=json.dumps(allowed_actions or ["view"]),
 		)
 		self.db.add(access)
 		self.db.commit()
@@ -145,15 +146,15 @@ class SingleViewService:
 		access.view_count = (access.view_count or 0) + 1
 		access.last_accessed_at = datetime.now(timezone.utc)
 
-		# Log access details
-		access_log = access.access_log or []
+		# Log access details (stored as JSON text)
+		access_log = json.loads(access.access_log) if access.access_log else []
 		access_log.append({
 			"timestamp": datetime.now(timezone.utc).isoformat(),
 			"user_id": str(user_id) if user_id else None,
 			"ip_address": ip_address,
 			"user_agent": user_agent,
 		})
-		access.access_log = access_log
+		access.access_log = json.dumps(access_log)
 
 		self.db.commit()
 

@@ -11,7 +11,10 @@ from papermerge.core.db.engine import get_db
 from papermerge.core.features.auth.dependencies import require_scopes
 from papermerge.core.features.auth import scopes
 from . import schema
-from .db.orm import Tenant, TenantBranding, TenantSettings
+from .db.orm import (
+	Tenant, TenantBranding, TenantSettings,
+	TenantStorageConfig, TenantAIConfig, TenantSubscription
+)
 
 router = APIRouter(
 	prefix="/tenants",
@@ -404,4 +407,323 @@ async def update_tenant(
 		trial_ends_at=tenant.trial_ends_at,
 		created_at=tenant.created_at,
 		updated_at=tenant.updated_at,
+	)
+
+
+# ==================== Storage Configuration ====================
+
+@router.get("/{tenant_id}/storage")
+async def get_tenant_storage_config(
+	tenant_id: UUID,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.StorageConfigInfo:
+	"""Get tenant storage configuration (system admin only)."""
+	stmt = select(TenantStorageConfig).where(TenantStorageConfig.tenant_id == tenant_id)
+	result = await db_session.execute(stmt)
+	config = result.scalar()
+
+	if config:
+		return schema.StorageConfigInfo.model_validate(config)
+	return schema.StorageConfigInfo()
+
+
+@router.put("/{tenant_id}/storage")
+async def update_tenant_storage_config(
+	tenant_id: UUID,
+	config_data: schema.StorageConfigUpdate,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.StorageConfigInfo:
+	"""Update tenant storage configuration (system admin only)."""
+	tenant = await db_session.get(Tenant, tenant_id)
+	if not tenant:
+		raise HTTPException(status_code=404, detail="Tenant not found")
+
+	stmt = select(TenantStorageConfig).where(TenantStorageConfig.tenant_id == tenant_id)
+	result = await db_session.execute(stmt)
+	config = result.scalar()
+
+	if not config:
+		config = TenantStorageConfig(tenant_id=tenant_id)
+		db_session.add(config)
+
+	update_data = config_data.model_dump(exclude_unset=True)
+	for field, value in update_data.items():
+		setattr(config, field, value)
+
+	config.is_verified = False  # Mark as unverified after changes
+	await db_session.commit()
+	await db_session.refresh(config)
+
+	return schema.StorageConfigInfo.model_validate(config)
+
+
+@router.post("/{tenant_id}/storage/verify")
+async def verify_tenant_storage(
+	tenant_id: UUID,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Verify tenant storage configuration (system admin only)."""
+	from papermerge.core.utils.tz import utc_now
+
+	stmt = select(TenantStorageConfig).where(TenantStorageConfig.tenant_id == tenant_id)
+	result = await db_session.execute(stmt)
+	config = result.scalar()
+
+	if not config:
+		raise HTTPException(status_code=404, detail="Storage not configured")
+
+	# Verify based on provider
+	try:
+		if config.provider == "s3" or config.provider == "linode":
+			import boto3
+			s3_client = boto3.client(
+				's3',
+				endpoint_url=config.endpoint_url,
+				region_name=config.region,
+				aws_access_key_id=config.access_key_id,
+				aws_secret_access_key=config.secret_access_key,
+			)
+			s3_client.head_bucket(Bucket=config.bucket_name)
+
+		config.is_verified = True
+		config.last_verified_at = utc_now()
+		await db_session.commit()
+
+		return {"success": True, "message": "Storage verified successfully"}
+	except Exception as e:
+		return {"success": False, "message": str(e)}
+
+
+# ==================== AI Configuration ====================
+
+@router.get("/{tenant_id}/ai")
+async def get_tenant_ai_config(
+	tenant_id: UUID,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.AIConfigInfo:
+	"""Get tenant AI configuration (system admin only)."""
+	stmt = select(TenantAIConfig).where(TenantAIConfig.tenant_id == tenant_id)
+	result = await db_session.execute(stmt)
+	config = result.scalar()
+
+	if config:
+		return schema.AIConfigInfo.model_validate(config)
+	return schema.AIConfigInfo()
+
+
+@router.put("/{tenant_id}/ai")
+async def update_tenant_ai_config(
+	tenant_id: UUID,
+	config_data: schema.AIConfigUpdate,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.AIConfigInfo:
+	"""Update tenant AI configuration (system admin only)."""
+	tenant = await db_session.get(Tenant, tenant_id)
+	if not tenant:
+		raise HTTPException(status_code=404, detail="Tenant not found")
+
+	stmt = select(TenantAIConfig).where(TenantAIConfig.tenant_id == tenant_id)
+	result = await db_session.execute(stmt)
+	config = result.scalar()
+
+	if not config:
+		config = TenantAIConfig(tenant_id=tenant_id)
+		db_session.add(config)
+
+	update_data = config_data.model_dump(exclude_unset=True)
+	for field, value in update_data.items():
+		setattr(config, field, value)
+
+	await db_session.commit()
+	await db_session.refresh(config)
+
+	return schema.AIConfigInfo.model_validate(config)
+
+
+@router.post("/{tenant_id}/ai/reset-tokens")
+async def reset_tenant_ai_tokens(
+	tenant_id: UUID,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Reset tenant AI token usage (system admin only)."""
+	stmt = select(TenantAIConfig).where(TenantAIConfig.tenant_id == tenant_id)
+	result = await db_session.execute(stmt)
+	config = result.scalar()
+
+	if not config:
+		raise HTTPException(status_code=404, detail="AI not configured")
+
+	config.tokens_used_this_month = 0
+	await db_session.commit()
+
+	return {"success": True, "message": "Token usage reset"}
+
+
+# ==================== Subscription ====================
+
+@router.get("/{tenant_id}/subscription")
+async def get_tenant_subscription(
+	tenant_id: UUID,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.SubscriptionInfo:
+	"""Get tenant subscription (system admin only)."""
+	stmt = select(TenantSubscription).where(TenantSubscription.tenant_id == tenant_id)
+	result = await db_session.execute(stmt)
+	subscription = result.scalar()
+
+	if subscription:
+		return schema.SubscriptionInfo.model_validate(subscription)
+	return schema.SubscriptionInfo()
+
+
+@router.put("/{tenant_id}/subscription")
+async def update_tenant_subscription(
+	tenant_id: UUID,
+	sub_data: schema.SubscriptionUpdate,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.SubscriptionInfo:
+	"""Update tenant subscription (system admin only)."""
+	tenant = await db_session.get(Tenant, tenant_id)
+	if not tenant:
+		raise HTTPException(status_code=404, detail="Tenant not found")
+
+	stmt = select(TenantSubscription).where(TenantSubscription.tenant_id == tenant_id)
+	result = await db_session.execute(stmt)
+	subscription = result.scalar()
+
+	if not subscription:
+		subscription = TenantSubscription(tenant_id=tenant_id)
+		db_session.add(subscription)
+
+	update_data = sub_data.model_dump(exclude_unset=True)
+	for field, value in update_data.items():
+		setattr(subscription, field, value)
+
+	# Sync limits to tenant
+	if sub_data.max_users is not None:
+		tenant.max_users = sub_data.max_users
+	if sub_data.max_storage_gb is not None:
+		tenant.max_storage_gb = sub_data.max_storage_gb
+
+	await db_session.commit()
+	await db_session.refresh(subscription)
+
+	return schema.SubscriptionInfo.model_validate(subscription)
+
+
+# ==================== Full Tenant Provisioning ====================
+
+@router.post("/provision")
+async def provision_tenant(
+	provision_data: schema.TenantProvisionRequest,
+	user: require_scopes(scopes.SYSTEM_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.TenantProvisionResponse:
+	"""Provision a complete new tenant with storage, AI, and admin user (system admin only)."""
+	import secrets
+	from papermerge.core.features.users.db.orm import User
+	from papermerge.core.utils.security import hash_password
+
+	# Check slug uniqueness
+	stmt = select(Tenant).where(Tenant.slug == provision_data.slug)
+	if await db_session.scalar(stmt):
+		raise HTTPException(status_code=400, detail="Slug already exists")
+
+	# Create tenant
+	tenant = Tenant(
+		name=provision_data.name,
+		slug=provision_data.slug,
+		contact_email=provision_data.contact_email,
+		billing_email=provision_data.billing_email or provision_data.contact_email,
+		plan=provision_data.plan,
+		max_users=provision_data.max_users,
+		max_storage_gb=provision_data.max_storage_gb,
+	)
+	db_session.add(tenant)
+	await db_session.flush()
+
+	# Create branding
+	branding = TenantBranding(tenant_id=tenant.id)
+	db_session.add(branding)
+
+	# Create settings
+	settings = TenantSettings(
+		tenant_id=tenant.id,
+		storage_quota_gb=provision_data.max_storage_gb,
+		ai_features_enabled=provision_data.ai_monthly_tokens is not None,
+	)
+	db_session.add(settings)
+
+	# Create storage config
+	storage_configured = False
+	if provision_data.storage_provider != "local":
+		storage = TenantStorageConfig(
+			tenant_id=tenant.id,
+			provider=provision_data.storage_provider,
+			bucket_name=provision_data.storage_bucket or f"darchiva-{tenant.slug}",
+			region=provision_data.storage_region,
+			endpoint_url=provision_data.storage_endpoint,
+		)
+		db_session.add(storage)
+		storage_configured = True
+
+	# Create AI config
+	ai_configured = False
+	if provision_data.ai_monthly_tokens:
+		ai_config = TenantAIConfig(
+			tenant_id=tenant.id,
+			provider=provision_data.ai_provider,
+			monthly_token_limit=provision_data.ai_monthly_tokens,
+		)
+		db_session.add(ai_config)
+		ai_configured = True
+
+	# Create subscription
+	subscription = TenantSubscription(
+		tenant_id=tenant.id,
+		plan=provision_data.plan,
+		billing_cycle=provision_data.billing_cycle,
+		max_users=provision_data.max_users,
+		max_storage_gb=provision_data.max_storage_gb,
+		ai_tokens_per_month=provision_data.ai_monthly_tokens,
+	)
+	db_session.add(subscription)
+
+	# Create admin user
+	admin_user = None
+	setup_link = None
+	password = provision_data.admin_password or secrets.token_urlsafe(16)
+
+	admin_user = User(
+		tenant_id=tenant.id,
+		email=provision_data.admin_email,
+		username=provision_data.admin_email.split("@")[0],
+		password_hash=hash_password(password),
+		is_active=True,
+		is_superuser=False,  # Tenant admin, not system admin
+	)
+	db_session.add(admin_user)
+	await db_session.flush()
+
+	if not provision_data.admin_password:
+		# Generate setup link (would be emailed in production)
+		setup_token = secrets.token_urlsafe(32)
+		setup_link = f"/setup?token={setup_token}&tenant={tenant.slug}"
+
+	await db_session.commit()
+
+	return schema.TenantProvisionResponse(
+		tenant=schema.TenantInfo.model_validate(tenant),
+		storage_configured=storage_configured,
+		ai_configured=ai_configured,
+		admin_user_id=admin_user.id if admin_user else None,
+		setup_link=setup_link,
 	)

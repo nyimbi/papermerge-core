@@ -10,6 +10,9 @@ from papermerge.core.utils.tz import utc_now
 from papermerge.core.db.base import Base
 from papermerge.core import constants as const
 
+# Default tenant ID for single-tenant / local development deployments
+DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+
 
 class User(Base):
     __tablename__ = "users"
@@ -18,6 +21,14 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(const.USERNAME_MAX_LENGTH), unique=True)
     email: Mapped[str] = mapped_column(String(const.EMAIL_MAX_LENGTH), unique=True)
     password: Mapped[str] = mapped_column(String(const.PASSWORD_MAX_LENGTH), nullable=False)
+
+    # Tenant association for multi-tenancy
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        default=DEFAULT_TENANT_ID,
+        nullable=False,
+        index=True,
+    )
     first_name: Mapped[str | None] = mapped_column(String(const.NAME_MAX_LENGTH), default=None)
     last_name: Mapped[str | None] = mapped_column(String(const.NAME_MAX_LENGTH), default=None)
     is_superuser: Mapped[bool] = mapped_column(default=False)
@@ -96,10 +107,23 @@ class User(Base):
         foreign_keys="UserGroup.user_id"
     )
 
+    user_departments: Mapped[list["UserDepartment"]] = relationship(
+        "UserDepartment",
+        back_populates="user",
+        foreign_keys="UserDepartment.user_id"
+    )
+
     api_tokens: Mapped[list["APIToken"]] = relationship(
         "APIToken",
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+
+    # Tenant relationship
+    tenant: Mapped["Tenant"] = relationship(
+        "Tenant",
+        foreign_keys=[tenant_id],
+        lazy="joined",
     )
 
     @property
@@ -180,6 +204,11 @@ class User(Base):
     def active_groups(self):
         """Get list of active (non-deleted) groups for this user"""
         return [ug.group for ug in self.user_groups if ug.deleted_at is None]
+
+    @property
+    def active_departments(self):
+        """Get list of active (non-deleted) departments for this user"""
+        return [ud.department for ud in self.user_departments if ud.deleted_at is None]
 
     def __repr__(self):
         return f"User({self.id=}, {self.username=})"

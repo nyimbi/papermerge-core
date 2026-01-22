@@ -142,15 +142,55 @@ def process_email_attachments(email_import_id: str, owner_id: str):
 					continue
 
 				try:
-					# TODO: Create document from attachment content
-					# This would involve:
-					# 1. Getting the attachment content from storage
-					# 2. Creating a Document with the content
-					# 3. Updating attachment.document_id
-					# 4. Triggering OCR if applicable
+					from papermerge.core.features.document.db import api as doc_dbapi
+					from papermerge.core.features.document import schema as doc_schema
+					from papermerge.core.lib.mime import detect_and_validate_mime_type
+					from papermerge.storage.base import get_storage_backend
+					from papermerge.core import pathlib as plib
+					from uuid_extensions import uuid7
 
+					# Get attachment content from storage
+					storage = get_storage_backend()
+					content = await storage.download_file(attachment.storage_key)
+
+					doc_id = uuid7()
+					ver_id = uuid7()
+					mime_type = detect_and_validate_mime_type(
+						content[:8192], attachment.filename, validate_structure=False
+					)
+
+					# Upload to document storage
+					object_key = str(plib.docver_path(ver_id, file_name=attachment.filename))
+					await storage.upload_bytes(content, object_key, str(mime_type))
+
+					# Create document
+					new_doc = doc_schema.NewDocument(
+						id=doc_id,
+						title=attachment.filename,
+						lang="eng",
+						parent_id=email_import.target_folder_id,
+						size=len(content),
+						page_count=0,
+						ocr=True,
+						file_name=attachment.filename,
+						ctype="document",
+					)
+					doc = await doc_dbapi.create_document(
+						session, new_doc, mime_type=mime_type, document_version_id=ver_id
+					)
+
+					attachment.document_id = doc.id
 					attachment.import_status = "imported"
-					logger.info(f"Processed attachment: {attachment.filename}")
+
+					# Trigger processing
+					send_task("process_upload", kwargs={
+						"document_id": str(doc_id),
+						"document_version_id": str(ver_id),
+						"lang": "eng",
+						"user_id": str(owner_id),
+					})
+
+					logger.info(f"Imported attachment: {attachment.filename} -> {doc_id}")
 
 				except Exception as e:
 					attachment.import_status = "failed"

@@ -16,7 +16,7 @@ from sqlalchemy import (
 	Enum,
 	Index,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_extensions import uuid7str
 
@@ -25,6 +25,7 @@ from papermerge.core.db.base import Base
 if TYPE_CHECKING:
 	from papermerge.core.features.batches.db.orm import ScanBatch
 	from papermerge.core.features.users.db.orm import User
+	from papermerge.core.features.inventory.db.orm import PhysicalManifest
 
 
 class VerificationStatus(str, enum.Enum):
@@ -125,6 +126,11 @@ class DocumentProvenance(Base):
 		String(32),
 		ForeignKey("scan_batches.id", ondelete="SET NULL"),
 	)
+	# Link to physical manifest
+	physical_manifest_id: Mapped[UUID | None] = mapped_column(
+		PG_UUID(as_uuid=True),
+		ForeignKey("physical_manifests.id", ondelete="SET NULL"),
+	)
 
 	# Original file information
 	original_filename: Mapped[str | None] = mapped_column(String(500))
@@ -134,6 +140,7 @@ class DocumentProvenance(Base):
 
 	# Current file hash (for integrity verification)
 	current_file_hash: Mapped[str | None] = mapped_column(String(128))
+	blake3_hash: Mapped[str | None] = mapped_column(String(64))
 	last_hash_verified_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 	# Physical source details
@@ -186,7 +193,7 @@ class DocumentProvenance(Base):
 	# Perceptual hash
 
 	# Additional metadata
-	metadata: Mapped[dict | None] = mapped_column(JSONB)
+	extra_data: Mapped[dict | None] = mapped_column(JSONB)
 
 	# Timestamps
 	created_at: Mapped[datetime] = mapped_column(
@@ -207,6 +214,9 @@ class DocumentProvenance(Base):
 	batch: Mapped["ScanBatch | None"] = relationship(
 		"ScanBatch",
 		back_populates="documents",
+	)
+	physical_manifest: Mapped["PhysicalManifest | None"] = relationship(
+		"PhysicalManifest",
 	)
 	events: Mapped[list["ProvenanceEvent"]] = relationship(
 		"ProvenanceEvent",

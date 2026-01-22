@@ -6,7 +6,10 @@ import time
 from collections import abc, namedtuple
 from typing import Optional
 
-from pikepdf import Pdf
+try:
+    from pikepdf import Pdf
+except ImportError:
+    Pdf = None  # PDF operations will fail if pikepdf is not installed
 
 from papermerge.core.storage import abs_path, get_storage_instance
 from papermerge.core.types import DocumentVersion

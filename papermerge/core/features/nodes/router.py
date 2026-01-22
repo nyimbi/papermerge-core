@@ -26,6 +26,38 @@ logger = logging.getLogger(__name__)
 settings = config.get_settings()
 
 
+@router.get("/tree")
+async def get_folder_tree(
+    user: require_scopes(scopes.NODE_VIEW),
+    db_session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Returns a tree of folders for navigation.
+
+    Required scope: `node.view`
+    """
+    # Return empty tree for now - can be expanded to fetch actual folder structure
+    return {"nodes": []}
+
+
+@router.get("/")
+async def get_root_nodes(
+    user: require_scopes(scopes.NODE_VIEW),
+    params: NodeParams = Depends(),
+    db_session: AsyncSession = Depends(get_db),
+) -> PaginatedResponse[Union[schema.DocumentEx, schema.FolderEx]]:
+    """Returns nodes from user's home folder (root view).
+
+    Required scope: `node.view`
+    """
+    # Return empty paginated response for root view
+    return PaginatedResponse(
+        page_size=params.page_size,
+        page_number=params.page_number,
+        num_pages=0,
+        items=[],
+    )
+
+
 @router.get(
     "/{parent_id}",
     response_model=PaginatedResponse[Union[schema.DocumentEx, schema.FolderEx]],

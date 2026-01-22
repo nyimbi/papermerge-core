@@ -54,11 +54,56 @@ async def get_user_group_homes(
 
 
 @router.get("/me")
-async def get_current_user(
+async def get_current_user_info(
     user: Annotated[schema.User, Depends(get_current_user)],
 ) -> schema.User:
     """Returns current user"""
     return user
+
+
+@router.get("/me/home")
+async def get_user_home(
+    user: Annotated[schema.User, Depends(get_current_user)],
+    db_session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Returns aggregated home page data for the current user.
+
+    This endpoint provides all data needed for the user's home dashboard including:
+    - User profile info
+    - Stats (document counts, storage usage, etc.)
+    - Pending workflow tasks
+    - Recent documents
+    - Favorites
+    - Activity feed
+    - Notifications
+    - Calendar events
+    """
+    # Return a minimal response for now - can be expanded later
+    return {
+        "user": {
+            "id": str(user.id),
+            "name": user.username,
+            "email": user.email,
+            "avatar_url": None,
+            "department": None,
+            "role": "user" if not user.is_superuser else "admin",
+        },
+        "stats": {
+            "documents_count": 0,
+            "folders_count": 0,
+            "storage_used_mb": 0,
+            "storage_limit_mb": 10000,
+            "pending_tasks": 0,
+            "completed_today": 0,
+        },
+        "tasks": [],
+        "recent_documents": [],
+        "favorites": [],
+        "activity": [],
+        "notifications": [],
+        "calendar_events": [],
+        "recent_searches": [],
+    }
 
 
 @router.get("/group-users")

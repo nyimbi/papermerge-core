@@ -1,5 +1,5 @@
-import {useAppDispatch, useAppSelector} from "@/app/hooks"
-import {useAuth} from "@/app/hooks/useAuth"
+import { useAppDispatch, useAppSelector } from "@/app/hooks"
+import { useAuth } from "@/app/hooks/useAuth"
 import {
   selectNavBarCollapsed,
   selectNavBarLastMenuItem,
@@ -20,7 +20,7 @@ import {
   selectCurrentUserError,
   selectCurrentUserStatus
 } from "@/slices/currentUser.ts"
-import {Center, Group, Loader, Skeleton, Text} from "@mantine/core"
+import { Center, Group, Loader, Skeleton, Text } from "@mantine/core"
 import {
   IconCategory2,
   IconClipboardList,
@@ -34,13 +34,13 @@ import {
   IconUsers,
   IconUsersGroup
 } from "@tabler/icons-react"
-import {useEffect, useState} from "react"
+import { useEffect, useState } from "react"
 
-import {useSelector} from "react-redux"
-import {NavLink, useLocation} from "react-router-dom"
+import { useSelector } from "react-redux"
+import { NavLink, useLocation } from "react-router-dom"
 
-import {useGetVersionQuery} from "@/features/version/apiSlice"
-import {useTranslation} from "react-i18next"
+import { useGetVersionQuery } from "@/features/version/apiSlice"
+import { useTranslation } from "react-i18next"
 
 export default function NavBar() {
   const collapsed = useSelector(selectNavBarCollapsed)
@@ -57,7 +57,7 @@ type NavLinkState = {
   isPending: boolean
 }
 
-type ResponsiveLink = ({isActive, isPending}: NavLinkState) => React.JSX.Element
+type ResponsiveLink = ({ isActive, isPending }: NavLinkState) => React.JSX.Element
 type RenderLinkFunc = (text: string, icon: React.JSX.Element) => ResponsiveLink
 
 interface NavItemArgs {
@@ -69,9 +69,9 @@ interface NavItemArgs {
   renderLink: RenderLinkFunc
 }
 
-function NavItem({to, label, icon, permission, renderLink}: NavItemArgs) {
+function NavItem({ to, label, icon, permission, renderLink }: NavItemArgs) {
   const dispatch = useAppDispatch()
-  const {hasPermission} = useAuth()
+  const { hasPermission } = useAuth()
   const lastCurrentMenuItem = useAppSelector(selectNavBarLastMenuItem)
 
   const location = useLocation()
@@ -96,12 +96,13 @@ function NavItem({to, label, icon, permission, renderLink}: NavItemArgs) {
   return (
     <NavLink
       to={to}
-      className={({isActive}) =>
+      className={({ isActive }) =>
         isActive || isActiveByLastMenuItemState ? "active" : ""
       }
       onClick={onClick}
+      aria-label={label}
     >
-      {({isActive}) =>
+      {({ isActive }) =>
         renderLink(
           label,
           icon
@@ -119,10 +120,10 @@ interface Args {
   withVersion?: boolean
 }
 
-function NavBarContent({renderLink, withVersion}: Args) {
-  const {t} = useTranslation()
-  const {user} = useAuth()
-  const {data, isLoading} = useGetVersionQuery()
+function NavBarContent({ renderLink, withVersion }: Args) {
+  const { t } = useTranslation()
+  const { user } = useAuth()
+  const { data, isLoading } = useGetVersionQuery()
 
   const status = useSelector(selectCurrentUserStatus)
   const error = useSelector(selectCurrentUserError)
@@ -246,7 +247,7 @@ function NavLinkWithFeedback(
   text: string,
   icon: React.JSX.Element
 ): ResponsiveLink {
-  return ({isPending}) => {
+  return ({ isPending }) => {
     if (isPending) {
       return (
         <Group>
@@ -257,7 +258,7 @@ function NavLinkWithFeedback(
     }
     return (
       <Group>
-        {icon}
+        {icon && <span aria-hidden="true">{icon}</span>}
         {text}
       </Group>
     )
@@ -265,7 +266,7 @@ function NavLinkWithFeedback(
 }
 
 function NavLinkWithFeedbackShort(icon: React.JSX.Element): ResponsiveLink {
-  return ({isPending}) => {
+  return ({ isPending }) => {
     if (isPending) {
       return (
         <Group>
@@ -273,7 +274,7 @@ function NavLinkWithFeedbackShort(icon: React.JSX.Element): ResponsiveLink {
         </Group>
       )
     }
-    return <Group>{icon}</Group>
+    return <Group aria-hidden="true">{icon}</Group>
   }
 }
 

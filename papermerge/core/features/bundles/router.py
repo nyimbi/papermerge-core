@@ -62,9 +62,9 @@ async def create_bundle(
 	db_bundle = Bundle(
 		tenant_id=user.tenant_id,
 		case_id=bundle.case_id,
-		name=bundle.name,
+		title=bundle.name,
 		description=bundle.description,
-		bundle_type=bundle.bundle_type,
+		bundle_metadata={"bundle_type": bundle.bundle_type} if bundle.bundle_type else None,
 		status="draft",
 		created_by=user.id,
 		updated_by=user.id,
@@ -103,9 +103,9 @@ async def get_bundle(
 
 	return schema.BundleDetail(
 		id=bundle.id,
-		name=bundle.name,
+		name=bundle.title,
 		description=bundle.description,
-		bundle_type=bundle.bundle_type,
+		bundle_type=bundle.bundle_metadata.get("bundle_type") if bundle.bundle_metadata else None,
 		status=bundle.status,
 		case_id=bundle.case_id,
 		documents=[schema.BundleDocumentInfo.model_validate(d) for d in documents],

@@ -552,3 +552,12 @@ class DocVerLang(BaseModel):
 class UpdateDocVerLang(BaseModel):
     """Request model for updating document version lang attribute"""
     lang: DocumentLang
+
+
+class AnomalyResult(BaseModel):
+    """Result of anomaly detection for a document"""
+    document_id: UUID
+    is_anomaly: bool
+    score: float
+    reasons: list[str]
+    metadata: dict[str, Any] = Field(default_factory=dict)

@@ -86,6 +86,9 @@ class IngestionJob(Base):
 	source_id: Mapped[UUID] = mapped_column(
 		ForeignKey("ingestion_sources.id", ondelete="CASCADE"), nullable=False, index=True
 	)
+	batch_id: Mapped[UUID | None] = mapped_column(
+		ForeignKey("ingestion_batches.id", ondelete="SET NULL"), index=True
+	)
 
 	# Source info
 	source_path: Mapped[str | None] = mapped_column(String(1000))
@@ -96,6 +99,7 @@ class IngestionJob(Base):
 		String(50), default=JobStatus.PENDING.value, nullable=False
 	)
 	error_message: Mapped[str | None] = mapped_column(Text)
+	retry_count: Mapped[int] = mapped_column(Integer, default=0)
 
 	# Result
 	document_id: Mapped[UUID | None] = mapped_column(
@@ -114,4 +118,93 @@ class IngestionJob(Base):
 	__table_args__ = (
 		Index("idx_ingestion_jobs_source", "source_id"),
 		Index("idx_ingestion_jobs_status", "status"),
+		Index("idx_ingestion_jobs_batch", "batch_id"),
+	)
+
+
+class IngestionBatch(Base):
+	"""Group of ingestion jobs for batch processing."""
+	__tablename__ = "ingestion_batches"
+
+	id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+	tenant_id: Mapped[UUID] = mapped_column(
+		ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+	)
+	name: Mapped[str | None] = mapped_column(String(255))
+	template_id: Mapped[UUID | None] = mapped_column(
+		ForeignKey("ingestion_templates.id", ondelete="SET NULL")
+	)
+
+	# Progress
+	total_files: Mapped[int] = mapped_column(Integer, default=0)
+	processed_files: Mapped[int] = mapped_column(Integer, default=0)
+	failed_files: Mapped[int] = mapped_column(Integer, default=0)
+	status: Mapped[str] = mapped_column(String(50), default="pending")
+
+	# Timing
+	started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+	completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+	created_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, nullable=False
+	)
+	created_by: Mapped[UUID | None] = mapped_column(
+		ForeignKey("users.id", ondelete="SET NULL")
+	)
+
+	__table_args__ = (
+		Index("idx_ingestion_batches_tenant", "tenant_id", "status"),
+	)
+
+
+class IngestionTemplate(Base):
+	"""Reusable ingestion configuration templates."""
+	__tablename__ = "ingestion_templates"
+
+	id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+	tenant_id: Mapped[UUID] = mapped_column(
+		ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+	)
+	name: Mapped[str] = mapped_column(String(255), nullable=False)
+	description: Mapped[str | None] = mapped_column(Text)
+
+	# Configuration
+	target_folder_id: Mapped[UUID | None] = mapped_column(
+		ForeignKey("nodes.id", ondelete="SET NULL")
+	)
+	document_type_id: Mapped[UUID | None] = mapped_column(
+		ForeignKey("document_types.id", ondelete="SET NULL")
+	)
+	apply_ocr: Mapped[bool] = mapped_column(Boolean, default=True)
+	auto_classify: Mapped[bool] = mapped_column(Boolean, default=False)
+	duplicate_check: Mapped[bool] = mapped_column(Boolean, default=True)
+
+	# Validation rules (JSON)
+	validation_rules: Mapped[dict | None] = mapped_column(JSONB)
+
+	is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+	created_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, nullable=False
+	)
+
+
+class IngestionValidationRule(Base):
+	"""Validation rules for ingestion."""
+	__tablename__ = "ingestion_validation_rules"
+
+	id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+	tenant_id: Mapped[UUID] = mapped_column(
+		ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+	)
+	name: Mapped[str] = mapped_column(String(255), nullable=False)
+	rule_type: Mapped[str] = mapped_column(String(50), nullable=False)  # file_size, file_type, naming
+
+	# Rule configuration
+	config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+	# file_size: {"max_mb": 50, "min_mb": 0}
+	# file_type: {"allowed": ["pdf", "tiff", "jpg"], "blocked": []}
+	# naming: {"pattern": "^[A-Z]{3}-\\d{6}.*", "required": true}
+
+	is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+	created_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, nullable=False
 	)

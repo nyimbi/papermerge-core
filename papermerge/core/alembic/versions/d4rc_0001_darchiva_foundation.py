@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'd4rc_0001'
-down_revision: Union[str, None] = None
+down_revision: Union[str, None] = 'bb19aac50bca'  # Extends core papermerge migrations
 branch_labels: Union[str, Sequence[str], None] = ('darchiva',)
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -504,29 +504,11 @@ def upgrade() -> None:
 	op.create_index('idx_ingestion_jobs_source', 'ingestion_jobs', ['source_id'])
 	op.create_index('idx_ingestion_jobs_status', 'ingestion_jobs', ['status'])
 
-	# User preferences
-	op.create_table(
-		'user_preferences',
-		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
-		sa.Column('user_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('users.id', ondelete='CASCADE'), unique=True, nullable=False),
-		sa.Column('theme', sa.String(20), server_default='system'),
-		sa.Column('accent_color', sa.String(20), server_default='blue'),
-		sa.Column('language', sa.String(10), server_default='en'),
-		sa.Column('timezone', sa.String(50), server_default='UTC'),
-		sa.Column('date_format', sa.String(20), server_default='YYYY-MM-DD'),
-		sa.Column('sidebar_collapsed', sa.Boolean, server_default='false'),
-		sa.Column('default_view', sa.String(20), server_default='grid'),
-		sa.Column('items_per_page', sa.Integer, server_default='25'),
-		sa.Column('email_notifications', sa.Boolean, server_default='true'),
-		sa.Column('push_notifications', sa.Boolean, server_default='true'),
-		sa.Column('digest_frequency', sa.String(20), server_default='daily'),
-		sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.func.now()),
-		sa.Column('updated_at', postgresql.TIMESTAMP(timezone=True), server_default=sa.func.now()),
-	)
+	# Note: user_preferences table already exists from core migration f9c92867b8a4
 
 
 def downgrade() -> None:
-	op.drop_table('user_preferences')
+	# Note: don't drop user_preferences - managed by core migrations
 	op.drop_table('ingestion_jobs')
 	op.drop_table('ingestion_sources')
 	op.drop_index('idx_hidden_docs', 'nodes')

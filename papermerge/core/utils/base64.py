@@ -31,7 +31,9 @@ def decode(s: str) -> Mapping:
     if rem > 0:
         s += "=" * (4 - rem)
 
-    json_str = base64.b64decode(s).decode()
+    # Use urlsafe_b64decode to handle both standard and URL-safe base64
+    # (URL-safe uses - and _ instead of + and /)
+    json_str = base64.urlsafe_b64decode(s).decode()
     return json.loads(json_str)
 
 

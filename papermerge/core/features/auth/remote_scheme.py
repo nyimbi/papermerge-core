@@ -1,12 +1,13 @@
 from fastapi import Request
 
 from papermerge.core.features.users import schema
-from papermerge.core.config import settings
+from papermerge.core.config import get_settings
 
 
 class RemoteUserScheme:
 
     async def __call__(self, request: Request) -> schema.RemoteUser | None:
+        settings = get_settings()
         user_header_name = settings.remote_user_header
         groups_header_name = settings.remote_groups_header
         roles_header_name = settings.remote_roles_header

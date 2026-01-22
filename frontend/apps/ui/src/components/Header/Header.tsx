@@ -1,11 +1,11 @@
-import {Group, useMantineTheme} from "@mantine/core"
+import { Group, useMantineTheme } from "@mantine/core"
 import logoURL from "/logo_transparent_bg.svg"
 
 import classes from "./Header.module.css"
 
-import {ClearNotificationsButton} from "@/features/notifications/components/ClearButton"
+import { ClearNotificationsButton } from "@/features/notifications/components/ClearButton"
 import Search from "@/features/search/components/Search"
-import {useNavigate} from "react-router"
+import { useNavigate } from "react-router"
 import UploadButton from "../../features/files/components/UploadButton"
 import SidebarToggle from "./SidebarToggle"
 import UserMenu from "./UserMenu"
@@ -29,7 +29,7 @@ function Header() {
       <Group className={classes.inner}>
         <Group>
           <SidebarToggle />
-          <img src={logoURL} width={"30px"} />
+          <img src={logoURL} width={"30px"} alt="ArchivaPro Logo" />
           <UploadButton />
         </Group>
         <Group className={classes.searchWrapper}>

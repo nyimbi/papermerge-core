@@ -380,12 +380,92 @@ class IngestionService:
 		content: bytes,
 		metadata: dict,
 	) -> UUID:
-		"""Default document processing - just create a document record."""
-		from papermerge.core.features.document.db.orm import Document
+		"""Default document processing - create document and trigger OCR."""
+		import tempfile
+		from pathlib import Path
 		from uuid_extensions import uuid7
+		from sqlalchemy.ext.asyncio import AsyncSession
+
+		from papermerge.core.features.document.db import api as doc_dbapi
+		from papermerge.core.features.document import schema as doc_schema
+		from papermerge.core.features.nodes.db.api import get_node_by_id
+		from papermerge.core.lib.mime import detect_and_validate_mime_type
+		from papermerge.core.tasks import send_task
+		from papermerge.core import pathlib as plib
+		from papermerge.storage.base import get_storage_backend
 
 		doc_id = uuid7()
-		# This is a placeholder - actual implementation would
-		# create the document through the document service
-		logger.info(f"Would create document {doc_id} with metadata: {metadata}")
+		document_version_id = uuid7()
+		filename = metadata.get("original_filename", f"document_{doc_id}.pdf")
+
+		# Detect mime type
+		mime_type = detect_and_validate_mime_type(
+			content[:8192],
+			filename,
+			validate_structure=False
+		)
+
+		# Get tenant's inbox folder for ingested documents
+		from papermerge.core.features.tenants.db.orm import Tenant
+		tenant = self.db.get(Tenant, tenant_id)
+		if not tenant:
+			raise ValueError(f"Tenant not found: {tenant_id}")
+
+		# Use tenant's default inbox or a configured ingestion folder
+		parent_id = tenant.inbox_folder_id
+
+		# Upload to storage
+		storage = get_storage_backend()
+		object_key = str(plib.docver_path(document_version_id, file_name=filename))
+
+		with tempfile.NamedTemporaryFile(delete=False) as tmp:
+			tmp.write(content)
+			tmp_path = Path(tmp.name)
+
+		try:
+			await storage.upload_file_from_path(
+				file_path=tmp_path,
+				object_key=object_key,
+				content_type=str(mime_type),
+			)
+		finally:
+			tmp_path.unlink(missing_ok=True)
+
+		# Create document in database
+		new_document = doc_schema.NewDocument(
+			id=doc_id,
+			title=filename,
+			lang=metadata.get("language", "eng"),
+			parent_id=parent_id,
+			size=len(content),
+			page_count=0,
+			ocr=metadata.get("ocr", True),
+			file_name=filename,
+			ctype="document",
+		)
+
+		# Need async session for document creation
+		from papermerge.core.db.engine import get_async_session_maker
+		async_session = get_async_session_maker()
+
+		async with async_session() as session:
+			doc = await doc_dbapi.create_document(
+				session,
+				new_document,
+				mime_type=mime_type,
+				document_version_id=document_version_id
+			)
+
+		# Trigger post-upload processing (page extraction, OCR)
+		send_task(
+			"process_upload",
+			kwargs={
+				"document_id": str(doc_id),
+				"document_version_id": str(document_version_id),
+				"lang": metadata.get("language", "eng"),
+				"user_id": str(metadata.get("user_id", tenant.owner_id)),
+			},
+		)
+
+		logger.info(f"Created document {doc_id} from ingestion: {filename}")
 		return doc_id

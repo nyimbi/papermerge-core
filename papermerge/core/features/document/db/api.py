@@ -1,12 +1,17 @@
+from __future__ import annotations
 import math
 import io
 import logging
 import os
 from os.path import getsize
 import uuid
-from typing import Tuple, Sequence, Any, Optional, Dict
+from typing import Tuple, Sequence, Any, Optional, Dict, TYPE_CHECKING
 
-from pikepdf import Pdf
+try:
+    from pikepdf import Pdf
+except ImportError:
+    Pdf = None  # PDF operations will fail if pikepdf is not installed
+
 from sqlalchemy import (
     delete,
     func,
@@ -549,7 +554,83 @@ async def create_document(
 
     await db_session.commit()
 
-    return doc
+async def bulk_create_documents(
+    db_session: AsyncSession,
+    documents_data: list[tuple[schema.NewDocument, MimeType]],
+) -> list[orm.Document]:
+    """
+    Create multiple documents in a single batch.
+    Optimized for high-volume ingestion (e.g., scanning).
+    """
+    if not documents_data:
+        return []
+
+    # Assume all documents in a batch go to the same parent for now (common in scanning)
+    # If not, we'd need to group them by parent_id
+    first_attrs, _ = documents_data[0]
+    parent_id = first_attrs.parent_id
+
+    # Get parent's owner once
+    parent_owner = await get_node_owner(db_session, node_id=parent_id)
+    if parent_owner.type == "user":
+        owner_type = OwnerType.USER
+        owner_id = parent_owner.id
+    else:
+        owner_type = OwnerType.GROUP
+        owner_id = parent_owner.id
+
+    created_docs = []
+    doc_ids = []
+    
+    for attrs, mime_type in documents_data:
+        doc_id = attrs.id or uuid.uuid4()
+        
+        doc = orm.Document(
+            id=doc_id,
+            title=attrs.title,
+            ctype="document",
+            ocr_status=attrs.ocr_status,
+            parent_id=attrs.parent_id,
+            ocr=attrs.ocr,
+            lang=attrs.lang,
+            processing_status="uploaded",
+            created_by=attrs.created_by,
+            updated_by=attrs.updated_by
+        )
+        
+        doc_ver = orm.DocumentVersion(
+            id=uuid.uuid4(),
+            document_id=doc_id,
+            number=1,
+            file_name=attrs.file_name,
+            size=0,
+            page_count=0,
+            lang=attrs.lang,
+            mime_type=mime_type,
+            short_description="Original",
+            is_original=True,
+            creation_reason="upload",
+            created_by=attrs.created_by,
+            updated_by=attrs.updated_by
+        )
+        
+        db_session.add(doc)
+        db_session.add(doc_ver)
+        created_docs.append(doc)
+        doc_ids.append(doc_id)
+
+    await db_session.flush()
+
+    # Set ownership in bulk
+    await ownership_api.set_owners(
+        session=db_session,
+        resource_type=ResourceType.NODE,
+        resource_ids=doc_ids,
+        owner=types.Owner(owner_type=owner_type, owner_id=owner_id)
+    )
+
+    await db_session.commit()
+    return created_docs
 
 
 async def version_bump(

@@ -456,7 +456,7 @@ class InvoiceLineItem(Base):
 	tax_code: Mapped[str | None] = mapped_column(String(50))
 
 	# Metadata
-	metadata: Mapped[dict | None] = mapped_column(JSONB)
+	extra_data: Mapped[dict | None] = mapped_column(JSONB)
 
 	# Relationships
 	invoice: Mapped["Invoice"] = relationship(

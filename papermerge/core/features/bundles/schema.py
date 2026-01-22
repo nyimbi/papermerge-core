@@ -2,7 +2,8 @@
 """Bundle Pydantic schemas."""
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from typing import Any
 
 
 class BundleCreate(BaseModel):
@@ -16,14 +17,25 @@ class BundleCreate(BaseModel):
 class BundleInfo(BaseModel):
 	"""Basic bundle information."""
 	id: UUID
-	name: str
+	name: str = Field(validation_alias="title")
 	description: str | None = None
-	bundle_type: str
+	bundle_type: str = "standard"
 	status: str
 	case_id: UUID | None = None
 	created_at: datetime | None = None
 
-	model_config = ConfigDict(from_attributes=True)
+	model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+	@classmethod
+	def model_validate(cls, obj: Any, **kwargs):
+		"""Override to extract bundle_type from bundle_metadata."""
+		# If obj has bundle_metadata attribute, extract bundle_type
+		if hasattr(obj, "bundle_metadata") and obj.bundle_metadata:
+			bundle_type = obj.bundle_metadata.get("bundle_type", "standard")
+		else:
+			bundle_type = "standard"
+		# Create instance with extracted bundle_type
+		return super().model_validate(obj, **kwargs).model_copy(update={"bundle_type": bundle_type})
 
 
 class BundleDocumentInfo(BaseModel):

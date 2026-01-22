@@ -3,7 +3,8 @@
 import logging
 from datetime import datetime, timedelta, date
 from typing import Sequence
-from uuid_extensions import uuid7str
+from uuid import UUID
+from papermerge.core.utils.uuid_compat import uuid7, uuid7str
 
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,6 +88,7 @@ from .views import (
 	ShiftUpdate,
 	ShiftAssignment,
 	ShiftAssignmentCreate,
+	ShiftAssignmentBulkCreate,
 	ProjectCost,
 	ProjectCostCreate,
 	ProjectBudget,
@@ -180,18 +182,21 @@ async def get_scanning_project(
 async def create_scanning_project(
 	session: AsyncSession,
 	tenant_id: str,
+	user_id: str,
 	data: ScanningProjectCreate,
 ) -> ScanningProject:
 	"""Create a new scanning project."""
 	project = ScanningProjectModel(
-		id=uuid7str(),
-		tenant_id=tenant_id,
+		id=uuid7(),
+		tenant_id=UUID(tenant_id),
+		created_by=UUID(user_id),
+		updated_by=UUID(user_id),
 		**data.model_dump(),
 	)
 	session.add(project)
 	await session.commit()
 	await session.refresh(project)
-	logger.info(_log_project_action("created", project.id))
+	logger.info(_log_project_action("created", str(project.id)))
 	return ScanningProject.model_validate(project)
 
 
@@ -1330,6 +1335,27 @@ async def get_shift_assignments(
 	stmt = stmt.order_by(ShiftAssignmentModel.assignment_date.desc())
 	result = await session.execute(stmt)
 	return [ShiftAssignment.model_validate(row) for row in result.scalars().all()]
+
+
+async def bulk_create_shift_assignments(
+	session: AsyncSession,
+	data: ShiftAssignmentBulkCreate,
+) -> list[ShiftAssignment]:
+	"""Bulk create shift assignments."""
+	assignments = []
+	for assignment_data in data.assignments:
+		assignment = ShiftAssignmentModel(
+			id=uuid7str(),
+			**assignment_data.model_dump(),
+		)
+		session.add(assignment)
+		assignments.append(assignment)
+
+	await session.commit()
+	for assignment in assignments:
+		await session.refresh(assignment)
+
+	return [ShiftAssignment.model_validate(a) for a in assignments]
 
 
 # =====================================================
@@ -2704,3 +2730,60 @@ async def get_multi_location_dashboard(
 		utilized_capacity=utilized_capacity,
 		overall_utilization=round(overall_utilization, 1),
 	)
+
+# =====================================================
+# Gamification Service
+# =====================================================
+
+
+async def get_leaderboard(
+	session: AsyncSession,
+	tenant_id: str,
+	limit: int = 10,
+) -> Sequence[OperatorDailyMetrics]:
+	"""Get the daily leaderboard."""
+	today = date.today()
+	stmt = select(OperatorDailyMetricsModel).where(
+		and_(
+			OperatorDailyMetricsModel.metric_date >= datetime.combine(today, datetime.min.time()),
+			OperatorDailyMetricsModel.metric_date <= datetime.combine(today, datetime.max.time()),
+		)
+	).order_by(OperatorDailyMetricsModel.pages_scanned.desc()).limit(limit)
+	
+	result = await session.execute(stmt)
+	return [OperatorDailyMetrics.model_validate(row) for row in result.scalars().all()]
+
+
+async def get_hourly_performance(
+	session: AsyncSession,
+	operator_id: str,
+) -> list[dict]:
+	"""Get hourly performance for the current operator."""
+	today = date.today()
+	# We'll query scanning sessions for today
+	stmt = select(ScanningSesssionModel).where(
+		and_(
+			ScanningSesssionModel.operator_id == str(operator_id),
+			ScanningSesssionModel.started_at >= datetime.combine(today, datetime.min.time()),
+		)
+	)
+	result = await session.execute(stmt)
+	sessions = result.scalars().all()
+
+	# Aggregate by hour
+	hourly_data = {}
+	for session in sessions:
+		hour = session.started_at.strftime("%H:00")
+		if hour not in hourly_data:
+			hourly_data[hour] = 0
+		hourly_data[hour] += session.pages_scanned
+
+	# Format for chart
+	chart_data = [
+		{"name": hour, "pages": pages}
+		for hour, pages in sorted(hourly_data.items())
+	]
+	
+	# If no data, return empty list or some defaults? 
+	# Let's return what we have.
+	return chart_data

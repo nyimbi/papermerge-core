@@ -14,7 +14,7 @@ from .views import (
 	ScanJobCreate, ScanJobResponse, ScanJobResultResponse,
 	ScanProfileCreate, ScanProfileUpdate, ScanProfileResponse,
 	GlobalScannerSettingsUpdate, GlobalScannerSettingsResponse,
-	ScannerDashboard, ScannerUsageStats,
+	ScannerDashboard, ScannerUsageStats, ScannerApiKeyResponse,
 )
 from . import service
 
@@ -113,6 +113,23 @@ async def delete_scanner(
 	)
 	if not deleted:
 		raise HTTPException(status_code=404, detail="Scanner not found")
+
+
+@router.post("/{scanner_id}/api-key", response_model=ScannerApiKeyResponse)
+async def generate_scanner_api_key(
+	scanner_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScannerApiKeyResponse:
+	"""Generate or rotate the API key for a scanner."""
+	result = await service.generate_scanner_api_key(
+		session=session,
+		scanner_id=scanner_id,
+		tenant_id=user.tenant_id,
+	)
+	if not result:
+		raise HTTPException(status_code=404, detail="Scanner not found")
+	return result
 
 
 # === Scanner Status & Capabilities ===

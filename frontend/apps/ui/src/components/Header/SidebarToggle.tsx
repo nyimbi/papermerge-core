@@ -1,8 +1,8 @@
-import {UnstyledButton} from "@mantine/core"
-import {IconMenu2} from "@tabler/icons-react"
-import {useDispatch} from "react-redux"
+import { UnstyledButton } from "@mantine/core"
+import { IconMenu2 } from "@tabler/icons-react"
+import { useDispatch } from "react-redux"
 
-import {toggleNavBar} from "@/features/ui/uiSlice"
+import { toggleNavBar } from "@/features/ui/uiSlice"
 
 export default function SidebarToggle() {
   const dispatch = useDispatch()
@@ -13,18 +13,7 @@ export default function SidebarToggle() {
   return (
     <UnstyledButton
       onClick={() => onClick()}
-      style={{
-        outline: "none",
-        boxShadow: "none",
-        "&:focus": {
-          outline: "none",
-          boxShadow: "none"
-        },
-        "&:active": {
-          outline: "none",
-          boxShadow: "none"
-        }
-      }}
+      aria-label="Toggle Sidebar"
     >
       <IconMenu2 />
     </UnstyledButton>

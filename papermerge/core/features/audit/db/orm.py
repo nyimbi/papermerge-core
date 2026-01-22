@@ -51,12 +51,17 @@ class AuditLog(Base):
     # Why (business context - application level only)
     reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
+    # Immutable Audit Trail (Cryptographic Chaining)
+    hash: Mapped[str] = mapped_column(String(64), nullable=True, index=True)  # SHA-256 hex
+    previous_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     # Indexes for performance
     __table_args__ = (
         Index('idx_audit_log_table_record', 'table_name', 'record_id'),
         Index('idx_audit_log_timestamp', 'timestamp'),
         Index('idx_audit_log_user_id', 'user_id'),
         Index('idx_audit_log_operation', 'operation'),
+        Index('idx_audit_log_hash', 'hash'),
     )
 
     def __str__(self):

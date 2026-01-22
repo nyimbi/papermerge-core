@@ -80,7 +80,7 @@ class SourceLocation(Base):
 	# Physical address or coordinates
 	address: Mapped[str | None] = mapped_column(Text)
 	# Additional metadata (barcode, capacity, etc.)
-	metadata: Mapped[dict | None] = mapped_column(JSONB)
+	extra_data: Mapped[dict | None] = mapped_column(JSONB)
 	# QR/barcode for physical tracking
 	barcode: Mapped[str | None] = mapped_column(String(100), unique=True)
 	# Status
@@ -186,7 +186,7 @@ class ScanBatch(Base):
 	# Scan settings used
 	scan_settings: Mapped[dict | None] = mapped_column(JSONB)
 	# Additional metadata
-	metadata: Mapped[dict | None] = mapped_column(JSONB)
+	extra_data: Mapped[dict | None] = mapped_column(JSONB)
 
 	# Notes and comments
 	notes: Mapped[str | None] = mapped_column(Text)

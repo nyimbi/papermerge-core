@@ -35,7 +35,6 @@ async def list_templates(
 
 	conditions = [
 		FormTemplate.tenant_id == user.tenant_id,
-		FormTemplate.is_active == True,
 	]
 	if category:
 		conditions.append(FormTemplate.category == category)

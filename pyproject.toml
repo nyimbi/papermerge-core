@@ -51,6 +51,12 @@ dependencies = [
     "asyncpg",
     "aiofiles",
     "psycopg2-binary",
+    "prefect>=3.0,<4.0",
+    "simpleeval>=1.0",
+    "httpx>=0.27",
+    "uuid-extension",
+    "blake3",
+    "prometheus-client",
 ]
 
 [project.urls]

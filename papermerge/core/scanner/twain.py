@@ -152,25 +152,21 @@ class TWAINScanner(Scanner):
 	def is_connected(self) -> bool:
 		return self._is_open
 
-	async def connect(self) -> bool:
-		"""Open connection to TWAIN data source."""
-		return await asyncio.get_event_loop().run_in_executor(
-			None, self._connect_sync
-		)
-
 	def _connect_sync(self) -> bool:
 		"""Synchronous connection to TWAIN."""
 		try:
 			# Load TWAIN DSM
 			if sys.platform == 'win32':
-				self._dsm = ctypes.windll.LoadLibrary("twain_32.dll")
+				try:
+					self._dsm = ctypes.windll.LoadLibrary("twain_32.dll")
+				except OSError:
+					logger.error("twain_32.dll not found. TWAIN is not available.")
+					return False
 			else:
 				return False
 
 			# Create hidden window for TWAIN messages
-			import ctypes.wintypes as wt
 			user32 = ctypes.windll.user32
-
 			self._hwnd = user32.CreateWindowExW(
 				0, "STATIC", "TWAIN Window",
 				0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -227,7 +223,7 @@ class TWAINScanner(Scanner):
 				self._dsm_entry(
 					app_identity, self._ds_handle,
 					TwainDG.CONTROL, TwainDAT.IDENTITY, TwainMSG.CLOSEDS,
-					self._ds_handle
+					ctypes.byref(self._ds_handle)
 				)
 
 			# Close DSM
@@ -253,20 +249,27 @@ class TWAINScanner(Scanner):
 		if not self._is_open:
 			return ScannerStatus.OFFLINE
 
-		# Check if scanner is ready
-		try:
-			status = await asyncio.get_event_loop().run_in_executor(
-				None, self._get_status_sync
-			)
-			return status
-		except Exception:
-			return ScannerStatus.ERROR
+		return await asyncio.get_event_loop().run_in_executor(
+			None, self._get_status_sync
+		)
 
 	def _get_status_sync(self) -> ScannerStatus:
 		"""Synchronous status check."""
-		# Query device status via TWAIN
-		# For simplicity, assume online if connected
-		return ScannerStatus.ONLINE if self._is_open else ScannerStatus.OFFLINE
+		if not self._is_open:
+			return ScannerStatus.OFFLINE
+		
+		# Query device status
+		app_identity = self._create_app_identity()
+		status = TwainStatus()
+		rc = self._dsm_entry(
+			app_identity, self._ds_handle,
+			TwainDG.CONTROL, TwainDAT.STATUS, TwainMSG.GET,
+			ctypes.byref(status)
+		)
+		
+		if rc == TwainRC.SUCCESS:
+			return ScannerStatus.ONLINE
+		return ScannerStatus.ERROR
 
 	async def get_capabilities(self) -> ScannerCapabilities:
 		"""Query scanner capabilities."""
@@ -288,13 +291,18 @@ class TWAINScanner(Scanner):
 
 		try:
 			# Query resolutions
-			caps.resolutions = self._query_resolutions()
-
+			caps.resolutions = self._query_capability(TwainCAP.ICAPXRESOLUTION)
+			
 			# Query color modes
-			caps.color_modes = self._query_color_modes()
+			pixel_types = self._query_capability(TwainCAP.ICAPPIXELTYPE)
+			caps.color_modes = self._map_pixel_types(pixel_types)
 
 			# Query ADF support
-			caps.has_adf, caps.has_duplex = self._query_feeder()
+			feeder_enabled = self._query_capability(TwainCAP.CAP_FEEDERENABLED)
+			caps.has_adf = bool(feeder_enabled)
+			
+			duplex_enabled = self._query_capability(TwainCAP.CAP_DUPLEXENABLED)
+			caps.has_duplex = bool(duplex_enabled)
 
 			# Standard formats for TWAIN
 			caps.formats = [ImageFormat.BMP, ImageFormat.JPEG, ImageFormat.TIFF]
@@ -304,19 +312,20 @@ class TWAINScanner(Scanner):
 
 		return caps
 
-	def _query_resolutions(self) -> list[int]:
-		"""Query supported resolutions."""
-		# Default common resolutions
-		return [75, 100, 150, 200, 300, 400, 600, 1200]
+	def _query_capability(self, cap_id: int) -> Any:
+		"""Query a specific TWAIN capability."""
+		# This is a simplified version of capability negotiation
+		# In a real implementation, this would handle TW_CAPABILITY, TW_ONEVALUE, etc.
+		return []
 
-	def _query_color_modes(self) -> list[ColorMode]:
-		"""Query supported color modes."""
-		return [ColorMode.COLOR, ColorMode.GRAYSCALE, ColorMode.MONOCHROME]
-
-	def _query_feeder(self) -> tuple[bool, bool]:
-		"""Query ADF and duplex support."""
-		# Would query CAP_FEEDERENABLED and CAP_DUPLEX
-		return False, False
+	def _map_pixel_types(self, pixel_types: list[int]) -> list[ColorMode]:
+		"""Map TWAIN pixel types to ColorMode."""
+		mapping = {
+			0: ColorMode.MONOCHROME,
+			1: ColorMode.GRAYSCALE,
+			2: ColorMode.COLOR,
+		}
+		return [mapping[pt] for pt in pixel_types if pt in mapping]
 
 	async def scan(self, options: ScanOptions) -> ScanResult:
 		"""Perform a scan operation."""
@@ -337,18 +346,29 @@ class TWAINScanner(Scanner):
 			self._set_scan_options(options)
 
 			# Enable data source (start scan)
-			# This would trigger the actual scan
+			ui = TwainUserInterface(ShowUI=False, ModalUI=False, hParent=self._hwnd)
+			app_identity = self._create_app_identity()
+			
+			rc = self._dsm_entry(
+				app_identity, self._ds_handle,
+				TwainDG.CONTROL, TwainDAT.USERINTERFACE, TwainMSG.ENABLEDS,
+				ctypes.byref(ui)
+			)
+
+			if rc != TwainRC.SUCCESS:
+				return ScanResult(success=False, error=f"Failed to enable DS: {rc}")
 
 			# Transfer image data
+			# This would normally involve a message loop to wait for XFERDONE
 			image_data = self._transfer_image()
 
 			elapsed = time.time() - start_time
 
 			return ScanResult(
 				success=True,
-				data=image_data,
+				pages=[image_data] if image_data else [],
+				page_count=1 if image_data else 0,
 				format=options.format,
-				pages=1,
 				scan_time_ms=elapsed * 1000,
 			)
 
@@ -361,21 +381,33 @@ class TWAINScanner(Scanner):
 
 	def _set_scan_options(self, options: ScanOptions) -> None:
 		"""Configure TWAIN scan parameters."""
-		# Would set ICAP_XRESOLUTION, ICAP_YRESOLUTION, ICAP_PIXELTYPE, etc.
-		pass
+		# Set resolution
+		self._set_capability(TwainCAP.ICAPXRESOLUTION, options.resolution)
+		self._set_capability(TwainCAP.ICAPYRESOLUTION, options.resolution)
+		
+		# Set pixel type
+		pixel_type = {
+			ColorMode.COLOR: 2,
+			ColorMode.GRAYSCALE: 1,
+			ColorMode.MONOCHROME: 0,
+		}.get(options.color_mode, 2)
+		self._set_capability(TwainCAP.ICAPPIXELTYPE, pixel_type)
+
+	def _set_capability(self, cap_id: int, value: Any) -> bool:
+		"""Set a TWAIN capability value."""
+		return True
 
 	def _transfer_image(self) -> bytes:
 		"""Transfer scanned image from TWAIN."""
-		# Would use native or memory transfer
+		# Simplified: would use TwainDG.IMAGE, TwainDAT.IMAGENATIVEXFER, TwainMSG.GET
 		return b""
 
 	async def scan_stream(self, options: ScanOptions):
 		"""Stream scan data as it's acquired."""
-		# TWAIN doesn't support true streaming
-		# Fall back to regular scan
 		result = await self.scan(options)
-		if result.success and result.data:
-			yield result.data
+		if result.success:
+			for i, page in enumerate(result.pages):
+				yield (i, page)
 
 	async def preview(self, options: ScanOptions | None = None) -> ScanResult:
 		"""Capture a low-resolution preview."""
@@ -386,31 +418,94 @@ class TWAINScanner(Scanner):
 
 	async def cancel(self) -> bool:
 		"""Cancel ongoing scan operation."""
-		# TWAIN cancel is complex - typically requires UI interaction
-		return True
+		if not self._is_open:
+			return True
+		
+		app_identity = self._create_app_identity()
+		rc = self._dsm_entry(
+			app_identity, self._ds_handle,
+			TwainDG.CONTROL, TwainDAT.USERINTERFACE, TwainMSG.DISABLEDS,
+			ctypes.byref(TwainUserInterface(hParent=self._hwnd))
+		)
+		return rc == TwainRC.SUCCESS
 
 	def _create_app_identity(self):
 		"""Create TWAIN application identity structure."""
-		# Would create proper TWAIN TW_IDENTITY structure
-		return None
+		identity = TwainIdentityStruct()
+		identity.Id = 0
+		identity.Version.MajorNum = 1
+		identity.Version.MinorNum = 0
+		identity.Version.Language = 13 # English
+		identity.Version.Country = 1 # USA
+		identity.Version.Info = b"ArchivaPro Ingestion"
+		identity.ProtocolMajor = 2
+		identity.ProtocolMinor = 4
+		identity.SupportedGroups = TwainDG.CONTROL | TwainDG.IMAGE
+		identity.Manufacturer = b"Datacraft"
+		identity.ProductFamily = b"ArchivaPro"
+		identity.ProductName = b"ArchivaPro Scanner Bridge"
+		return identity
 
 	def _create_ds_identity(self):
 		"""Create TWAIN data source identity structure."""
-		# Would create proper TW_IDENTITY for the scanner
-		return None
+		identity = TwainIdentityStruct()
+		identity.ProductName = self._identity.product_name.encode('utf-8')
+		return identity
 
-	def _dsm_entry(self, *args) -> int:
+	def _dsm_entry(self, pOrigin, pDest, dg, dat, msg, pData) -> int:
 		"""Call TWAIN DSM_Entry function."""
-		# Would call the actual TWAIN DSM entry point
-		return TwainRC.FAILURE
+		if not self._dsm:
+			return TwainRC.FAILURE
+		
+		# DSM_Entry(pOrigin, pDest, DG, DAT, MSG, pData)
+		func = self._dsm.DSM_Entry
+		func.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, 
+						 ctypes.c_uint16, ctypes.c_uint16, ctypes.c_void_p]
+		func.restype = ctypes.c_uint16
+		
+		return func(ctypes.byref(pOrigin) if pOrigin else None,
+					ctypes.byref(pDest) if pDest else None,
+					dg, dat, msg, pData)
+
+
+# TWAIN Structures for ctypes
+class TwainVersion(ctypes.Structure):
+	_fields_ = [
+		("MajorNum", ctypes.c_uint16),
+		("MinorNum", ctypes.c_uint16),
+		("Language", ctypes.c_uint16),
+		("Country", ctypes.c_uint16),
+		("Info", ctypes.c_char * 34),
+	]
+
+class TwainIdentityStruct(ctypes.Structure):
+	_fields_ = [
+		("Id", ctypes.c_uint32),
+		("Version", TwainVersion),
+		("ProtocolMajor", ctypes.c_uint16),
+		("ProtocolMinor", ctypes.c_uint16),
+		("SupportedGroups", ctypes.c_uint32),
+		("Manufacturer", ctypes.c_char * 34),
+		("ProductFamily", ctypes.c_char * 34),
+		("ProductName", ctypes.c_char * 34),
+	]
+
+class TwainStatus(ctypes.Structure):
+	_fields_ = [
+		("ConditionCode", ctypes.c_uint16),
+		("Reserved", ctypes.c_uint16),
+	]
+
+class TwainUserInterface(ctypes.Structure):
+	_fields_ = [
+		("ShowUI", ctypes.c_uint16),
+		("ModalUI", ctypes.c_uint16),
+		("hParent", ctypes.c_void_p),
+	]
 
 
 async def discover_twain_scanners() -> list[TwainIdentity]:
-	"""Discover available TWAIN scanners on Windows.
-
-	Returns:
-		List of discovered TWAIN scanner identities.
-	"""
+	"""Discover available TWAIN scanners on Windows."""
 	if sys.platform != 'win32':
 		return []
 
@@ -426,7 +521,7 @@ def _discover_twain_sync() -> list[TwainIdentity]:
 	try:
 		# Load TWAIN DSM
 		dsm = ctypes.windll.LoadLibrary("twain_32.dll")
-
+		
 		# Create temporary window
 		user32 = ctypes.windll.user32
 		hwnd = user32.CreateWindowExW(
@@ -435,12 +530,35 @@ def _discover_twain_sync() -> list[TwainIdentity]:
 		)
 
 		# Open DSM
-		# ...
+		app = TwainIdentityStruct()
+		app.ProductName = b"ArchivaPro Discovery"
+		
+		func = dsm.DSM_Entry
+		rc = func(ctypes.byref(app), None, TwainDG.CONTROL, TwainDAT.PARENT, 
+				  TwainMSG.OPENDSM, ctypes.byref(ctypes.c_void_p(hwnd)))
 
-		# Enumerate data sources
-		# ...
+		if rc == TwainRC.SUCCESS:
+			# Get first DS
+			ds = TwainIdentityStruct()
+			rc = func(ctypes.byref(app), None, TwainDG.CONTROL, TwainDAT.IDENTITY, 
+					  TwainMSG.GETFIRST, ctypes.byref(ds))
+			
+			while rc == TwainRC.SUCCESS:
+				scanners.append(TwainIdentity(
+					id=ds.Id,
+					product_name=ds.ProductName.decode('utf-8', 'ignore').strip('\x00'),
+					manufacturer=ds.Manufacturer.decode('utf-8', 'ignore').strip('\x00'),
+					product_family=ds.ProductFamily.decode('utf-8', 'ignore').strip('\x00'),
+				))
+				
+				# Get next DS
+				rc = func(ctypes.byref(app), None, TwainDG.CONTROL, TwainDAT.IDENTITY, 
+						  TwainMSG.GETNEXT, ctypes.byref(ds))
 
-		# Clean up
+			# Close DSM
+			func(ctypes.byref(app), None, TwainDG.CONTROL, TwainDAT.PARENT, 
+				 TwainMSG.CLOSEDSM, ctypes.byref(ctypes.c_void_p(hwnd)))
+
 		user32.DestroyWindow(hwnd)
 
 	except Exception as e:

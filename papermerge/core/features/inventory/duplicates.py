@@ -29,10 +29,11 @@ class DuplicateMatch:
 class HashResult:
 	"""Result of hashing an image/document."""
 	file_hash: str  # SHA-512 of file contents
-	phash: str  # Perceptual hash
-	dhash: str  # Difference hash
-	ahash: str  # Average hash
-	whash: str  # Wavelet hash
+	blake3_hash: str | None = None  # BLAKE3 hash
+	phash: str | None = None  # Perceptual hash
+	dhash: str | None = None  # Difference hash
+	ahash: str | None = None  # Average hash
+	whash: str | None = None  # Wavelet hash
 
 
 class DuplicateDetector:
@@ -74,6 +75,13 @@ class DuplicateDetector:
 
 		# File content hash
 		file_hash = self._compute_file_hash(file_path)
+		
+		# BLAKE3 hash
+		try:
+			from papermerge.core.utils.hash import calculate_blake3
+			blake3_hash = calculate_blake3(str(file_path))
+		except (ImportError, Exception):
+			blake3_hash = None
 
 		# Load image
 		if file_path.suffix.lower() == '.pdf':
@@ -89,6 +97,7 @@ class DuplicateDetector:
 
 		return HashResult(
 			file_hash=file_hash,
+			blake3_hash=blake3_hash,
 			phash=phash,
 			dhash=dhash,
 			ahash=ahash,

@@ -83,7 +83,13 @@ class Settings(BaseSettings):
     @computed_field
     @property
     def async_db_url(self) -> str:
-        return str(self.db_url).replace("postgresql://", "postgresql+asyncpg://", 1)
+        url = str(self.db_url)
+        # Handle various PostgreSQL URL formats
+        if "postgresql+psycopg://" in url:
+            return url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+        elif "postgresql://" in url:
+            return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
 
     @computed_field
     @property

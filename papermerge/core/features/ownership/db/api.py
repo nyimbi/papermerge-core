@@ -1,11 +1,15 @@
+from __future__ import annotations
 from uuid import UUID
-from typing import Literal, Tuple
+from typing import Literal, Tuple, TYPE_CHECKING
 
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 
-from papermerge.core import orm, types
+from papermerge.core import types
+
+if TYPE_CHECKING:
+    from papermerge.core.features.nodes.db.orm import Node
 from papermerge.core.features.ownership.db.orm import Ownership
 from papermerge.core.schemas.common import OwnedBy
 
@@ -408,7 +412,7 @@ async def create_node_with_owner(
     owner_id: UUID,
     parent_id: UUID | None = None,
     **kwargs
-) -> orm.Node:
+) -> Node:
     """
     Create a node and set its owner.
 
@@ -544,7 +548,7 @@ async def get_nodes_for_owner(
     parent_id: UUID | None = None,
     limit: int = 100,
     offset: int = 0
-) -> list[orm.Node]:
+) -> list[Node]:
     """
     Get all nodes owned by a specific owner.
 

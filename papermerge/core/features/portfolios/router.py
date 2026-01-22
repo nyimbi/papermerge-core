@@ -60,7 +60,7 @@ async def create_portfolio(
 		name=portfolio.name,
 		description=portfolio.description,
 		portfolio_type=portfolio.portfolio_type,
-		metadata=portfolio.metadata,
+		portfolio_metadata=portfolio.metadata,
 		created_by=user.id,
 		updated_by=user.id,
 	)
@@ -93,7 +93,7 @@ async def get_portfolio(
 		name=portfolio.name,
 		description=portfolio.description,
 		portfolio_type=portfolio.portfolio_type,
-		metadata=portfolio.metadata,
+		metadata=portfolio.portfolio_metadata,
 		case_count=len(cases),
 		created_at=portfolio.created_at,
 	)
@@ -116,7 +116,7 @@ async def update_portfolio(
 	if update.description is not None:
 		portfolio.description = update.description
 	if update.metadata is not None:
-		portfolio.metadata = update.metadata
+		portfolio.portfolio_metadata = update.metadata
 
 	portfolio.updated_by = user.id
 	await db_session.commit()

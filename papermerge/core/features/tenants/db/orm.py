@@ -67,6 +67,12 @@ class Tenant(Base):
 	settings: Mapped["TenantSettings"] = relationship(
 		"TenantSettings", back_populates="tenant", uselist=False, cascade="all, delete-orphan"
 	)
+	policies = relationship(
+		"PolicyModel", back_populates="tenant", cascade="all, delete-orphan"
+	)
+	users = relationship(
+		"User", back_populates="tenant", cascade="all, delete-orphan"
+	)
 
 	def __repr__(self):
 		return f"Tenant(id={self.id}, name={self.name})"
@@ -149,3 +155,141 @@ class TenantSettings(Base):
 
 	# Relationships
 	tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="settings")
+
+
+class StorageProvider(str, Enum):
+	LOCAL = "local"
+	S3 = "s3"
+	LINODE = "linode"
+	AZURE = "azure"
+	GCS = "gcs"
+
+
+class TenantStorageConfig(Base):
+	"""Tenant cloud storage configuration."""
+	__tablename__ = "tenant_storage_config"
+
+	id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+	tenant_id: Mapped[UUID] = mapped_column(
+		ForeignKey("tenants.id", ondelete="CASCADE"), unique=True, nullable=False
+	)
+
+	# Provider configuration
+	provider: Mapped[str] = mapped_column(String(20), default=StorageProvider.LOCAL.value)
+	bucket_name: Mapped[str | None] = mapped_column(String(255))
+	region: Mapped[str | None] = mapped_column(String(50))
+	endpoint_url: Mapped[str | None] = mapped_column(String(500))  # For S3-compatible (Linode)
+
+	# Credentials (encrypted at rest)
+	access_key_id: Mapped[str | None] = mapped_column(String(255))
+	secret_access_key: Mapped[str | None] = mapped_column(String(500))  # Encrypted
+
+	# Path configuration
+	base_path: Mapped[str] = mapped_column(String(500), default="documents/")
+	archive_path: Mapped[str | None] = mapped_column(String(500))
+
+	# Verification
+	is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+	last_verified_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+	# Timestamps
+	created_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, nullable=False
+	)
+	updated_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, onupdate=func.now(), nullable=False
+	)
+
+
+class AIProvider(str, Enum):
+	OPENAI = "openai"
+	ANTHROPIC = "anthropic"
+	AZURE_OPENAI = "azure_openai"
+	LOCAL = "local"
+
+
+class TenantAIConfig(Base):
+	"""Tenant AI/ML service configuration."""
+	__tablename__ = "tenant_ai_config"
+
+	id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+	tenant_id: Mapped[UUID] = mapped_column(
+		ForeignKey("tenants.id", ondelete="CASCADE"), unique=True, nullable=False
+	)
+
+	# Provider
+	provider: Mapped[str] = mapped_column(String(20), default=AIProvider.OPENAI.value)
+	api_key: Mapped[str | None] = mapped_column(String(500))  # Encrypted
+	endpoint_url: Mapped[str | None] = mapped_column(String(500))  # For Azure/local
+
+	# Models
+	default_model: Mapped[str] = mapped_column(String(100), default="gpt-4o-mini")
+	embedding_model: Mapped[str] = mapped_column(String(100), default="text-embedding-3-small")
+
+	# Limits
+	monthly_token_limit: Mapped[int | None] = mapped_column(Integer)
+	tokens_used_this_month: Mapped[int] = mapped_column(Integer, default=0)
+	token_reset_day: Mapped[int] = mapped_column(Integer, default=1)  # Day of month to reset
+
+	# Features
+	classification_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+	extraction_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+	summarization_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+	chat_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+	# Timestamps
+	created_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, nullable=False
+	)
+	updated_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, onupdate=func.now(), nullable=False
+	)
+
+
+class SubscriptionPlan(str, Enum):
+	FREE = "free"
+	STARTER = "starter"
+	PROFESSIONAL = "professional"
+	ENTERPRISE = "enterprise"
+	CUSTOM = "custom"
+
+
+class TenantSubscription(Base):
+	"""Tenant SaaS subscription management."""
+	__tablename__ = "tenant_subscriptions"
+
+	id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+	tenant_id: Mapped[UUID] = mapped_column(
+		ForeignKey("tenants.id", ondelete="CASCADE"), unique=True, nullable=False
+	)
+
+	# Plan
+	plan: Mapped[str] = mapped_column(String(50), default=SubscriptionPlan.FREE.value)
+	billing_cycle: Mapped[str] = mapped_column(String(20), default="monthly")  # monthly, annual
+
+	# Stripe
+	stripe_subscription_id: Mapped[str | None] = mapped_column(String(100))
+	stripe_price_id: Mapped[str | None] = mapped_column(String(100))
+
+	# Dates
+	current_period_start: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+	current_period_end: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+	cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+	canceled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+	# Plan limits (copied from plan at subscription time, can be overridden)
+	max_users: Mapped[int | None] = mapped_column(Integer)
+	max_storage_gb: Mapped[int | None] = mapped_column(Integer)
+	max_documents: Mapped[int | None] = mapped_column(Integer)
+	ai_tokens_per_month: Mapped[int | None] = mapped_column(Integer)
+
+	# Addons (JSON list of addon IDs/features)
+	addons: Mapped[dict | None] = mapped_column(JSONB)
+
+	# Timestamps
+	created_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, nullable=False
+	)
+	updated_at: Mapped[datetime] = mapped_column(
+		TIMESTAMP(timezone=True), default=utc_now, onupdate=func.now(), nullable=False
+	)

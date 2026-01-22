@@ -2,6 +2,7 @@
 """eSCL (AirScan) scanner client implementation."""
 import asyncio
 import logging
+import ssl
 import time
 import xml.etree.ElementTree as ET
 from io import BytesIO
@@ -52,9 +53,20 @@ class ESCLScanner(Scanner):
 		self._verify_ssl = verify_ssl
 
 		self._base_url = f"{self._scheme}://{host}:{port}{self._root_path}"
+
+		# Create a permissive SSL context for older scanners
+		ssl_context = None
+		if use_https and not verify_ssl:
+			ssl_context = ssl.create_default_context()
+			ssl_context.check_hostname = False
+			ssl_context.verify_mode = ssl.CERT_NONE
+			# Allow older TLS versions for legacy scanner firmware
+			ssl_context.minimum_version = ssl.TLSVersion.TLSv1
+			ssl_context.set_ciphers('DEFAULT:@SECLEVEL=0')
+
 		self._client = httpx.AsyncClient(
 			timeout=timeout,
-			verify=verify_ssl,
+			verify=ssl_context if ssl_context else verify_ssl,
 			follow_redirects=True,
 		)
 

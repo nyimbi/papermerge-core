@@ -1,8 +1,13 @@
 from uuid import UUID
 from datetime import datetime
-from sqlalchemy import String, TIMESTAMP, Index, ForeignKey
+from sqlalchemy import String, TIMESTAMP, Index, ForeignKey, Integer, Float, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import TSVECTOR, ARRAY
+from sqlalchemy.dialects.postgresql import TSVECTOR, ARRAY, UUID as PG_UUID
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:
+    # Fallback if pgvector is not installed in the environment
+    from sqlalchemy import ARRAY as Vector
 
 from papermerge.core.db.base import Base
 
@@ -64,4 +69,43 @@ class DocumentSearchIndex(Base):
         Index('idx_document_search_owner', 'owner_type', 'owner_id'),
         Index('idx_document_search_doc_type', 'document_type_id'),
         Index('idx_document_search_lang', 'lang'),
+    )
+
+
+class DocumentEmbeddingModel(Base):
+    """
+    Vector embeddings for document chunks.
+    Used for semantic search and similarity analysis.
+    """
+    __tablename__ = "document_embeddings"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("documents.node_id", ondelete="CASCADE"),
+        index=True
+    )
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"),
+        index=True
+    )
+    page_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("pages.id", ondelete="CASCADE"),
+        nullable=True
+    )
+    
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    chunk_text: Mapped[str] = mapped_column(String)
+    
+    # Vector embedding (768 dimensions for nomic-embed-text)
+    embedding: Mapped[list[float]] = mapped_column(Vector(768))
+    
+    model_name: Mapped[str] = mapped_column(String(100))
+    model_version: Mapped[str | None] = mapped_column(String(50))
+    embedding_dimension: Mapped[int] = mapped_column(Integer)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_doc_embeddings_lookup', 'document_id', 'chunk_index', unique=True),
     )

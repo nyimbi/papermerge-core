@@ -41,7 +41,7 @@ class EmailImportModel(Base):
 	id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid7str)
 	message_id: Mapped[str] = mapped_column(String(512), index=True, unique=True)
 	thread_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("email_threads.id"))
-	document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id"))
+	document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.node_id"))
 
 	# Email headers
 	subject: Mapped[str | None] = mapped_column(String(1000))
@@ -81,7 +81,7 @@ class EmailImportModel(Base):
 	# Relationships
 	thread: Mapped["EmailThreadModel | None"] = relationship(back_populates="imports")
 	attachments: Mapped[list["EmailAttachmentModel"]] = relationship(back_populates="email_import", cascade="all, delete-orphan")
-	document: Mapped["Document | None"] = relationship()
+	document: Mapped["Document | None"] = relationship(foreign_keys=[document_id])
 
 
 class EmailAttachmentModel(Base):
@@ -90,7 +90,7 @@ class EmailAttachmentModel(Base):
 
 	id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid7str)
 	email_import_id: Mapped[str] = mapped_column(String(36), ForeignKey("email_imports.id", ondelete="CASCADE"))
-	document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.id"))
+	document_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("documents.node_id"))
 
 	filename: Mapped[str] = mapped_column(String(500))
 	content_type: Mapped[str] = mapped_column(String(255))
@@ -106,7 +106,7 @@ class EmailAttachmentModel(Base):
 
 	# Relationships
 	email_import: Mapped["EmailImportModel"] = relationship(back_populates="attachments")
-	document: Mapped["Document | None"] = relationship()
+	document: Mapped["Document | None"] = relationship(foreign_keys=[document_id])
 
 
 class EmailAccountModel(Base):

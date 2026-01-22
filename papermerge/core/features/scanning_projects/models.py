@@ -1,8 +1,10 @@
 # (c) Copyright Datacraft, 2026
 """SQLAlchemy models for Scanning Projects feature."""
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import String, Integer, Float, Boolean, DateTime, ForeignKey, Enum, JSON
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from papermerge.core.db.base import Base
@@ -19,40 +21,38 @@ from .views import (
 
 
 class ScanningProjectModel(Base):
+	"""Model matching the actual database schema from d4rc migrations."""
 	__tablename__ = "scanning_projects"
 
-	id: Mapped[str] = mapped_column(String(36), primary_key=True)
-	tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+	id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+	tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+	code: Mapped[str] = mapped_column(String(50))
 	name: Mapped[str] = mapped_column(String(255))
-	description: Mapped[str | None] = mapped_column(String(1000))
-	status: Mapped[ScanningProjectStatus] = mapped_column(
-		Enum(ScanningProjectStatus),
-		default=ScanningProjectStatus.PLANNING,
-	)
-	total_estimated_pages: Mapped[int] = mapped_column(Integer, default=0)
-	scanned_pages: Mapped[int] = mapped_column(Integer, default=0)
-	verified_pages: Mapped[int] = mapped_column(Integer, default=0)
-	rejected_pages: Mapped[int] = mapped_column(Integer, default=0)
-	target_dpi: Mapped[int] = mapped_column(Integer, default=300)
-	color_mode: Mapped[ColorMode] = mapped_column(
-		Enum(ColorMode),
-		default=ColorMode.GRAYSCALE,
-	)
-	quality_sample_rate: Mapped[int] = mapped_column(Integer, default=5)
+	description: Mapped[str | None] = mapped_column(String(2000))
+	status: Mapped[str] = mapped_column(String(30), default="planning")
+	priority: Mapped[str | None] = mapped_column(String(20), default="normal")
+	project_type: Mapped[str | None] = mapped_column(String(50))
+	client_name: Mapped[str | None] = mapped_column(String(255))
+	client_reference: Mapped[str | None] = mapped_column(String(100))
 	start_date: Mapped[datetime | None] = mapped_column(DateTime)
 	target_end_date: Mapped[datetime | None] = mapped_column(DateTime)
 	actual_end_date: Mapped[datetime | None] = mapped_column(DateTime)
+	estimated_pages: Mapped[int | None] = mapped_column(Integer)
+	estimated_documents: Mapped[int | None] = mapped_column(Integer)
+	daily_page_target: Mapped[int | None] = mapped_column(Integer)
+	target_dpi: Mapped[int] = mapped_column(Integer, default=300)
+	color_mode: Mapped[str | None] = mapped_column(String(20), default="color")
+	duplex_mode: Mapped[str | None] = mapped_column(String(20), default="duplex")
+	file_format: Mapped[str | None] = mapped_column(String(20), default="pdf")
+	ocr_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+	quality_sampling_rate: Mapped[float | None] = mapped_column(Float, default=0.1)
+	destination_folder_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("nodes.id", ondelete="SET NULL"))
+	project_metadata: Mapped[dict | None] = mapped_column("metadata", JSON)
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-	batches: Mapped[list["ScanningBatchModel"]] = relationship(
-		back_populates="project",
-		cascade="all, delete-orphan",
-	)
-	milestones: Mapped[list["ScanningMilestoneModel"]] = relationship(
-		back_populates="project",
-		cascade="all, delete-orphan",
-	)
+	deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
+	created_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
+	updated_by: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"))
 
 
 class ScanningBatchModel(Base):
@@ -88,7 +88,7 @@ class ScanningBatchModel(Base):
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 	updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-	project: Mapped["ScanningProjectModel"] = relationship(back_populates="batches")
+	# project: Mapped["ScanningProjectModel"] = relationship(back_populates="batches")
 	qc_samples: Mapped[list["QualityControlSampleModel"]] = relationship(
 		back_populates="batch",
 		cascade="all, delete-orphan",
@@ -116,7 +116,7 @@ class ScanningMilestoneModel(Base):
 	completed_at: Mapped[datetime | None] = mapped_column(DateTime)
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-	project: Mapped["ScanningProjectModel"] = relationship(back_populates="milestones")
+	# project: Mapped["ScanningProjectModel"] = relationship(back_populates="milestones")
 
 
 class QualityControlSampleModel(Base):

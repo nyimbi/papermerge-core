@@ -23,6 +23,7 @@ Create Date: 2026-01-18
 from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision: str = 'd4rc_0004'
 down_revision: Union[str, None] = 'd4rc_0003'
@@ -36,8 +37,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'sub_projects',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('parent_project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('parent_project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('code', sa.String(50), nullable=False, index=True),
 		sa.Column('name', sa.String(255), nullable=False),
 		sa.Column('description', sa.String(2000)),
@@ -48,7 +49,7 @@ def upgrade() -> None:
 		sa.Column('scanned_pages', sa.Integer, server_default='0'),
 		sa.Column('verified_pages', sa.Integer, server_default='0'),
 		sa.Column('rejected_pages', sa.Integer, server_default='0'),
-		sa.Column('assigned_location_id', sa.String(36)),
+		sa.Column('assigned_location_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('start_date', sa.DateTime),
 		sa.Column('target_end_date', sa.DateTime),
 		sa.Column('actual_end_date', sa.DateTime),
@@ -63,8 +64,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'scanning_locations',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('tenant_id', sa.String(36), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('tenant_id', postgresql.UUID(as_uuid=True), nullable=False, index=True),
 		sa.Column('code', sa.String(50), nullable=False, unique=True, index=True),
 		sa.Column('name', sa.String(255), nullable=False),
 		sa.Column('address', sa.String(500)),
@@ -88,9 +89,9 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'scanning_shifts',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('tenant_id', sa.String(36), nullable=False, index=True),
-		sa.Column('location_id', sa.String(36)),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('tenant_id', postgresql.UUID(as_uuid=True), nullable=False, index=True),
+		sa.Column('location_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('name', sa.String(100), nullable=False),
 		sa.Column('start_time', sa.String(10), nullable=False),
 		sa.Column('end_time', sa.String(10), nullable=False),
@@ -103,11 +104,11 @@ def upgrade() -> None:
 
 	op.create_table(
 		'shift_assignments',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('shift_id', sa.String(36), sa.ForeignKey('scanning_shifts.id', ondelete='CASCADE'), nullable=False, index=True),
-		sa.Column('operator_id', sa.String(36), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('shift_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_shifts.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('operator_id', postgresql.UUID(as_uuid=True), nullable=False, index=True),
 		sa.Column('operator_name', sa.String(255)),
-		sa.Column('project_id', sa.String(36)),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('assignment_date', sa.DateTime, nullable=False, index=True),
 		sa.Column('status', sa.String(50), server_default='scheduled'),
 		sa.Column('actual_start', sa.DateTime),
@@ -121,8 +122,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'project_costs',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('cost_date', sa.DateTime, nullable=False, index=True),
 		sa.Column('cost_type', sa.String(50), nullable=False),
 		sa.Column('category', sa.String(100)),
@@ -131,9 +132,9 @@ def upgrade() -> None:
 		sa.Column('unit_cost', sa.Float, server_default='0.0'),
 		sa.Column('total_cost', sa.Float, server_default='0.0'),
 		sa.Column('currency', sa.String(3), server_default='USD'),
-		sa.Column('operator_id', sa.String(36)),
-		sa.Column('location_id', sa.String(36)),
-		sa.Column('batch_id', sa.String(36)),
+		sa.Column('operator_id', postgresql.UUID(as_uuid=True)),
+		sa.Column('location_id', postgresql.UUID(as_uuid=True)),
+		sa.Column('batch_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('notes', sa.String(1000)),
 		sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
 	)
@@ -141,8 +142,8 @@ def upgrade() -> None:
 
 	op.create_table(
 		'project_budgets',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('budget_name', sa.String(255), nullable=False),
 		sa.Column('total_budget', sa.Float, server_default='0.0'),
 		sa.Column('labor_budget', sa.Float, server_default='0.0'),
@@ -156,7 +157,7 @@ def upgrade() -> None:
 		sa.Column('cost_per_page', sa.Float),
 		sa.Column('target_cost_per_page', sa.Float),
 		sa.Column('is_approved', sa.Boolean, server_default='false'),
-		sa.Column('approved_by_id', sa.String(36)),
+		sa.Column('approved_by_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('approved_at', sa.DateTime),
 		sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
 		sa.Column('updated_at', sa.DateTime, server_default=sa.func.now()),
@@ -167,8 +168,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'project_slas',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('name', sa.String(255), nullable=False),
 		sa.Column('description', sa.String(1000)),
 		sa.Column('sla_type', sa.String(50), nullable=False),
@@ -190,14 +191,14 @@ def upgrade() -> None:
 
 	op.create_table(
 		'sla_alerts',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('sla_id', sa.String(36), sa.ForeignKey('project_slas.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('sla_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('project_slas.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('alert_type', sa.String(50), nullable=False),
 		sa.Column('alert_time', sa.DateTime, server_default=sa.func.now()),
 		sa.Column('message', sa.String(1000), nullable=False),
 		sa.Column('current_value', sa.Float, nullable=False),
 		sa.Column('target_value', sa.Float, nullable=False),
-		sa.Column('acknowledged_by_id', sa.String(36)),
+		sa.Column('acknowledged_by_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('acknowledged_at', sa.DateTime),
 		sa.Column('resolution_notes', sa.String(2000)),
 	)
@@ -208,8 +209,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'equipment_maintenance',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('resource_id', sa.String(36), sa.ForeignKey('scanning_resources.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('resource_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_resources.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('maintenance_type', sa.String(50), nullable=False),
 		sa.Column('title', sa.String(255), nullable=False),
 		sa.Column('description', sa.String(2000)),
@@ -233,8 +234,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'operator_certifications',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('operator_id', sa.String(36), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('operator_id', postgresql.UUID(as_uuid=True), nullable=False, index=True),
 		sa.Column('operator_name', sa.String(255)),
 		sa.Column('certification_type', sa.String(100), nullable=False),
 		sa.Column('certification_name', sa.String(255), nullable=False),
@@ -255,8 +256,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'capacity_plans',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('plan_name', sa.String(255), nullable=False),
 		sa.Column('plan_date', sa.DateTime, server_default=sa.func.now()),
 		sa.Column('target_completion_date', sa.DateTime, nullable=False),
@@ -271,7 +272,7 @@ def upgrade() -> None:
 		sa.Column('confidence_score', sa.Float, server_default='0.7'),
 		sa.Column('assumptions', sa.String(2000)),
 		sa.Column('recommendations', sa.String(2000)),
-		sa.Column('created_by_id', sa.String(36)),
+		sa.Column('created_by_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('is_approved', sa.Boolean, server_default='false'),
 		sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
 	)
@@ -281,8 +282,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'document_type_distributions',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('document_type', sa.String(100), nullable=False, index=True),
 		sa.Column('document_type_name', sa.String(255), nullable=False),
 		sa.Column('estimated_count', sa.Integer, server_default='0'),
@@ -303,13 +304,13 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'batch_priority_queue',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('batch_id', sa.String(36), sa.ForeignKey('scanning_batches.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('batch_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scan_batches.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('priority', sa.Integer, server_default='5', index=True),
 		sa.Column('priority_reason', sa.String(500)),
 		sa.Column('due_date', sa.DateTime, index=True),
 		sa.Column('is_rush', sa.Boolean, server_default='false'),
-		sa.Column('rush_approved_by_id', sa.String(36)),
+		sa.Column('rush_approved_by_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('rush_approved_at', sa.DateTime),
 		sa.Column('estimated_completion', sa.DateTime),
 		sa.Column('actual_completion', sa.DateTime),
@@ -324,8 +325,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'project_contracts',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('contract_number', sa.String(100), nullable=False, index=True),
 		sa.Column('client_name', sa.String(255), nullable=False),
 		sa.Column('client_contact_name', sa.String(255)),
@@ -351,8 +352,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'workload_forecasts',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('forecast_date', sa.DateTime, nullable=False, index=True),
 		sa.Column('forecast_period_start', sa.DateTime, nullable=False),
 		sa.Column('forecast_period_end', sa.DateTime, nullable=False),
@@ -371,8 +372,8 @@ def upgrade() -> None:
 	# =====================================================
 	op.create_table(
 		'project_checkpoints',
-		sa.Column('id', sa.String(36), primary_key=True),
-		sa.Column('project_id', sa.String(36), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
+		sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+		sa.Column('project_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('scanning_projects.id', ondelete='CASCADE'), nullable=False, index=True),
 		sa.Column('checkpoint_number', sa.Integer, nullable=False),
 		sa.Column('name', sa.String(255), nullable=False),
 		sa.Column('description', sa.String(1000)),
@@ -384,7 +385,7 @@ def upgrade() -> None:
 		sa.Column('status', sa.String(50), server_default='pending'),
 		sa.Column('pass_criteria', sa.String(2000)),
 		sa.Column('review_notes', sa.String(2000)),
-		sa.Column('reviewed_by_id', sa.String(36)),
+		sa.Column('reviewed_by_id', postgresql.UUID(as_uuid=True)),
 		sa.Column('reviewed_by_name', sa.String(255)),
 		sa.Column('reviewed_at', sa.DateTime),
 		sa.Column('created_at', sa.DateTime, server_default=sa.func.now()),
