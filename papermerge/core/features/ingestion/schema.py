@@ -218,6 +218,15 @@ class ValidationRuleInfo(BaseModel):
 	model_config = ConfigDict(from_attributes=True)
 
 
+class IngestionStats(BaseModel):
+	"""Ingestion statistics."""
+	active: int = 0
+	total: int = 0
+	jobs_today: int = 0
+	failed: int = 0
+	success_rate: float = 100.0
+
+
 class FileValidationResult(BaseModel):
 	"""Result of file validation."""
 	valid: bool

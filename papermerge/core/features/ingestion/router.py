@@ -146,6 +146,64 @@ async def delete_ingestion_source(
 	return {"success": True}
 
 
+@router.get("/stats")
+async def get_ingestion_stats(
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.IngestionStats:
+	"""Get ingestion statistics for the current tenant."""
+	from datetime import datetime
+	today = datetime.utcnow().date()
+
+	# Total sources
+	total_stmt = select(func.count()).select_from(IngestionSource).where(
+		IngestionSource.tenant_id == user.tenant_id
+	)
+	total = await db_session.scalar(total_stmt) or 0
+
+	# Active sources
+	active_stmt = select(func.count()).select_from(IngestionSource).where(
+		IngestionSource.tenant_id == user.tenant_id,
+		IngestionSource.is_active == True
+	)
+	active = await db_session.scalar(active_stmt) or 0
+
+	# Jobs today
+	today_stmt = (
+		select(func.count())
+		.select_from(IngestionJob)
+		.join(IngestionSource, IngestionJob.source_id == IngestionSource.id)
+		.where(
+			IngestionSource.tenant_id == user.tenant_id,
+			func.date(IngestionJob.created_at) == today
+		)
+	)
+	jobs_today = await db_session.scalar(today_stmt) or 0
+
+	# Failed jobs today
+	failed_stmt = (
+		select(func.count())
+		.select_from(IngestionJob)
+		.join(IngestionSource, IngestionJob.source_id == IngestionSource.id)
+		.where(
+			IngestionSource.tenant_id == user.tenant_id,
+			func.date(IngestionJob.created_at) == today,
+			IngestionJob.status == "failed"
+		)
+	)
+	failed_today = await db_session.scalar(failed_stmt) or 0
+
+	success_rate = 100.0 if jobs_today == 0 else round((jobs_today - failed_today) / jobs_today * 100, 1)
+
+	return schema.IngestionStats(
+		active=active,
+		total=total,
+		jobs_today=jobs_today,
+		failed=failed_today,
+		success_rate=success_rate,
+	)
+
+
 @router.get("/jobs")
 async def list_ingestion_jobs(
 	user: require_scopes(scopes.NODE_VIEW),
@@ -154,22 +212,35 @@ async def list_ingestion_jobs(
 	status_filter: str | None = None,
 	page: int = 1,
 	page_size: int = 50,
+	limit: int | None = None,  # Alias for page_size
 ) -> schema.JobListResponse:
 	"""List ingestion jobs."""
-	offset = (page - 1) * page_size
+	effective_page_size = limit or page_size
+	offset = (page - 1) * effective_page_size
 
-	conditions = [IngestionJob.tenant_id == user.tenant_id]
+	# Join with IngestionSource to filter by tenant_id
+	conditions = [IngestionSource.tenant_id == user.tenant_id]
 	if source_id:
 		conditions.append(IngestionJob.source_id == source_id)
 	if status_filter:
 		conditions.append(IngestionJob.status == status_filter)
 
-	count_stmt = select(func.count()).select_from(IngestionJob).where(and_(*conditions))
-	total = await db_session.scalar(count_stmt)
+	count_stmt = (
+		select(func.count())
+		.select_from(IngestionJob)
+		.join(IngestionSource, IngestionJob.source_id == IngestionSource.id)
+		.where(and_(*conditions))
+	)
+	total = await db_session.scalar(count_stmt) or 0
 
-	stmt = select(IngestionJob).where(
-		and_(*conditions)
-	).order_by(IngestionJob.created_at.desc()).offset(offset).limit(page_size)
+	stmt = (
+		select(IngestionJob)
+		.join(IngestionSource, IngestionJob.source_id == IngestionSource.id)
+		.where(and_(*conditions))
+		.order_by(IngestionJob.created_at.desc())
+		.offset(offset)
+		.limit(effective_page_size)
+	)
 	result = await db_session.execute(stmt)
 	jobs = result.scalars().all()
 
@@ -177,7 +248,7 @@ async def list_ingestion_jobs(
 		items=[schema.JobInfo.model_validate(j) for j in jobs],
 		total=total,
 		page=page,
-		page_size=page_size,
+		page_size=effective_page_size,
 	)
 
 
