@@ -437,7 +437,7 @@ async def get_pending_qc_samples(
 	stmt = select(QualityControlSampleModel).where(
 		and_(
 			QualityControlSampleModel.batch_id.in_(batch_ids),
-			QualityControlSampleModel.review_status == QCReviewStatus.PENDING,
+			QualityControlSampleModel.review_status == QCReviewStatus.PENDING.value,
 		)
 	).order_by(QualityControlSampleModel.created_at)
 	result = await session.execute(stmt)
@@ -612,17 +612,17 @@ async def get_project_metrics(
 	batch_stmt = select(
 		func.count(ScanningBatchModel.id).label("total"),
 		func.sum(
-			case((ScanningBatchModel.status == ScanningBatchStatus.COMPLETED, 1), else_=0)
+			case((ScanningBatchModel.status == ScanningBatchStatus.COMPLETED.value, 1), else_=0)
 		).label("completed"),
 		func.sum(
-			case((ScanningBatchModel.status == ScanningBatchStatus.PENDING, 1), else_=0)
+			case((ScanningBatchModel.status == ScanningBatchStatus.PENDING.value, 1), else_=0)
 		).label("pending"),
 		func.sum(
 			case(
 				(ScanningBatchModel.status.in_([
-					ScanningBatchStatus.SCANNING,
-					ScanningBatchStatus.OCR_PROCESSING,
-					ScanningBatchStatus.QC_PENDING,
+					ScanningBatchStatus.SCANNING.value,
+					ScanningBatchStatus.OCR_PROCESSING.value,
+					ScanningBatchStatus.QC_PENDING.value,
 				]), 1),
 				else_=0
 			)
@@ -656,14 +656,14 @@ async def get_project_metrics(
 		qc_stmt = select(
 			func.count(QualityControlSampleModel.id).label("total"),
 			func.sum(
-				case((QualityControlSampleModel.review_status == QCReviewStatus.PASSED, 1), else_=0)
+				case((QualityControlSampleModel.review_status == QCReviewStatus.PASSED.value, 1), else_=0)
 			).label("passed"),
 			func.avg(QualityControlSampleModel.image_quality).label("avg_quality"),
 			func.avg(QualityControlSampleModel.ocr_accuracy).label("avg_ocr"),
 		).where(
 			and_(
 				QualityControlSampleModel.batch_id.in_(batch_ids),
-				QualityControlSampleModel.review_status != QCReviewStatus.PENDING,
+				QualityControlSampleModel.review_status != QCReviewStatus.PENDING.value,
 			)
 		)
 		qc_result = await session.execute(qc_stmt)

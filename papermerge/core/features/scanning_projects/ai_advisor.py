@@ -77,9 +77,9 @@ class ProjectAIAdvisor:
 		# Get batch statistics
 		batch_stmt = select(
 			func.count(ScanningBatchModel.id).label("total"),
-			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.COMPLETED, 1), else_=0)).label("completed"),
-			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.PENDING, 1), else_=0)).label("pending"),
-			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.SCANNING, 1), else_=0)).label("scanning"),
+			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.COMPLETED.value, 1), else_=0)).label("completed"),
+			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.PENDING.value, 1), else_=0)).label("pending"),
+			func.sum(case((ScanningBatchModel.status == ScanningBatchStatus.SCANNING.value, 1), else_=0)).label("scanning"),
 			func.sum(ScanningBatchModel.estimated_pages).label("estimated_pages"),
 			func.sum(ScanningBatchModel.actual_pages).label("actual_pages"),
 		).where(ScanningBatchModel.project_id == project_id)
@@ -113,13 +113,13 @@ class ProjectAIAdvisor:
 		if batch_ids:
 			qc_stmt = select(
 				func.count(QualityControlSampleModel.id).label("total"),
-				func.sum(case((QualityControlSampleModel.review_status == QCReviewStatus.PASSED, 1), else_=0)).label("passed"),
-				func.sum(case((QualityControlSampleModel.review_status == QCReviewStatus.FAILED, 1), else_=0)).label("failed"),
+				func.sum(case((QualityControlSampleModel.review_status == QCReviewStatus.PASSED.value, 1), else_=0)).label("passed"),
+				func.sum(case((QualityControlSampleModel.review_status == QCReviewStatus.FAILED.value, 1), else_=0)).label("failed"),
 				func.avg(QualityControlSampleModel.image_quality).label("avg_quality"),
 			).where(
 				and_(
 					QualityControlSampleModel.batch_id.in_(batch_ids),
-					QualityControlSampleModel.review_status != QCReviewStatus.PENDING,
+					QualityControlSampleModel.review_status != QCReviewStatus.PENDING.value,
 				)
 			)
 			qc_result = await session.execute(qc_stmt)
