@@ -3,10 +3,12 @@
 import asyncio
 import logging
 import ssl
+import sys
 import time
 import xml.etree.ElementTree as ET
 from io import BytesIO
 from typing import AsyncIterator, Any
+from urllib.parse import urlparse, urljoin
 
 import httpx
 
@@ -14,6 +16,10 @@ from .base import Scanner, ScannerProtocol, ScanOptions, ScanResult, ScanJobStat
 from .capabilities import (
 	ScannerCapabilities, ColorMode, InputSource, ImageFormat,
 	Resolution, ADFCapabilities, ScanArea
+)
+from .quirks import (
+	DeviceQuirks, QuirkFlag, detect_quirks,
+	get_effective_resolution, should_retry_on_status
 )
 
 logger = logging.getLogger(__name__)
@@ -31,7 +37,7 @@ class ESCLScanner(Scanner):
 	eSCL (Apple AirScan) scanner client.
 
 	Implements the eSCL protocol over HTTP/HTTPS for
-	network-connected scanners.
+	network-connected scanners with full device quirks support.
 	"""
 
 	protocol = ScannerProtocol.ESCL
@@ -73,6 +79,11 @@ class ESCLScanner(Scanner):
 		self._capabilities: ScannerCapabilities | None = None
 		self._info: dict = {}
 		self._current_job_url: str | None = None
+		
+		# Device quirks - will be detected when capabilities are fetched
+		self._quirks: DeviceQuirks = DeviceQuirks()
+		self._quirks_detected: bool = False
+		self._server_header: str = ''
 
 	@property
 	def id(self) -> str:
@@ -99,6 +110,109 @@ class ESCLScanner(Scanner):
 
 	async def __aexit__(self, *args):
 		await self.close()
+
+	async def _detect_and_apply_quirks(self) -> None:
+		"""Detect device quirks from capabilities response and server header."""
+		if self._quirks_detected:
+			return
+		
+		model = self._info.get('MakeAndModel', '')
+		manufacturer = self._info.get('Manufacturer', '')
+		
+		self._quirks = detect_quirks(model, manufacturer, self._server_header)
+		self._quirks_detected = True
+		
+		if self._quirks.flags:
+			logger.info(f"[ESCL] Detected quirks for {model}: {self._quirks}")
+		else:
+			logger.debug(f"[ESCL] No quirks detected for {model}")
+
+	def _get_request_headers(self) -> dict[str, str]:
+		"""Build HTTP headers with quirk adjustments."""
+		headers = {'Accept': '*/*'}
+		
+		# HP localhost header quirk
+		if self._quirks.has(QuirkFlag.LOCALHOST_HEADER):
+			headers['Host'] = self._quirks.host_header or 'localhost'
+			logger.debug(f"[ESCL] Applying LOCALHOST_HEADER quirk: Host={headers['Host']}")
+		
+		# EPSON port in host quirk
+		elif self._quirks.has(QuirkFlag.PORT_IN_HOST):
+			headers['Host'] = f"{self._host}:{self._port}"
+			logger.debug(f"[ESCL] Applying PORT_IN_HOST quirk: Host={headers['Host']}")
+		
+		return headers
+
+	async def _cleanup_job(self, job_url: str) -> bool:
+		"""
+		Clean up scan job by sending DELETE request.
+		
+		Some devices (Xerox B205/B215) break if cleanup is attempted,
+		so we check the SKIP_CLEANUP quirk first.
+		"""
+		if not job_url:
+			return True
+		
+		if self._quirks.has(QuirkFlag.SKIP_CLEANUP):
+			logger.info(f"[ESCL] Skipping cleanup (device quirk): {job_url}")
+			return True
+		
+		logger.info(f"[ESCL] Cleanup: DELETE {job_url}")
+		try:
+			async with httpx.AsyncClient(
+				timeout=10.0,
+				headers=self._get_request_headers()
+			) as client:
+				response = await client.delete(job_url)
+				success = response.status_code in (200, 204, 404)
+				if success:
+					logger.debug(f"[ESCL] Cleanup successful: {response.status_code}")
+				else:
+					logger.warning(f"[ESCL] Cleanup returned: {response.status_code}")
+				return success
+		except Exception as e:
+			logger.warning(f"[ESCL] Cleanup failed: {e}")
+			return False
+
+	async def _check_adf_state(self) -> tuple[bool, str]:
+		"""
+		Check ADF state before scanning (for devices that require it).
+		
+		Returns:
+			Tuple of (is_ready, state_description)
+		"""
+		if not self._quirks.has(QuirkFlag.CHECK_ADF_STATE):
+			return True, "check_not_required"
+		
+		try:
+			response = await self._client.get(
+				f"{self._base_url}/ScannerStatus",
+				headers=self._get_request_headers()
+			)
+			if response.status_code != 200:
+				return True, "status_unavailable"
+			
+			root = ET.fromstring(response.text)
+			adf_state = root.find('.//scan:AdfState', NAMESPACES)
+			
+			if adf_state is not None:
+				state = adf_state.text
+				# Common ADF states
+				if state in ('ScannerAdfLoaded', 'Loaded', 'Ready'):
+					return True, state
+				elif state in ('ScannerAdfEmpty', 'Empty'):
+					return False, "ADF is empty - please load documents"
+				elif state in ('ScannerAdfJam', 'Jammed'):
+					return False, "ADF paper jam detected"
+				elif state in ('ScannerAdfCoverOpen', 'CoverOpen'):
+					return False, "ADF cover is open"
+				else:
+					return True, state  # Unknown state - proceed anyway
+			
+			return True, "no_adf_state"
+		except Exception as e:
+			logger.warning(f"[ESCL] ADF state check failed: {e}")
+			return True, "check_failed"
 
 	async def is_available(self) -> bool:
 		"""Check if scanner is available."""
@@ -157,8 +271,16 @@ class ESCLScanner(Scanner):
 
 		response = await self._client.get(f"{self._base_url}/ScannerCapabilities")
 		response.raise_for_status()
+		
+		# Capture server header for quirks detection
+		self._server_header = response.headers.get('Server', '')
+		logger.debug(f"[ESCL] Server header: {self._server_header}")
 
 		self._capabilities = self._parse_capabilities(response.text)
+		
+		# Detect and apply device quirks after parsing capabilities
+		await self._detect_and_apply_quirks()
+		
 		return self._capabilities
 
 	def _parse_capabilities(self, xml_text: str) -> ScannerCapabilities:
@@ -239,41 +361,102 @@ class ESCLScanner(Scanner):
 		return ScannerCapabilities.from_escl(data)
 
 	async def scan(self, options: ScanOptions) -> ScanResult:
-		"""Perform a scan operation."""
+		"""Perform a scan operation with full quirks support."""
+		print(f"[ESCL] Starting scan: resolution={options.resolution}, format={options.format}", file=sys.stderr, flush=True)
+		logger.info(f"[ESCL] Starting scan with options: resolution={options.resolution}, format={options.format}")
 		start_time = time.time()
 		pages = []
 		errors = []
+		job_url = None
 
 		try:
+			# Ensure quirks are detected
+			if not self._quirks_detected:
+				await self.get_capabilities()
+			
+			# Apply resolution cap if device has one
+			effective_resolution = get_effective_resolution(self._quirks, options.resolution)
+			if effective_resolution != options.resolution:
+				logger.info(f"[ESCL] Resolution capped from {options.resolution} to {effective_resolution} (device quirk)")
+				options = ScanOptions(
+					**{**options.__dict__, 'resolution': effective_resolution}
+				)
+			
+			# Check ADF state for devices that require it
+			if options.input_source in ('adf', 'adf_duplex'):
+				adf_ready, adf_state = await self._check_adf_state()
+				logger.info(f"[ESCL] ADF state: {adf_state}")
+				if not adf_ready:
+					errors.append(f"ADF error: {adf_state}")
+					return ScanResult(
+						success=False,
+						pages=[],
+						page_count=0,
+						format=options.format,
+						scan_time_ms=(time.time() - start_time) * 1000,
+						errors=errors,
+					)
+			
+			# Apply init delay if device needs it
+			if self._quirks.init_delay_ms > 0:
+				logger.info(f"[ESCL] Applying init delay: {self._quirks.init_delay_ms}ms")
+				await asyncio.sleep(self._quirks.init_delay_ms / 1000)
+			
 			# Create scan job
 			job_url = await self._create_scan_job(options)
 			self._current_job_url = job_url
+			logger.info(f"[ESCL] Scan job URL: {job_url}")
+			print(f"[ESCL] Job URL: {job_url}", file=sys.stderr, flush=True)
 
 			# Wait for job to complete and retrieve pages
 			page_num = 0
 			while True:
+				logger.info(f"[ESCL] Fetching page {page_num}...")
 				page_data = await self._get_next_page(job_url, page_num)
 				if page_data is None:
+					logger.info(f"[ESCL] No more pages (got None for page {page_num})")
+					print(f"[ESCL] Scan complete: {page_num} pages", file=sys.stderr, flush=True)
 					break
+				logger.info(f"[ESCL] Got page {page_num}, size: {len(page_data)} bytes")
+				print(f"[ESCL] Got page {page_num}: {len(page_data)} bytes", file=sys.stderr, flush=True)
 				pages.append(page_data)
 				page_num += 1
 
 				if options.max_pages and page_num >= options.max_pages:
+					logger.info(f"[ESCL] Reached max_pages limit: {options.max_pages}")
 					break
 
+			scan_time = (time.time() - start_time) * 1000
+			logger.info(f"[ESCL] Scan completed successfully: {len(pages)} pages in {scan_time:.0f}ms")
+			print(f"[ESCL] SUCCESS: {len(pages)} pages in {scan_time:.0f}ms", file=sys.stderr, flush=True)
+			
 			return ScanResult(
 				success=True,
 				pages=pages,
 				page_count=len(pages),
 				format=options.format,
-				scan_time_ms=(time.time() - start_time) * 1000,
+				scan_time_ms=scan_time,
 			)
 
 		except httpx.HTTPStatusError as e:
+			logger.error(f"[ESCL] HTTP error during scan: {e.response.status_code}")
+			print(f"[ESCL] HTTP error: {e.response.status_code}", file=sys.stderr, flush=True)
 			errors.append(f"HTTP error: {e.response.status_code}")
+		except TimeoutError as e:
+			logger.error(f"[ESCL] Timeout error during scan: {e}")
+			print(f"[ESCL] Timeout: {e}", file=sys.stderr, flush=True)
+			errors.append(f"Timeout: {str(e)}")
 		except Exception as e:
+			logger.error(f"[ESCL] Unexpected error during scan: {e}", exc_info=True)
+			print(f"[ESCL] Error: {e}", file=sys.stderr, flush=True)
 			errors.append(str(e))
+		finally:
+			# Cleanup job (respecting SKIP_CLEANUP quirk)
+			if job_url:
+				await self._cleanup_job(job_url)
+			self._current_job_url = None
 
+		logger.warning(f"[ESCL] Scan failed with errors: {errors}")
 		return ScanResult(
 			success=False,
 			pages=pages,
@@ -307,23 +490,53 @@ class ESCLScanner(Scanner):
 		"""Create a scan job and return the job URL."""
 		# Build scan settings XML
 		scan_settings = self._build_scan_settings(options)
+		logger.info(f"Creating scan job at {self._base_url}/ScanJobs")
+		logger.debug(f"Scan settings XML:\n{scan_settings}")
 
-		response = await self._client.post(
-			f"{self._base_url}/ScanJobs",
-			content=scan_settings,
-			headers={'Content-Type': 'application/xml'},
-		)
+		# Retry logic for busy scanner (503 errors)
+		max_retries = 10
+		retry_delay = 2.0
 
-		if response.status_code == 201:
-			# Job created, get location
-			job_url = response.headers.get('Location')
-			if job_url:
-				if not job_url.startswith('http'):
-					job_url = f"{self._base_url}/ScanJobs{job_url}"
-				return job_url
+		for attempt in range(max_retries):
+			response = await self._client.post(
+				f"{self._base_url}/ScanJobs",
+				content=scan_settings,
+				headers={'Content-Type': 'application/xml'},
+			)
 
-		response.raise_for_status()
-		raise RuntimeError("Failed to create scan job")
+			logger.info(f"Scan job creation response: {response.status_code} (attempt {attempt + 1})")
+			logger.debug(f"Response headers: {dict(response.headers)}")
+
+			if response.status_code == 201:
+				# Job created, get location directly from header
+				job_url = response.headers.get('Location')
+				logger.info(f"Location header: {job_url}")
+
+				if job_url:
+					if job_url.startswith('http'):
+						# Full URL provided - use as-is
+						logger.info(f"Using full job URL: {job_url}")
+					else:
+						# Relative URL - construct with port 80 for document retrieval
+						# HP scanners use port 80 for NextDocument even if API is on 8080
+						job_url = f"{self._scheme}://{self._host}:80{job_url}"
+						logger.info(f"Constructed job URL (port 80): {job_url}")
+
+					return job_url
+
+			elif response.status_code == 503:
+				# Scanner busy - wait and retry
+				logger.warning(f"Scanner busy (503), retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
+				await asyncio.sleep(retry_delay)
+				continue
+
+			else:
+				# Other error - fail immediately
+				logger.error(f"Scan job creation failed with status {response.status_code}: {response.text[:500]}")
+				response.raise_for_status()
+				break
+
+		raise RuntimeError(f"Failed to create scan job after {max_retries} retries - scanner may be busy")
 
 	def _build_scan_settings(self, options: ScanOptions) -> str:
 		"""Build eSCL scan settings XML."""
@@ -352,20 +565,19 @@ class ESCLScanner(Scanner):
 		}
 		doc_format = format_map.get(options.format, 'image/jpeg')
 
-		xml = f'''<?xml version="1.0" encoding="UTF-8"?>
-<scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03"
-                   xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm">
-    <pwg:Version>2.6</pwg:Version>
-    <pwg:ScanRegions>
+		xml = f'''<?xml version="1.0"?>
+<scan:ScanSettings xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm" xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03">
+    <pwg:Version>2.0</pwg:Version>
+    <pwg:ScanRegions pwg:MustHonor="false">
         <pwg:ScanRegion>
-            <pwg:ContentRegionUnits>escl:ThreeHundredthsOfInches</pwg:ContentRegionUnits>
+            <pwg:Height>{int((options.height or 297) / 25.4 * 300)}</pwg:Height>
+            <pwg:Width>{int((options.width or 215.9) / 25.4 * 300)}</pwg:Width>
             <pwg:XOffset>{int((options.x_offset or 0) / 25.4 * 300)}</pwg:XOffset>
             <pwg:YOffset>{int((options.y_offset or 0) / 25.4 * 300)}</pwg:YOffset>
-            <pwg:Width>{int((options.width or 215.9) / 25.4 * 300)}</pwg:Width>
-            <pwg:Height>{int((options.height or 297) / 25.4 * 300)}</pwg:Height>
+            <pwg:ContentRegionUnits>escl:ThreeHundredthsOfInches</pwg:ContentRegionUnits>
         </pwg:ScanRegion>
     </pwg:ScanRegions>
-    <scan:InputSource>{input_source}</scan:InputSource>
+    <pwg:InputSource>{input_source}</pwg:InputSource>
     <scan:ColorMode>{color_mode}</scan:ColorMode>
     <scan:XResolution>{options.resolution}</scan:XResolution>
     <scan:YResolution>{options.resolution}</scan:YResolution>
@@ -387,58 +599,132 @@ class ESCLScanner(Scanner):
 		return xml
 
 	async def _get_next_page(self, job_url: str, page_num: int) -> bytes | None:
-		"""Retrieve the next scanned page."""
-		# Poll for job completion
+		"""
+		Retrieve the next scanned page with full quirks support.
+
+		Following eSCL protocol:
+		- NextDocument is a blocking call while scanner is processing
+		- Returns 404 when no more pages are available (ADF empty or platen done)
+		- Use 404 as the terminal condition, not job status polling
+		
+		Quirks supported:
+		- NEXT_LOAD_DELAY: Wait between pages (Brother devices)
+		- RETRY_ON_404: Retry on 404 (Xerox B205/B215)
+		- RETRY_ON_410: Retry on 410 (Xerox devices)
+		"""
+		page_url = f"{job_url}/NextDocument"
+		logger.info(f"[ESCL] Getting page {page_num} from: {page_url}")
+
+		# Brother devices need delay between pages
+		if page_num > 0 and self._quirks.has(QuirkFlag.NEXT_LOAD_DELAY):
+			delay_s = self._quirks.next_load_delay_ms / 1000
+			logger.info(f"[ESCL] Applying NEXT_LOAD_DELAY: {delay_s}s")
+			await asyncio.sleep(delay_s)
+
 		max_wait = 120  # seconds
-		poll_interval = 0.5
+		poll_interval = 2.0
 		elapsed = 0
+		retry_404_count = 0
+		retry_410_count = 0
+		max_status_retries = self._quirks.retry_count
 
 		while elapsed < max_wait:
-			status = await self._get_job_status(job_url)
+			try:
+				# Use a fresh client for document retrieval with quirk headers
+				async with httpx.AsyncClient(
+					timeout=60.0,
+					follow_redirects=True,
+					headers=self._get_request_headers()
+				) as client:
+					response = await client.get(page_url)
+					status = response.status_code
+					logger.info(f"[ESCL] NextDocument response: {status}, content-type: {response.headers.get('content-type')}")
 
-			if status == 'Completed':
-				# Get page data
-				page_url = f"{job_url}/NextDocument"
-				response = await self._client.get(page_url)
+					if status == 200:
+						# Page retrieved successfully
+						content_length = len(response.content)
+						logger.info(f"[ESCL] Successfully retrieved page {page_num}, size: {content_length} bytes")
+						return response.content
 
-				if response.status_code == 200:
-					return response.content
-				elif response.status_code == 404:
-					# No more pages
-					return None
-				else:
-					response.raise_for_status()
+					elif status == 404:
+						# Check if we should retry on 404 (Xerox quirk)
+						if self._quirks.has(QuirkFlag.RETRY_ON_404) and retry_404_count < max_status_retries:
+							retry_404_count += 1
+							logger.info(f"[ESCL] 404 - retrying (quirk): attempt {retry_404_count}/{max_status_retries}")
+							await asyncio.sleep(self._quirks.retry_delay_ms / 1000)
+							elapsed += self._quirks.retry_delay_ms / 1000
+							continue
+						# 404 is the terminal condition - no more pages
+						logger.info(f"[ESCL] 404 from NextDocument - no more pages available")
+						return None
 
-			elif status == 'Processing':
+					elif status == 410:
+						# Check if we should retry on 410 (Xerox quirk)
+						if self._quirks.has(QuirkFlag.RETRY_ON_410) and retry_410_count < max_status_retries:
+							retry_410_count += 1
+							logger.info(f"[ESCL] 410 - retrying (quirk): attempt {retry_410_count}/{max_status_retries}")
+							await asyncio.sleep(self._quirks.retry_delay_ms / 1000)
+							elapsed += self._quirks.retry_delay_ms / 1000
+							continue
+						# 410 Gone - resource no longer available
+						logger.info(f"[ESCL] 410 from NextDocument - scan complete")
+						return None
+
+					elif status == 503:
+						# Scanner busy - wait and retry
+						logger.info(f"[ESCL] 503 - scanner busy, waiting {poll_interval}s...")
+						await asyncio.sleep(poll_interval)
+						elapsed += poll_interval
+
+					else:
+						logger.warning(f"[ESCL] Unexpected response {status}: {response.text[:200] if response.text else 'no body'}")
+						await asyncio.sleep(poll_interval)
+						elapsed += poll_interval
+
+			except httpx.ConnectError as e:
+				logger.error(f"[ESCL] Connection error fetching page from {page_url}: {e}")
 				await asyncio.sleep(poll_interval)
 				elapsed += poll_interval
 
-			elif status in ('Canceled', 'Aborted'):
-				return None
-
-			else:
-				logger.warning(f"Unknown job status: {status}")
+			except httpx.TimeoutException as e:
+				# Timeout might mean scanner is still processing - retry
+				logger.warning(f"[ESCL] Timeout fetching page (scanner may still be processing): {e}")
 				await asyncio.sleep(poll_interval)
 				elapsed += poll_interval
 
-		raise TimeoutError("Scan job timed out")
+			except Exception as e:
+				logger.error(f"[ESCL] Error fetching page from {page_url}: {e}", exc_info=True)
+				await asyncio.sleep(poll_interval)
+				elapsed += poll_interval
+
+		logger.error(f"[ESCL] Scan job timed out after {max_wait}s")
+		raise TimeoutError(f"Scan job timed out after {max_wait}s")
 
 	async def _get_job_status(self, job_url: str) -> str:
 		"""Get status of a scan job."""
+		logger.debug(f"Getting job status from: {job_url}")
 		try:
-			response = await self._client.get(job_url)
-			if response.status_code == 200:
-				root = ET.fromstring(response.text)
-				state = root.find('.//pwg:JobState', NAMESPACES)
-				if state is not None:
-					return state.text
-				# Try alternative element
-				state = root.find('.//scan:JobState', NAMESPACES)
-				if state is not None:
-					return state.text
-			return 'Unknown'
+			# Use a direct request for cross-port requests
+			async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as client:
+				response = await client.get(job_url)
+				logger.debug(f"Job status response: {response.status_code}")
+
+				if response.status_code == 200:
+					logger.debug(f"Job status XML:\n{response.text[:500]}")
+					root = ET.fromstring(response.text)
+					state = root.find('.//pwg:JobState', NAMESPACES)
+					if state is not None:
+						logger.info(f"Job state (pwg): {state.text}")
+						return state.text
+					# Try alternative element
+					state = root.find('.//scan:JobState', NAMESPACES)
+					if state is not None:
+						logger.info(f"Job state (scan): {state.text}")
+						return state.text
+				logger.warning(f"Could not find job state in response, status code: {response.status_code}")
+				return 'Unknown'
 		except Exception as e:
-			logger.error(f"Error getting job status: {e}")
+			logger.error(f"Error getting job status from {job_url}: {e}", exc_info=True)
 			return 'Unknown'
 
 	async def cancel_scan(self) -> bool:

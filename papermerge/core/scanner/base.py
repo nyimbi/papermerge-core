@@ -15,6 +15,7 @@ class ScannerProtocol(str, Enum):
 	"""Supported scanner protocols."""
 	ESCL = 'escl'
 	SANE = 'sane'
+	WSD = 'wsd'  # Web Services for Devices (Microsoft)
 	WIA = 'wia'  # Windows Image Acquisition (future)
 	TWAIN = 'twain'  # Legacy (future)
 
@@ -57,6 +58,9 @@ class ScanOptions:
 	# Enhancement
 	brightness: int = 0  # -100 to 100
 	contrast: int = 0  # -100 to 100
+	
+	# OCR language (ISO 639-3 code)
+	lang: str | None = None
 
 
 @dataclass

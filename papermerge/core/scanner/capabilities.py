@@ -264,3 +264,79 @@ class ScannerCapabilities:
 		caps.formats = [ImageFormat.PNG, ImageFormat.TIFF, ImageFormat.JPEG]
 
 		return caps
+
+	@classmethod
+	def from_wsd(cls, data: dict) -> "ScannerCapabilities":
+		"""Parse capabilities from WSD (Web Services for Devices) response."""
+		caps = cls()
+		caps.raw_capabilities = data
+
+		# Parse input sources
+		sources = data.get('InputSources', [])
+		caps.platen = 'Platen' in sources
+
+		# Parse ADF
+		if 'Feeder' in sources or 'ADFFront' in sources:
+			caps.adf = ADFCapabilities(
+				present=True,
+				duplex='ADFDuplex' in sources or 'ADFBack' in sources,
+			)
+
+		# Parse resolutions
+		resolutions = data.get('Resolutions', [])
+		if resolutions:
+			caps.resolution = Resolution(
+				min_dpi=min(resolutions),
+				max_dpi=max(resolutions),
+				default_dpi=300 if 300 in resolutions else resolutions[0],
+				discrete_values=resolutions,
+			)
+
+		# Parse color modes - WSD uses different naming
+		modes = data.get('ColorModes', [])
+		caps.color_modes = []
+		mode_map = {
+			'RGB24': ColorMode.COLOR,
+			'RGB48': ColorMode.COLOR,
+			'Color': ColorMode.COLOR,
+			'Grayscale8': ColorMode.GRAYSCALE,
+			'Grayscale16': ColorMode.GRAYSCALE,
+			'Grayscale': ColorMode.GRAYSCALE,
+			'BlackAndWhite1': ColorMode.MONOCHROME,
+			'BlackAndWhite': ColorMode.MONOCHROME,
+		}
+		for mode in modes:
+			if mode in mode_map and mode_map[mode] not in caps.color_modes:
+				caps.color_modes.append(mode_map[mode])
+
+		# Parse formats - WSD uses different naming
+		formats = data.get('DocumentFormats', [])
+		caps.formats = []
+		format_map = {
+			'jfif': ImageFormat.JPEG,
+			'jpeg': ImageFormat.JPEG,
+			'png': ImageFormat.PNG,
+			'tiff': ImageFormat.TIFF,
+			'tiff-single-uncompressed': ImageFormat.TIFF,
+			'tiff-single-g4': ImageFormat.TIFF,
+			'tiff-single-jpeg-tn2': ImageFormat.TIFF,
+			'tiff-multi-uncompressed': ImageFormat.TIFF,
+			'tiff-multi-g4': ImageFormat.TIFF,
+			'pdf-a': ImageFormat.PDF,
+			'xps': ImageFormat.PDF,  # Map XPS to PDF as closest equivalent
+		}
+		for fmt in formats:
+			fmt_lower = fmt.lower()
+			if fmt_lower in format_map and format_map[fmt_lower] not in caps.formats:
+				caps.formats.append(format_map[fmt_lower])
+
+		# Parse scan area - WSD provides dimensions in mm
+		if 'MaxWidth' in data and 'MaxHeight' in data:
+			caps.platen_area = ScanArea(
+				min_x=0,
+				min_y=0,
+				max_x=data['MaxWidth'],
+				max_y=data['MaxHeight'],
+			)
+
+		return caps

@@ -1,11 +1,14 @@
 # (c) Copyright Datacraft, 2026
 """Scanner management service with robust discovery and device control."""
 import asyncio
+import concurrent.futures
 import logging
+import sys
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import select, update, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -184,6 +187,8 @@ async def discover_scanners(
 
 async def get_scanner_instance(scanner: ScannerModel) -> Scanner:
 	"""Create a scanner instance from database model."""
+	from papermerge.core.scanner.wsd import WSDScanner
+	
 	if scanner.protocol == 'escl':
 		# Parse connection URI: escl://host:port/path
 		uri = scanner.connection_uri
@@ -203,6 +208,20 @@ async def get_scanner_instance(scanner: ScannerModel) -> Scanner:
 		if device_name.startswith('sane://'):
 			device_name = device_name[7:]
 		return SANEScanner(device_name=device_name)
+
+	elif scanner.protocol == 'wsd':
+		# Parse connection URI: wsd://host:port/path
+		uri = scanner.connection_uri
+		if uri.startswith('wsd://'):
+			uri = uri[6:]
+		parts = uri.split('/', 1)
+		host_port = parts[0].split(':')
+		host = host_port[0]
+		port = int(host_port[1]) if len(host_port) > 1 else 80
+		path = '/' + parts[1] if len(parts) > 1 else '/wsd/scan'
+		device_uri = f"http://{host}:{port}{path}"
+
+		return WSDScanner(host=host, port=port, device_uri=device_uri)
 
 	else:
 		raise ValueError(f"Unsupported protocol: {scanner.protocol}")
@@ -385,6 +404,25 @@ async def get_scanner_status(
 		)
 
 
+async def get_scanner_capabilities(
+	session: AsyncSession,
+	tenant_id: str,
+	scanner_id: str,
+) -> ScannerCapabilitiesResponse | None:
+	"""Get cached scanner capabilities."""
+	result = await session.execute(
+		select(ScannerModel).where(
+			ScannerModel.id == scanner_id,
+			ScannerModel.tenant_id == tenant_id,
+		)
+	)
+	scanner = result.scalar_one_or_none()
+	if not scanner or not scanner.capabilities:
+		return None
+
+	return _dict_to_capabilities_response(scanner.capabilities)
+
+
 async def refresh_scanner_capabilities(
 	session: AsyncSession,
 	tenant_id: str,
@@ -420,6 +458,125 @@ async def refresh_scanner_capabilities(
 
 
 # === Scan Jobs ===
+
+# ThreadPoolExecutor for synchronous fallback if async background tasks fail
+_scan_executor = concurrent.futures.ThreadPoolExecutor(
+	max_workers=4,
+	thread_name_prefix="scan_worker"
+)
+
+
+async def execute_scan_job_background(
+	job_id: str,
+	tenant_id: str,
+) -> None:
+	"""
+	Background task that executes a scan job asynchronously.
+
+	This is an ASYNC function - Starlette's BackgroundTasks natively supports
+	async functions and will await them in the main event loop after the
+	response is sent.
+
+	We create a new database session since the request's session will be closed.
+	"""
+	from papermerge.core.db.engine import AsyncSessionLocal
+
+	# Immediate stderr print for debugging - this MUST appear in logs
+	print(f"[SCAN BG] ENTERED for {job_id}", file=sys.stderr, flush=True)
+	logger.info(f"[SCAN BG] ENTERED for {job_id}")
+
+	try:
+		print(f"[SCAN BG] Creating new database session for job {job_id}", file=sys.stderr, flush=True)
+		async with AsyncSessionLocal() as session:
+			print(f"[SCAN BG] Calling execute_scan_job for {job_id}", file=sys.stderr, flush=True)
+			logger.info(f"[SCAN BG] Calling execute_scan_job for {job_id}")
+			result = await execute_scan_job(
+				session=session,
+				tenant_id=tenant_id,
+				job_id=job_id,
+			)
+			print(f"[SCAN BG] Job {job_id} completed: success={result.success}, pages={result.pages_scanned}", file=sys.stderr, flush=True)
+			logger.info(f"[SCAN BG] Job {job_id} completed: success={result.success}, pages={result.pages_scanned}")
+	except Exception as e:
+		import traceback
+		print(f"[SCAN BG] Job {job_id} FAILED with exception: {e}", file=sys.stderr, flush=True)
+		traceback.print_exc(file=sys.stderr)
+		logger.error(f"[SCAN BG] Job {job_id} failed with exception: {e}", exc_info=True)
+		# Try to update job status to failed
+		try:
+			print(f"[SCAN BG] Updating job {job_id} status to failed", file=sys.stderr, flush=True)
+			async with AsyncSessionLocal() as session:
+				from .models import ScanJobModel
+				job_result = await session.execute(
+					select(ScanJobModel).where(ScanJobModel.id == job_id)
+				)
+				job = job_result.scalar_one_or_none()
+				if job:
+					job.status = 'failed'
+					job.error_message = str(e)
+					job.completed_at = datetime.now()
+					await session.commit()
+					print(f"[SCAN BG] Updated job {job_id} status to failed", file=sys.stderr, flush=True)
+					logger.info(f"[SCAN BG] Updated job {job_id} status to failed")
+		except Exception as inner_e:
+			print(f"[SCAN BG] Failed to update job status: {inner_e}", file=sys.stderr, flush=True)
+			logger.error(f"[SCAN BG] Failed to update job status: {inner_e}")
+
+	print(f"[SCAN BG] FINISHED for job {job_id}", file=sys.stderr, flush=True)
+	logger.info(f"[SCAN BG] FINISHED for job {job_id}")
+
+
+def execute_scan_job_in_thread(job_id: str, tenant_id: str) -> None:
+	"""
+	Synchronous fallback for executing scan jobs in a thread pool.
+	Use this if async background tasks are not working reliably.
+	"""
+	def _run():
+		print(f"[SCAN THREAD] Starting for job {job_id}", file=sys.stderr, flush=True)
+		loop = asyncio.new_event_loop()
+		asyncio.set_event_loop(loop)
+		try:
+			loop.run_until_complete(_execute_scan_job_async(job_id, tenant_id))
+		except Exception as e:
+			import traceback
+			print(f"[SCAN THREAD] Job {job_id} FAILED: {e}", file=sys.stderr, flush=True)
+			traceback.print_exc(file=sys.stderr)
+		finally:
+			loop.close()
+			print(f"[SCAN THREAD] Finished for job {job_id}", file=sys.stderr, flush=True)
+	
+	_scan_executor.submit(_run)
+
+
+async def _execute_scan_job_async(job_id: str, tenant_id: str) -> None:
+	"""Internal async implementation for thread-based execution."""
+	from papermerge.core.db.engine import AsyncSessionLocal
+	
+	try:
+		async with AsyncSessionLocal() as session:
+			await execute_scan_job(
+				session=session,
+				tenant_id=tenant_id,
+				job_id=job_id,
+			)
+	except Exception as e:
+		# Mark job as failed
+		try:
+			async with AsyncSessionLocal() as session:
+				from .models import ScanJobModel
+				job_result = await session.execute(
+					select(ScanJobModel).where(ScanJobModel.id == job_id)
+				)
+				job = job_result.scalar_one_or_none()
+				if job:
+					job.status = 'failed'
+					job.error_message = str(e)
+					job.completed_at = datetime.now()
+					await session.commit()
+		except Exception:
+			pass
+		raise
+
 
 async def create_scan_job(
 	session: AsyncSession,
@@ -465,6 +622,7 @@ async def execute_scan_job(
 	job_id: str,
 ) -> ScanJobResultResponse:
 	"""Execute a pending scan job."""
+	print(f"DEBUG: execute_scan_job called for job {job_id}")
 	result = await session.execute(
 		select(ScanJobModel).where(
 			ScanJobModel.id == job_id,
@@ -473,6 +631,7 @@ async def execute_scan_job(
 	)
 	job = result.scalar_one_or_none()
 	if not job:
+		print(f"DEBUG: Job {job_id} not found")
 		return ScanJobResultResponse(
 			job_id=job_id,
 			success=False,
@@ -483,11 +642,13 @@ async def execute_scan_job(
 		)
 
 	# Get scanner
+	print(f"DEBUG: Getting scanner {job.scanner_id} for job {job_id}")
 	scanner_result = await session.execute(
 		select(ScannerModel).where(ScannerModel.id == job.scanner_id)
 	)
 	scanner = scanner_result.scalar_one_or_none()
 	if not scanner:
+		print(f"DEBUG: Scanner {job.scanner_id} not found for job {job_id}")
 		job.status = 'failed'
 		job.error_message = 'Scanner not found'
 		await session.commit()
@@ -504,13 +665,24 @@ async def execute_scan_job(
 	job.status = 'scanning'
 	job.started_at = datetime.now()
 	await session.commit()
+	print(f"DEBUG: Starting scan job {job_id} on scanner {scanner.name} ({scanner.connection_uri})")
+	logger.info(f"Starting scan job {job_id} on scanner {scanner.name} ({scanner.connection_uri})")
 
 	try:
+		print(f"DEBUG: Creating scanner instance for {scanner.connection_uri}")
 		instance = await get_scanner_instance(scanner)
+		print(f"DEBUG: Scanner instance created: {instance}")
 		options = ScanOptions(**job.options)
+		print(f"DEBUG: Scan options: resolution={options.resolution}, format={options.format}, color_mode={options.color_mode}")
+		logger.info(f"Scan options: resolution={options.resolution}, format={options.format}, color_mode={options.color_mode}")
 
+		print(f"DEBUG: Opening scanner connection...")
 		async with instance:
+			print(f"DEBUG: Scanner instance created, starting scan...")
+			logger.info(f"Scanner instance created, starting scan...")
 			scan_result = await instance.scan(options)
+			print(f"DEBUG: Scan completed: success={scan_result.success}, pages={scan_result.page_count}, errors={scan_result.errors}")
+			logger.info(f"Scan completed: success={scan_result.success}, pages={scan_result.page_count}, errors={scan_result.errors}")
 
 		if scan_result.success:
 			job.status = 'completed'
@@ -602,6 +774,7 @@ async def execute_scan_job(
 		)
 
 	except Exception as e:
+		logger.error(f"Scan job {job_id} failed with exception: {e}", exc_info=True)
 		job.status = 'failed'
 		job.error_message = str(e)
 		job.completed_at = datetime.now()
@@ -672,6 +845,54 @@ async def get_scan_jobs(
 	result = await session.execute(query)
 	jobs = result.scalars().all()
 	return [_job_to_response(j) for j in jobs]
+
+
+async def get_scan_job_by_id(
+	session: AsyncSession,
+	job_id: str,
+	tenant_id: str,
+) -> ScanJobResponse | None:
+	"""Get a scan job by ID."""
+	result = await session.execute(
+		select(ScanJobModel).where(
+			ScanJobModel.id == job_id,
+			ScanJobModel.tenant_id == tenant_id,
+		)
+	)
+	job = result.scalar_one_or_none()
+	if not job:
+		return None
+	return _job_to_response(job)
+
+
+async def get_scan_job_result(
+	session: AsyncSession,
+	job_id: str,
+	tenant_id: str,
+) -> ScanJobResultResponse | None:
+	"""Get scan job result with document IDs."""
+	result = await session.execute(
+		select(ScanJobModel).where(
+			ScanJobModel.id == job_id,
+			ScanJobModel.tenant_id == tenant_id,
+		)
+	)
+	job = result.scalar_one_or_none()
+	if not job:
+		return None
+
+	if job.status not in ['completed', 'failed']:
+		return None
+
+	return ScanJobResultResponse(
+		job_id=str(job.id),
+		success=job.status == 'completed',
+		pages_scanned=job.pages_scanned or 0,
+		format=job.options.get('format', 'jpeg') if job.options else 'jpeg',
+		scan_time_ms=job.scan_time_ms or 0,
+		document_ids=job.document_ids or [],
+		errors=[job.error_message] if job.error_message else [],
+	)
 
 
 # === Scan Profiles ===

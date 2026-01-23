@@ -1,5 +1,6 @@
 # (c) Copyright Datacraft, 2026
 """Scanner management API endpoints."""
+import asyncio
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +46,7 @@ async def list_scanners(
 	return await service.get_scanners(
 		session=session,
 		tenant_id=str(user.tenant_id),
-		include_inactive=include_inactive,
+		active_only=not include_inactive,
 	)
 
 
@@ -187,27 +188,66 @@ async def refresh_scanner_capabilities(
 
 # === Scan Jobs ===
 
+# Global variable to keep track of background scan tasks
+# This prevents tasks from being garbage collected
+_background_scan_tasks = {}
+
+
+def _task_done_callback(task: asyncio.Task, job_id: str):
+	"""
+	Callback invoked when a background scan task completes.
+	Logs exceptions with full traceback for debugging.
+	"""
+	import sys
+	import traceback
+	try:
+		exc = task.exception()
+		if exc:
+			print(f"[SCAN TASK {job_id}] EXCEPTION: {exc}", file=sys.stderr, flush=True)
+			traceback.print_exception(type(exc), exc, exc.__traceback__)
+	except asyncio.CancelledError:
+		print(f"[SCAN TASK {job_id}] CANCELLED", file=sys.stderr, flush=True)
+	except asyncio.InvalidStateError:
+		# Task still running or not done yet
+		pass
+	finally:
+		# Clean up task reference
+		_background_scan_tasks.pop(job_id, None)
+
+
 @router.post("/jobs", response_model=ScanJobResponse, status_code=201)
 async def create_scan_job(
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_session)],
-	background_tasks: BackgroundTasks,
 	data: ScanJobCreate,
 ) -> ScanJobResponse:
 	"""Create and start a new scan job."""
+	import sys
+	
 	job = await service.create_scan_job(
 		session=session,
 		tenant_id=str(user.tenant_id),
 		user_id=str(user.id),
 		data=data,
 	)
-	# Execute scan in background
-	background_tasks.add_task(
-		service.execute_scan_job,
-		session=session,
-		job_id=job.id,
-		tenant_id=str(user.tenant_id),
+	# Execute scan in background using asyncio.create_task for immediate execution
+	# This runs in the same event loop, avoiding issues with BackgroundTasks
+	print(f"[SCAN TASK {job.id}] Creating background task", file=sys.stderr, flush=True)
+	background_task = asyncio.create_task(
+		service.execute_scan_job_background(
+			job_id=job.id,
+			tenant_id=str(user.tenant_id),
+		)
 	)
+	# Store task reference to prevent garbage collection
+	_background_scan_tasks[job.id] = background_task
+	
+	# Add callback to log exceptions and clean up
+	background_task.add_done_callback(
+		lambda t: _task_done_callback(t, job.id)
+	)
+	
+	print(f"[SCAN TASK {job.id}] Background task created: {background_task}", file=sys.stderr, flush=True)
 	return job
 
 
