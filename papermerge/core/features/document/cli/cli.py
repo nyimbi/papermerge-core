@@ -28,5 +28,14 @@ def schedule_ocr(node_id: uuid.UUID, force: bool = False, lang: str | None = Non
                 route_name="ocr",
             )
         else:
-            # get all descendants of node_id
-            pass
+            doc_id_langs = dbapi.get_document_ids_in_folder(db_session, node_id)
+            for doc_id, doc_lang in doc_id_langs:
+                resolved_lang = lang or doc_lang
+                send_task(
+                    constants.WORKER_OCR_DOCUMENT,
+                    kwargs={
+                        "document_id": str(doc_id),
+                        "lang": resolved_lang,
+                    },
+                    route_name="ocr",
+                )

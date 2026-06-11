@@ -107,25 +107,33 @@ async def get_dashboard_stats(
 		)
 		return (await db_session.scalar(stmt)) or 0
 
+	async def _get_storage_quota_bytes() -> int:
+		from papermerge.core.features.tenants.db.orm import Tenant as TenantORM
+		tenant = await db_session.get(TenantORM, user.tenant_id)
+		quota_gb = (tenant.storage_quota_gb if tenant and tenant.storage_quota_gb else 10)
+		return quota_gb * 1024 * 1024 * 1024
+
 	try:
-		total, this_month, pending, active_wf, storage, ocr = await asyncio.gather(
+		total, this_month, pending, active_wf, storage, ocr, quota = await asyncio.gather(
 			_count_documents(),
 			_count_documents_this_month(),
 			_count_pending_tasks(),
 			_count_active_workflows(),
 			_sum_storage_bytes(),
 			_count_ocr_processed(),
+			_get_storage_quota_bytes(),
 		)
 	except Exception:
 		logger.exception("Failed to fetch dashboard stats")
 		total = this_month = pending = active_wf = storage = ocr = 0
+		quota = 10 * 1024 * 1024 * 1024
 
 	return {
 		"totalDocuments": total,
 		"documentsThisMonth": this_month,
 		"pendingTasks": pending,
 		"storageUsedBytes": storage,
-		"storageQuotaBytes": 10737418240,  # 10 GB default
+		"storageQuotaBytes": quota,
 		"activeWorkflows": active_wf,
 		"ocrProcessed": ocr,
 	}

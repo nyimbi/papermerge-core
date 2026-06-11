@@ -1,7 +1,9 @@
 import logging
 import ssl
 
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from papermerge.core.config import get_settings
@@ -30,6 +32,18 @@ engine = create_async_engine(
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
+
+def _make_sync_url(async_url: str) -> str:
+    return async_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+
+
+_sync_engine = create_engine(
+    _make_sync_url(settings.async_db_url),
+    poolclass=NullPool,
+)
+Session = sessionmaker(_sync_engine, expire_on_commit=False)
+
+
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
@@ -41,3 +55,11 @@ get_session = get_db
 
 def get_engine():
     return engine
+
+
+def get_async_session_maker():
+    return AsyncSessionLocal
+
+
+# Expose sync engine for tasks that need it
+sync_engine = _sync_engine

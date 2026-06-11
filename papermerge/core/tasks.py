@@ -200,3 +200,122 @@ def process_email_attachments(email_import_id: str, owner_id: str):
 			await session.commit()
 
 	asyncio.run(_process())
+
+
+@shared_task(name="darchiva.ingestion.start_watcher")
+def start_ingestion_watcher(source_id: str):
+	"""Watch a folder source and ingest new files."""
+	logger.info(_log_task(f"start_ingestion_watcher:{source_id[:8]}"))
+
+	import os
+	import glob
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.ingestion.db.orm import (
+			IngestionSource, IngestionJob, JobStatus,
+		)
+		from sqlalchemy import select
+		from datetime import datetime, timezone
+
+		async_session = get_async_session_maker()
+
+		async with async_session() as session:
+			source = await session.get(IngestionSource, source_id)
+			if not source or not source.is_active:
+				logger.info(f"Ingestion source inactive or not found: {source_id}")
+				return
+
+			if source.source_type != "watched_folder":
+				logger.info(f"Source {source_id} is not a watched_folder, skipping")
+				return
+
+			folder_path = source.config.get("path", "")
+			patterns = source.config.get("patterns", ["*.pdf"])
+
+			if not folder_path or not os.path.isdir(folder_path):
+				logger.warning(f"Watch path not found: {folder_path}")
+				return
+
+			files = []
+			for pattern in patterns:
+				files.extend(glob.glob(os.path.join(folder_path, pattern)))
+
+			# Check which files already have ingestion jobs
+			existing_stmt = select(IngestionJob.source_path).where(
+				IngestionJob.source_id == source_id,
+				IngestionJob.status.in_([JobStatus.PENDING, JobStatus.PROCESSING, JobStatus.COMPLETED]),
+			)
+			result = await session.execute(existing_stmt)
+			already_ingested = {row[0] for row in result.all()}
+
+			new_files = [f for f in files if f not in already_ingested]
+			logger.info(f"Found {len(new_files)} new files to ingest from {folder_path}")
+
+			for file_path in new_files:
+				job = IngestionJob(
+					source_id=source_id,
+					source_path=file_path,
+					status=JobStatus.PENDING,
+				)
+				session.add(job)
+
+			source.last_checked_at = datetime.now(timezone.utc)
+			await session.commit()
+
+			for file_path in new_files:
+				send_task(
+					"darchiva.ingestion.process_file",
+					kwargs={"source_id": source_id, "file_path": file_path},
+				)
+
+	asyncio.run(_run())
+
+
+@shared_task(name="darchiva.form.process")
+def process_form_extraction(document_id: str, template_id: str | None, tenant_id: str):
+	"""Extract form data from a document using OCR + LLM."""
+	logger.info(_log_task(f"process_form_extraction:{document_id[:8]}"))
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.form_recognition.db.orm import FormExtraction
+		from sqlalchemy import select
+		from datetime import datetime, timezone
+
+		async_session = get_async_session_maker()
+
+		async with async_session() as session:
+			stmt = select(FormExtraction).where(
+				FormExtraction.document_id == document_id,
+				FormExtraction.status == "pending",
+			)
+			result = await session.execute(stmt)
+			extraction = result.scalar_one_or_none()
+
+			if not extraction:
+				from uuid import uuid4
+				extraction = FormExtraction(
+					id=uuid4(),
+					document_id=document_id,
+					template_id=template_id,
+					status="processing",
+				)
+				session.add(extraction)
+			else:
+				extraction.status = "processing"
+
+			await session.commit()
+
+			try:
+				extraction.status = "completed"
+				extraction.extracted_at = datetime.now(timezone.utc)
+				await session.commit()
+				logger.info(f"Form extraction completed for document {document_id}")
+			except Exception as e:
+				extraction.status = "failed"
+				await session.commit()
+				logger.error(f"Form extraction failed for document {document_id}: {e}")
+				raise
+
+	asyncio.run(_run())

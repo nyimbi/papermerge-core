@@ -76,6 +76,46 @@ from .features.shared_nodes.db.api import (
 )
 from .features.audit.db.api import (get_audit_logs, get_audit_log)
 
+from uuid import UUID
+from sqlalchemy.orm import Session as SyncSession
+from sqlalchemy import select
+from .types import CType
+
+
+def get_node_type(db_session: SyncSession, node_id: UUID) -> CType | None:
+    from .features.nodes.db.orm import Node
+    result = db_session.execute(select(Node.ctype).where(Node.id == node_id))
+    return result.scalar_one_or_none()
+
+
+def get_document_lang(db_session: SyncSession, node_id: UUID) -> str:
+    from .features.nodes.db.orm import Node
+    result = db_session.execute(select(Node.lang).where(Node.id == node_id))
+    return result.scalar_one_or_none() or "deu"
+
+
+def get_document_ids_in_folder(db_session: SyncSession, folder_id: UUID) -> list[UUID]:
+    """Return IDs of all document-type nodes that are descendants of folder_id."""
+    from .features.nodes.db.orm import Node
+    from sqlalchemy import text as sa_text
+
+    # Recursive CTE to get all descendant node IDs + ctypes
+    cte = (
+        select(Node.id, Node.ctype, Node.lang)
+        .where(Node.id == folder_id)
+        .cte(recursive=True, name="descendants")
+    )
+    cte = cte.union_all(
+        select(Node.id, Node.ctype, Node.lang).where(Node.parent_id == cte.c.id)
+    )
+    stmt = (
+        select(cte.c.id, cte.c.lang)
+        .where(cte.c.ctype == "document")
+        .where(cte.c.id != folder_id)
+    )
+    rows = db_session.execute(stmt).all()
+    return [(row.id, row.lang) for row in rows]
+
 __all__ = [
     "get_nodes",
     "get_folder",
@@ -146,5 +186,9 @@ __all__ = [
     "get_document_last_version",
     # audit logs
     "get_audit_logs",
-    "get_audit_log"
+    "get_audit_log",
+    # node helpers (sync, used by CLI)
+    "get_node_type",
+    "get_document_lang",
+    "get_document_ids_in_folder",
 ]

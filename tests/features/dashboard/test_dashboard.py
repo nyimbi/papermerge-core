@@ -28,6 +28,7 @@ def _make_user():
 def _make_db():
     db = AsyncMock()
     db.scalar.return_value = 0
+    db.get.return_value = None  # no tenant → quota falls back to 10 GB default
     result_mock = MagicMock()
     result_mock.scalars.return_value.all.return_value = []
     db.execute.return_value = result_mock
