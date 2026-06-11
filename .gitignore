@@ -48,3 +48,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+# Claude Code worktrees and tool state
+.claude/worktrees/
+.omc/
+.serena/
