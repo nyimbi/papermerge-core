@@ -34,7 +34,7 @@ async def discover_scanners(
 	return await service.discover_scanners(timeout=timeout, force_refresh=force_refresh)
 
 
-# === Scanner CRUD ===
+# === Scanner list/create (static paths before /{scanner_id}) ===
 
 @router.get("", response_model=list[ScannerResponse])
 async def list_scanners(
@@ -64,129 +64,7 @@ async def register_scanner(
 	)
 
 
-@router.get("/{scanner_id}", response_model=ScannerResponse)
-async def get_scanner(
-	scanner_id: str,
-	user: Annotated[User, Depends(get_current_user)],
-	session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScannerResponse:
-	"""Get scanner details."""
-	scanner = await service.get_scanner_by_id(
-		session=session,
-		scanner_id=scanner_id,
-		tenant_id=str(user.tenant_id),
-	)
-	if not scanner:
-		raise HTTPException(status_code=404, detail="Scanner not found")
-	return scanner
-
-
-@router.patch("/{scanner_id}", response_model=ScannerResponse)
-async def update_scanner(
-	scanner_id: str,
-	user: Annotated[User, Depends(get_current_user)],
-	session: Annotated[AsyncSession, Depends(get_session)],
-	data: ScannerUpdate,
-) -> ScannerResponse:
-	"""Update scanner configuration."""
-	scanner = await service.update_scanner(
-		session=session,
-		scanner_id=scanner_id,
-		tenant_id=str(user.tenant_id),
-		data=data,
-	)
-	if not scanner:
-		raise HTTPException(status_code=404, detail="Scanner not found")
-	return scanner
-
-
-@router.delete("/{scanner_id}", status_code=204)
-async def delete_scanner(
-	scanner_id: str,
-	user: Annotated[User, Depends(get_current_user)],
-	session: Annotated[AsyncSession, Depends(get_session)],
-) -> None:
-	"""Remove a scanner registration."""
-	deleted = await service.delete_scanner(
-		session=session,
-		scanner_id=scanner_id,
-		tenant_id=str(user.tenant_id),
-	)
-	if not deleted:
-		raise HTTPException(status_code=404, detail="Scanner not found")
-
-
-@router.post("/{scanner_id}/api-key", response_model=ScannerApiKeyResponse)
-async def generate_scanner_api_key(
-	scanner_id: str,
-	user: Annotated[User, Depends(get_current_user)],
-	session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScannerApiKeyResponse:
-	"""Generate or rotate the API key for a scanner."""
-	result = await service.generate_scanner_api_key(
-		session=session,
-		scanner_id=scanner_id,
-		tenant_id=str(user.tenant_id),
-	)
-	if not result:
-		raise HTTPException(status_code=404, detail="Scanner not found")
-	return result
-
-
-# === Scanner Status & Capabilities ===
-
-@router.get("/{scanner_id}/status", response_model=ScannerStatusResponse)
-async def get_scanner_status(
-	scanner_id: str,
-	user: Annotated[User, Depends(get_current_user)],
-	session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScannerStatusResponse:
-	"""Get real-time scanner status."""
-	status = await service.get_scanner_status(
-		session=session,
-		scanner_id=scanner_id,
-		tenant_id=str(user.tenant_id),
-	)
-	if not status:
-		raise HTTPException(status_code=404, detail="Scanner not found")
-	return status
-
-
-@router.get("/{scanner_id}/capabilities", response_model=ScannerCapabilitiesResponse)
-async def get_scanner_capabilities(
-	scanner_id: str,
-	user: Annotated[User, Depends(get_current_user)],
-	session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScannerCapabilitiesResponse:
-	"""Get scanner capabilities."""
-	capabilities = await service.get_scanner_capabilities(
-		session=session,
-		scanner_id=scanner_id,
-		tenant_id=str(user.tenant_id),
-	)
-	if not capabilities:
-		raise HTTPException(status_code=404, detail="Scanner not found or capabilities unavailable")
-	return capabilities
-
-
-@router.post("/{scanner_id}/refresh-capabilities", response_model=ScannerCapabilitiesResponse)
-async def refresh_scanner_capabilities(
-	scanner_id: str,
-	user: Annotated[User, Depends(get_current_user)],
-	session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScannerCapabilitiesResponse:
-	"""Refresh scanner capabilities from device."""
-	capabilities = await service.refresh_scanner_capabilities(
-		session=session,
-		scanner_id=scanner_id,
-		tenant_id=str(user.tenant_id),
-	)
-	if not capabilities:
-		raise HTTPException(status_code=404, detail="Scanner not found or unreachable")
-	return capabilities
-
-
-# === Scan Jobs ===
+# === Scan Jobs (must be before /{scanner_id} to avoid capture) ===
 
 # Global variable to keep track of background scan tasks
 # This prevents tasks from being garbage collected
@@ -208,8 +86,12 @@ def _task_done_callback(task: asyncio.Task, job_id: str):
 	except asyncio.CancelledError:
 		print(f"[SCAN TASK {job_id}] CANCELLED", file=sys.stderr, flush=True)
 	except asyncio.InvalidStateError:
-		# Task still running or not done yet
-		pass
+		# Callback fired before the task settled — no result to inspect yet
+		import logging as _logging
+		_logging.getLogger(__name__).warning(
+			"[SCAN TASK %s] done-callback fired before task result available (InvalidStateError)",
+			job_id,
+		)
 	finally:
 		# Clean up task reference
 		_background_scan_tasks.pop(job_id, None)
@@ -223,7 +105,7 @@ async def create_scan_job(
 ) -> ScanJobResponse:
 	"""Create and start a new scan job."""
 	import sys
-	
+
 	job = await service.create_scan_job(
 		session=session,
 		tenant_id=str(user.tenant_id),
@@ -241,12 +123,12 @@ async def create_scan_job(
 	)
 	# Store task reference to prevent garbage collection
 	_background_scan_tasks[job.id] = background_task
-	
+
 	# Add callback to log exceptions and clean up
 	background_task.add_done_callback(
 		lambda t: _task_done_callback(t, job.id)
 	)
-	
+
 	print(f"[SCAN TASK {job.id}] Background task created: {background_task}", file=sys.stderr, flush=True)
 	return job
 
@@ -455,3 +337,125 @@ async def get_scanner_usage_stats(
 		tenant_id=str(user.tenant_id),
 		days=days,
 	)
+
+
+# === Scanner CRUD — dynamic /{scanner_id} routes MUST come after all static paths ===
+
+@router.get("/{scanner_id}", response_model=ScannerResponse)
+async def get_scanner(
+	scanner_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScannerResponse:
+	"""Get scanner details."""
+	scanner = await service.get_scanner_by_id(
+		session=session,
+		scanner_id=scanner_id,
+		tenant_id=str(user.tenant_id),
+	)
+	if not scanner:
+		raise HTTPException(status_code=404, detail="Scanner not found")
+	return scanner
+
+
+@router.patch("/{scanner_id}", response_model=ScannerResponse)
+async def update_scanner(
+	scanner_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+	data: ScannerUpdate,
+) -> ScannerResponse:
+	"""Update scanner configuration."""
+	scanner = await service.update_scanner(
+		session=session,
+		scanner_id=scanner_id,
+		tenant_id=str(user.tenant_id),
+		data=data,
+	)
+	if not scanner:
+		raise HTTPException(status_code=404, detail="Scanner not found")
+	return scanner
+
+
+@router.delete("/{scanner_id}", status_code=204)
+async def delete_scanner(
+	scanner_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+	"""Remove a scanner registration."""
+	deleted = await service.delete_scanner(
+		session=session,
+		scanner_id=scanner_id,
+		tenant_id=str(user.tenant_id),
+	)
+	if not deleted:
+		raise HTTPException(status_code=404, detail="Scanner not found")
+
+
+@router.post("/{scanner_id}/api-key", response_model=ScannerApiKeyResponse)
+async def generate_scanner_api_key(
+	scanner_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScannerApiKeyResponse:
+	"""Generate or rotate the API key for a scanner."""
+	result = await service.generate_scanner_api_key(
+		session=session,
+		scanner_id=scanner_id,
+		tenant_id=str(user.tenant_id),
+	)
+	if not result:
+		raise HTTPException(status_code=404, detail="Scanner not found")
+	return result
+
+
+@router.get("/{scanner_id}/status", response_model=ScannerStatusResponse)
+async def get_scanner_status(
+	scanner_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScannerStatusResponse:
+	"""Get real-time scanner status."""
+	status = await service.get_scanner_status(
+		session=session,
+		scanner_id=scanner_id,
+		tenant_id=str(user.tenant_id),
+	)
+	if not status:
+		raise HTTPException(status_code=404, detail="Scanner not found")
+	return status
+
+
+@router.get("/{scanner_id}/capabilities", response_model=ScannerCapabilitiesResponse)
+async def get_scanner_capabilities(
+	scanner_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScannerCapabilitiesResponse:
+	"""Get scanner capabilities."""
+	capabilities = await service.get_scanner_capabilities(
+		session=session,
+		scanner_id=scanner_id,
+		tenant_id=str(user.tenant_id),
+	)
+	if not capabilities:
+		raise HTTPException(status_code=404, detail="Scanner not found or capabilities unavailable")
+	return capabilities
+
+
+@router.post("/{scanner_id}/refresh-capabilities", response_model=ScannerCapabilitiesResponse)
+async def refresh_scanner_capabilities(
+	scanner_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScannerCapabilitiesResponse:
+	"""Refresh scanner capabilities from device."""
+	capabilities = await service.refresh_scanner_capabilities(
+		session=session,
+		scanner_id=scanner_id,
+		tenant_id=str(user.tenant_id),
+	)
+	if not capabilities:
+		raise HTTPException(status_code=404, detail="Scanner not found or unreachable")
+	return capabilities

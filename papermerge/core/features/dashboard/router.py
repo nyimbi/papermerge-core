@@ -81,25 +81,53 @@ async def get_dashboard_stats(
 		)
 		return (await db_session.scalar(stmt)) or 0
 
+	async def _sum_storage_bytes() -> int:
+		from papermerge.core.features.document.db.orm import DocumentVersion
+		stmt = (
+			select(func.coalesce(func.sum(DocumentVersion.size), 0))
+			.join(Ownership, Ownership.resource_id == DocumentVersion.document_id)
+			.where(
+				Ownership.owner_type == "user",
+				Ownership.owner_id == user.id,
+				Ownership.resource_type == "node",
+			)
+		)
+		return int((await db_session.scalar(stmt)) or 0)
+
+	async def _count_ocr_processed() -> int:
+		from papermerge.core.features.ingestion.db.orm import IngestionJob, IngestionSource
+		stmt = (
+			select(func.count())
+			.select_from(IngestionJob)
+			.join(IngestionSource, IngestionSource.id == IngestionJob.source_id)
+			.where(
+				IngestionJob.status == "completed",
+				IngestionSource.tenant_id == user.tenant_id,
+			)
+		)
+		return (await db_session.scalar(stmt)) or 0
+
 	try:
-		total, this_month, pending, active_wf = await asyncio.gather(
+		total, this_month, pending, active_wf, storage, ocr = await asyncio.gather(
 			_count_documents(),
 			_count_documents_this_month(),
 			_count_pending_tasks(),
 			_count_active_workflows(),
+			_sum_storage_bytes(),
+			_count_ocr_processed(),
 		)
 	except Exception:
 		logger.exception("Failed to fetch dashboard stats")
-		total = this_month = pending = active_wf = 0
+		total = this_month = pending = active_wf = storage = ocr = 0
 
 	return {
 		"totalDocuments": total,
 		"documentsThisMonth": this_month,
 		"pendingTasks": pending,
-		"storageUsedBytes": 0,
+		"storageUsedBytes": storage,
 		"storageQuotaBytes": 10737418240,  # 10 GB default
 		"activeWorkflows": active_wf,
-		"ocrProcessed": 0,
+		"ocrProcessed": ocr,
 	}
 
 

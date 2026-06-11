@@ -123,6 +123,28 @@ async def start_segmentation(
 
 
 @router.get(
+	"/jobs",
+	response_model=list[SegmentationJobSchema],
+	summary="List segmentation jobs",
+)
+async def list_jobs(
+	db: Annotated[AsyncSession, Depends(get_session)],
+	user: Annotated[User, Depends(get_current_user)],
+	limit: int = Query(50, ge=1, le=200),
+) -> list[SegmentationJobSchema]:
+	"""List segmentation jobs for the current tenant."""
+	stmt = (
+		select(SegmentationJob)
+		.where(SegmentationJob.tenant_id == user.tenant_id)
+		.order_by(SegmentationJob.created_at.desc())
+		.limit(limit)
+	)
+	result = await db.execute(stmt)
+	jobs = result.scalars().all()
+	return [SegmentationJobSchema.model_validate(j) for j in jobs]
+
+
+@router.get(
 	"/jobs/{job_id}",
 	response_model=SegmentationJobSchema,
 	summary="Get segmentation job status",

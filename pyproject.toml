@@ -57,6 +57,9 @@ dependencies = [
     "uuid6",
     "blake3",
     "prometheus-client",
+    "qrcode[pil]",
+    "reportlab",
+    "imagehash",
 ]
 
 [project.urls]
