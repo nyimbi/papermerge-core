@@ -52,12 +52,8 @@ def sync_email_account(account_id: str, owner_id: str):
 	"""Sync emails from an IMAP account."""
 	logger.info(_log_task(f"sync_email_account:{account_id[:8]}"))
 
-	from papermerge.core.db.engine import sync_engine
-	from sqlalchemy.orm import Session
-	from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 	from papermerge.core.features.emails.models import EmailAccountModel
 	from papermerge.core.features.emails.imap_client import sync_account
-	import os
 
 	async def _sync():
 		from papermerge.core.db.engine import get_async_session_maker
