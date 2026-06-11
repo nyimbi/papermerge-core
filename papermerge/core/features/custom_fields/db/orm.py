@@ -23,7 +23,7 @@ class CustomField(Base, AuditColumns, OwnedResourceMixin):
     __tablename__ = "custom_fields"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     type_handler: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     config: Mapped[dict] = mapped_column(JSONB, nullable=True, server_default='{}')
 
