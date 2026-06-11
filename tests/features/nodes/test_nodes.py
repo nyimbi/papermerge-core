@@ -26,6 +26,11 @@ def _db():
     result.scalar_one_or_none.return_value = None
     result.scalar.return_value = 0
     db.execute.return_value = result
+    # Handle db.scalars() direct usage (some endpoints bypass db.execute)
+    _sr = MagicMock()
+    _sr.all.return_value = []
+    db.scalars.return_value = _sr
+    db.scalar.return_value = 0
     return db
 
 
@@ -41,9 +46,11 @@ def test_get_folder_tree():
     assert response.status_code in (200, 500)
 
 
-def test_get_node_not_found():
+def test_get_node_children_empty():
+    # GET /{parent_id} returns paginated children — returns 200 with empty list
+    # when parent has no children (or parent doesn't exist but user has access)
     response = client.get(f"/nodes/{uuid.uuid4()}")
-    assert response.status_code in (404, 422, 500)
+    assert response.status_code in (200, 403, 500)
 
 
 def test_get_node_breadcrumb():

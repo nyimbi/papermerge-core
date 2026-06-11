@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from papermerge.core.utils.uuid_compat import uuid7str
@@ -510,6 +510,8 @@ class LocationCreateRequest(BaseModel):
 
 
 class LocationResponse(BaseModel):
+	model_config = ConfigDict(from_attributes=True)
+
 	id: UUID
 	code: str
 	name: str
@@ -528,9 +530,6 @@ class LocationResponse(BaseModel):
 	position: str | None
 	created_at: datetime
 
-	class Config:
-		from_attributes = True
-
 
 # ============ Container Schemas ============
 
@@ -548,6 +547,8 @@ class ContainerCreateRequest(BaseModel):
 
 
 class ContainerResponse(BaseModel):
+	model_config = ConfigDict(from_attributes=True)
+
 	id: UUID
 	barcode: str
 	container_type: str
@@ -566,9 +567,6 @@ class ContainerResponse(BaseModel):
 	last_verified_at: datetime | None
 	created_at: datetime
 	scanning_project_id: UUID | None
-
-	class Config:
-		from_attributes = True
 
 
 class ContainerMoveRequest(BaseModel):
@@ -610,6 +608,8 @@ class ScanResponse(BaseModel):
 
 
 class CustodyEventResponse(BaseModel):
+	model_config = ConfigDict(from_attributes=True)
+
 	id: UUID
 	container_id: UUID
 	event_type: str
@@ -622,9 +622,6 @@ class CustodyEventResponse(BaseModel):
 	notes: str | None
 	signature_captured: bool
 	created_at: datetime
-
-	class Config:
-		from_attributes = True
 
 
 # ============ Warehouse Location Endpoints ============

@@ -4,7 +4,7 @@ os.environ.setdefault("PM_DB_URL", "postgresql+asyncpg://x:x@localhost/x")
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from papermerge.core.features.encryption.router import router
+from papermerge.core.features.billing.router import router
 from papermerge.core.features.auth import get_current_user
 from papermerge.core.db.engine import get_db
 
@@ -39,21 +39,26 @@ app.dependency_overrides[get_db] = _db
 client = TestClient(app, raise_server_exceptions=False)
 
 
-def test_list_encryption_keys():
-    response = client.get("/encryption/keys")
+def test_billing_dashboard_ok():
+    response = client.get("/billing/dashboard")
     assert response.status_code in (200, 500)
 
 
-def test_get_key_not_found():
-    response = client.get(f"/encryption/keys/{uuid.uuid4()}")
-    assert response.status_code in (404, 422, 500)
-
-
-def test_list_access_requests():
-    response = client.get("/encryption/hidden-access/pending")
+def test_billing_alerts_list():
+    response = client.get("/billing/alerts")
     assert response.status_code in (200, 500)
 
 
-def test_request_single_view():
-    response = client.post("/encryption/single-view", json={})
-    assert response.status_code in (200, 201, 422, 500)
+def test_billing_invoices_list():
+    response = client.get("/billing/invoices")
+    assert response.status_code in (200, 500)
+
+
+def test_billing_usage_daily():
+    response = client.get("/billing/usage")
+    assert response.status_code in (200, 404, 500)
+
+
+def test_cost_estimate_missing_body():
+    response = client.post("/billing/estimate", json={})
+    assert response.status_code in (200, 422, 500)

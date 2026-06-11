@@ -1,6 +1,7 @@
 # (c) Copyright Datacraft, 2026
 """Scanner management API endpoints."""
 import asyncio
+import logging
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,7 @@ from .views import (
 from . import service
 
 router = APIRouter(prefix="/scanners", tags=["scanners"])
+logger = logging.getLogger(__name__)
 
 
 # === Discovery ===
@@ -72,12 +74,10 @@ _background_scan_tasks = {}
 
 
 def _task_done_callback(task: asyncio.Task, job_id: str):
-	"""
-	Callback invoked when a background scan task completes.
-	Logs exceptions with full traceback for debugging.
-	"""
+	"""Callback invoked when a background scan task completes."""
 	import sys
 	import traceback
+	settled = True
 	try:
 		exc = task.exception()
 		if exc:
@@ -86,14 +86,16 @@ def _task_done_callback(task: asyncio.Task, job_id: str):
 	except asyncio.CancelledError:
 		print(f"[SCAN TASK {job_id}] CANCELLED", file=sys.stderr, flush=True)
 	except asyncio.InvalidStateError:
-		# Callback fired before the task settled — no result to inspect yet
-		import logging as _logging
-		_logging.getLogger(__name__).warning(
-			"[SCAN TASK %s] done-callback fired before task result available (InvalidStateError)",
+		# Task is not yet settled — keep the reference alive so the task isn't
+		# garbage-collected before it finishes. This should not happen in normal
+		# operation since done-callbacks are only invoked on a settled task.
+		settled = False
+		logger.warning(
+			"[SCAN TASK %s] done-callback fired before task settled (InvalidStateError) — "
+			"keeping task reference alive",
 			job_id,
 		)
-	finally:
-		# Clean up task reference
+	if settled:
 		_background_scan_tasks.pop(job_id, None)
 
 

@@ -5,7 +5,6 @@ Multi-document segmentation feature.
 Detects and splits multiple documents from a single scanned image.
 Provides API endpoints for managing segments and reviewing detected documents.
 """
-from .router import router
 from .schema import (
 	SegmentationRequest,
 	SegmentSchema,
@@ -23,7 +22,6 @@ from .db import (
 )
 
 __all__ = [
-	'router',
 	'SegmentationRequest',
 	'SegmentSchema',
 	'SegmentListResponse',

@@ -4,7 +4,7 @@ os.environ.setdefault("PM_DB_URL", "postgresql+asyncpg://x:x@localhost/x")
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from papermerge.core.features.encryption.router import router
+from papermerge.core.features.portfolios.router import router
 from papermerge.core.features.auth import get_current_user
 from papermerge.core.db.engine import get_db
 
@@ -39,21 +39,21 @@ app.dependency_overrides[get_db] = _db
 client = TestClient(app, raise_server_exceptions=False)
 
 
-def test_list_encryption_keys():
-    response = client.get("/encryption/keys")
+def test_list_portfolios():
+    response = client.get("/portfolios/")
     assert response.status_code in (200, 500)
 
 
-def test_get_key_not_found():
-    response = client.get(f"/encryption/keys/{uuid.uuid4()}")
+def test_get_portfolio_not_found():
+    response = client.get(f"/portfolios/{uuid.uuid4()}")
     assert response.status_code in (404, 422, 500)
 
 
-def test_list_access_requests():
-    response = client.get("/encryption/hidden-access/pending")
-    assert response.status_code in (200, 500)
+def test_list_portfolio_cases():
+    response = client.get(f"/portfolios/{uuid.uuid4()}/cases")
+    assert response.status_code in (200, 404, 422, 500)
 
 
-def test_request_single_view():
-    response = client.post("/encryption/single-view", json={})
+def test_create_portfolio_missing_body():
+    response = client.post("/portfolios/", json={})
     assert response.status_code in (200, 201, 422, 500)

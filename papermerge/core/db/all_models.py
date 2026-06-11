@@ -1,0 +1,42 @@
+# Central import of all SQLAlchemy ORM models.
+#
+# SQLAlchemy resolves string-based relationship() references (e.g.,
+# relationship("ScanBatch")) by looking up registered mappers at
+# configure_mappers() time. If a referenced class hasn't been imported yet,
+# SQLAlchemy raises InvalidRequestError.
+#
+# Importing this module guarantees all feature ORM classes are registered
+# in the mapper registry before any mapper configuration occurs.
+
+from papermerge.core.features.api_tokens.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.audit.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.batches.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.billing.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.bundles.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.cases.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.custom_fields.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.departments.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.document_types.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.document.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.encryption.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.form_recognition.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.groups.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.ingestion.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.inventory.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.nodes.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.ownership.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.policies.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.portfolios.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.preferences.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.provenance.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.quality.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.roles.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.routing.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.search.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.segmentation.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.shared_nodes.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.special_folders.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.tags.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.tenants.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.users.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.workflows.db.orm import *  # noqa: F401, F403

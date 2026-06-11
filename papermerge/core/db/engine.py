@@ -8,6 +8,10 @@ from papermerge.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Register all ORM models so SQLAlchemy can resolve string-based relationship()
+# references before configure_mappers() is called.
+import papermerge.core.db.all_models  # noqa: F401, E402
+
 settings = get_settings()
 
 connect_args = {}

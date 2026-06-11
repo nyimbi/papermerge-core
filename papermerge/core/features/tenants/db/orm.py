@@ -293,3 +293,8 @@ class TenantSubscription(Base):
 	updated_at: Mapped[datetime] = mapped_column(
 		TIMESTAMP(timezone=True), default=utc_now, onupdate=func.now(), nullable=False
 	)
+
+
+# Ensure PolicyModel is registered in SQLAlchemy's mapper registry before
+# Tenant's relationship("PolicyModel") is resolved at configure_mappers() time.
+from papermerge.core.features.policies.db.orm import PolicyModel as _PolicyModel  # noqa: F401, E402

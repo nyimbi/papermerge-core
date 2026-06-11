@@ -1,4 +1,4 @@
 # (c) Copyright Datacraft, 2026
-from .router import router
+# Router is auto-discovered by router_loader — no eager import needed here.
 
-__all__ = ["router"]
+__all__: list[str] = []
