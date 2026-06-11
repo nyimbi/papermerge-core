@@ -695,7 +695,7 @@ async def get_daily_report(
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_db)],
 	report_date: date | None = None,
-	format: str = Query("html", regex="^(html|pdf)$"),
+	format: str = Query("html", pattern="^(html|pdf)$"),
 ):
 	"""Generate a daily progress report."""
 	from fastapi.responses import HTMLResponse, Response
@@ -718,7 +718,7 @@ async def get_weekly_report(
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_db)],
 	week_ending: date | None = None,
-	format: str = Query("html", regex="^(html|pdf)$"),
+	format: str = Query("html", pattern="^(html|pdf)$"),
 ):
 	"""Generate a weekly summary report."""
 	from fastapi.responses import HTMLResponse, Response

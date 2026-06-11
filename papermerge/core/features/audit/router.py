@@ -88,7 +88,7 @@ async def get_audit_log(
 async def get_activity_trend(
     user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.AUDIT_LOG_VIEW])],
     db_session: AsyncSession = Depends(get_db),
-    period: str = Query("daily", regex="^(hourly|daily|weekly)$"),
+    period: str = Query("daily", pattern="^(hourly|daily|weekly)$"),
     days: int = Query(30, ge=1, le=365),
     table_filter: str | None = None,
     operation_filter: str | None = None,
