@@ -25,6 +25,7 @@ from papermerge.core.features.users.db import api as usr_dbapi
 from papermerge.core.features.users.db import orm as user_orm
 from papermerge.core.features.roles.db import orm as role_orm
 from papermerge.core.features.auth import scopes
+from papermerge.core.features.auth import oauth2_scheme
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -130,9 +131,89 @@ async def login(
 	return Token(access_token=token, expires_in=86400)
 
 
+@router.post("/token/refresh", response_model=Token)
+async def refresh_token(
+	token: Annotated[str | None, Depends(oauth2_scheme)],
+	db_session: AsyncSession = Depends(get_db),
+) -> Token:
+	"""
+	Refresh a JWT token. Accepts the current (non-expired) token and returns
+	a new one with a fresh expiry.
+	"""
+	from papermerge.core.features.auth import extract_token_data
+	from papermerge.core import exceptions as exc
+
+	if not token:
+		raise HTTPException(
+			status_code=status.HTTP_401_UNAUTHORIZED,
+			detail="Missing token",
+			headers={"WWW-Authenticate": "Bearer"},
+		)
+
+	try:
+		token_data = extract_token_data(token)
+	except HTTPException:
+		raise
+	except Exception:
+		raise HTTPException(
+			status_code=status.HTTP_401_UNAUTHORIZED,
+			detail="Invalid token",
+			headers={"WWW-Authenticate": "Bearer"},
+		)
+
+	if token_data is None:
+		raise HTTPException(
+			status_code=status.HTTP_401_UNAUTHORIZED,
+			detail="Invalid token",
+			headers={"WWW-Authenticate": "Bearer"},
+		)
+
+	new_token = create_jwt_token(
+		user_id=token_data.user_id,
+		username=token_data.username,
+		email=token_data.email,
+		user_scopes=token_data.scopes,
+	)
+	return Token(access_token=new_token, expires_in=86400)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+	token: Annotated[str | None, Depends(oauth2_scheme)],
+) -> None:
+	"""
+	Logout endpoint. For JWT-only flows this is a no-op (tokens are stateless).
+	PAT tokens should be revoked via DELETE /api-tokens/{id}.
+	"""
+	# Stateless JWT — client drops the token. Nothing server-side to invalidate.
+	return None
+
+
 @router.get("/me")
 async def get_current_user_info(
+	token: Annotated[str | None, Depends(oauth2_scheme)],
 	db_session: AsyncSession = Depends(get_db),
 ):
-	"""Get current user info (placeholder - requires auth)."""
-	return {"message": "Use Authorization header with Bearer token"}
+	"""Get current authenticated user info from token."""
+	from papermerge.core.features.auth import extract_token_data
+
+	if not token:
+		raise HTTPException(
+			status_code=status.HTTP_401_UNAUTHORIZED,
+			detail="Not authenticated",
+			headers={"WWW-Authenticate": "Bearer"},
+		)
+
+	token_data = extract_token_data(token)
+	if token_data is None:
+		raise HTTPException(
+			status_code=status.HTTP_401_UNAUTHORIZED,
+			detail="Invalid token",
+		)
+
+	return {
+		"user_id": token_data.user_id,
+		"username": token_data.username,
+		"email": token_data.email,
+		"scopes": token_data.scopes,
+	}

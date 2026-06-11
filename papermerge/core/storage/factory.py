@@ -15,6 +15,7 @@ class StorageBackendType(str, Enum):
 	LINODE = "linode"
 	S3 = "s3"
 	R2 = "r2"
+	MINIO = "minio"
 
 
 @dataclass
@@ -41,6 +42,9 @@ class StorageConfig:
 	# Cloudflare R2 specific
 	r2_account_id: str = ""
 
+	# MinIO specific
+	minio_endpoint: str = "http://62.84.181.55:9002"
+
 	@classmethod
 	def from_env(cls) -> "StorageConfig":
 		"""Create config from environment variables."""
@@ -51,17 +55,34 @@ class StorageConfig:
 		except ValueError:
 			backend = StorageBackendType.LOCAL
 
+		# MinIO credentials: prefer PM_MINIO_* then fall back to generic storage keys
+		minio_access = os.getenv("PM_MINIO_ACCESS_KEY", "")
+		minio_secret = os.getenv("PM_MINIO_SECRET_KEY", "")
+		minio_bucket = os.getenv("PM_MINIO_BUCKET", "darchiva")
+		minio_endpoint = os.getenv("PM_MINIO_ENDPOINT", "http://62.84.181.55:9002")
+
+		# If backend is minio, use the minio-specific keys as access/secret/bucket
+		if backend == StorageBackendType.MINIO:
+			access_key = minio_access or os.getenv("PM_STORAGE_ACCESS_KEY_ID", "")
+			secret_key = minio_secret or os.getenv("PM_STORAGE_SECRET_ACCESS_KEY", "")
+			bucket = minio_bucket or os.getenv("PM_STORAGE_BUCKET", "")
+		else:
+			access_key = os.getenv("PM_STORAGE_ACCESS_KEY_ID", os.getenv("AWS_ACCESS_KEY_ID", ""))
+			secret_key = os.getenv("PM_STORAGE_SECRET_ACCESS_KEY", os.getenv("AWS_SECRET_ACCESS_KEY", ""))
+			bucket = os.getenv("PM_STORAGE_BUCKET", "")
+
 		return cls(
 			backend=backend,
 			local_path=os.getenv("PM_STORAGE_LOCAL_PATH", "/var/lib/papermerge/storage"),
-			access_key_id=os.getenv("PM_STORAGE_ACCESS_KEY_ID", os.getenv("AWS_ACCESS_KEY_ID", "")),
-			secret_access_key=os.getenv("PM_STORAGE_SECRET_ACCESS_KEY", os.getenv("AWS_SECRET_ACCESS_KEY", "")),
-			bucket=os.getenv("PM_STORAGE_BUCKET", ""),
+			access_key_id=access_key,
+			secret_access_key=secret_key,
+			bucket=bucket,
 			prefix=os.getenv("PM_STORAGE_PREFIX", ""),
 			linode_cluster_id=os.getenv("LINODE_CLUSTER_ID", "us-east-1"),
 			s3_region=os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1")),
 			s3_endpoint_url=os.getenv("PM_STORAGE_S3_ENDPOINT_URL"),
 			r2_account_id=os.getenv("CLOUDFLARE_ACCOUNT_ID", ""),
+			minio_endpoint=minio_endpoint,
 		)
 
 
@@ -130,6 +151,17 @@ def _create_backend(config: StorageConfig) -> StorageBackend:
 			secret_access_key=config.secret_access_key,
 			bucket=config.bucket,
 			account_id=config.r2_account_id,
+			prefix=config.prefix,
+		)
+
+	elif config.backend == StorageBackendType.MINIO:
+		from .s3 import S3StorageBackend
+		return S3StorageBackend(
+			access_key_id=config.access_key_id,
+			secret_access_key=config.secret_access_key,
+			bucket=config.bucket,
+			region="us-east-1",
+			endpoint_url=config.minio_endpoint,
 			prefix=config.prefix,
 		)
 
