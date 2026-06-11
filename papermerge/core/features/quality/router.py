@@ -58,7 +58,7 @@ async def list_quality_rules(
 @router.post("/rules")
 async def create_quality_rule(
 	rule_data: schema.QualityRuleCreate,
-	user: require_scopes(scopes.SETTINGS_EDIT),
+	user: require_scopes(scopes.SYSTEM_ADMIN),
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.QualityRuleInfo:
 	"""Create a new quality rule."""
@@ -110,7 +110,7 @@ async def get_quality_rule(
 async def update_quality_rule(
 	rule_id: UUID,
 	updates: schema.QualityRuleUpdate,
-	user: require_scopes(scopes.SETTINGS_EDIT),
+	user: require_scopes(scopes.SYSTEM_ADMIN),
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.QualityRuleInfo:
 	"""Update a quality rule."""
@@ -139,7 +139,7 @@ async def update_quality_rule(
 @router.delete("/rules/{rule_id}")
 async def delete_quality_rule(
 	rule_id: UUID,
-	user: require_scopes(scopes.SETTINGS_EDIT),
+	user: require_scopes(scopes.SYSTEM_ADMIN),
 	db_session: AsyncSession = Depends(get_db),
 ) -> dict:
 	"""Delete a quality rule."""
@@ -373,7 +373,7 @@ async def list_issues(
 async def update_issue(
 	issue_id: UUID,
 	update_data: schema.QualityIssueUpdateRequest,
-	user: require_scopes(scopes.NODE_EDIT),
+	user: require_scopes(scopes.NODE_UPDATE),
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.QualityIssueDetail:
 	"""Update a quality issue status."""

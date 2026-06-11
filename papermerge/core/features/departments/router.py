@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from papermerge.core.db.engine import get_async_session
+from papermerge.core.db.engine import get_session as get_async_session
 from papermerge.core.features.auth.dependencies import get_current_user_id
 
 from .db import api as db_api

@@ -160,6 +160,7 @@ async def create_workflow(
 		step = WorkflowStep(
 			workflow_id=db_workflow.id,
 			name=step_data.name,
+			step_type=step_data.step_type,
 			step_order=idx,
 			assignee_type=step_data.assignee_type,
 			assignee_id=step_data.assignee_id,

@@ -11,7 +11,10 @@ import io
 import logging
 from typing import Optional
 
-import pikepdf
+try:
+	import pikepdf
+except ImportError:
+	pikepdf = None  # type: ignore[assignment]
 from PIL import Image
 
 from papermerge.core.types import MimeType

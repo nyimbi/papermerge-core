@@ -8,7 +8,7 @@ from uuid import UUID
 from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select, and_
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.features.encryption.db.orm import HiddenDocumentAccess
 
@@ -36,7 +36,7 @@ class SingleViewResult:
 class SingleViewService:
 	"""Manage single-view access to hidden documents."""
 
-	def __init__(self, db: Session):
+	def __init__(self, db: AsyncSession):
 		self.db = db
 
 	async def create_single_view_access(
@@ -66,8 +66,8 @@ class SingleViewService:
 			allowed_actions=json.dumps(allowed_actions or ["view"]),
 		)
 		self.db.add(access)
-		self.db.commit()
-		self.db.refresh(access)
+		await self.db.commit()
+		await self.db.refresh(access)
 
 		logger.info(f"Created single-view access for document {document_id}")
 
@@ -156,7 +156,7 @@ class SingleViewService:
 		})
 		access.access_log = json.dumps(access_log)
 
-		self.db.commit()
+		await self.db.commit()
 
 		logger.info(f"Recorded view for access {access.id}")
 		return True
@@ -175,7 +175,7 @@ class SingleViewService:
 		access.is_revoked = True
 		access.revoked_by = revoked_by
 		access.revoked_at = datetime.now(timezone.utc)
-		self.db.commit()
+		await self.db.commit()
 
 		logger.info(f"Revoked access {access.id}")
 		return True
@@ -188,7 +188,8 @@ class SingleViewService:
 		stmt = select(HiddenDocumentAccess).where(
 			HiddenDocumentAccess.document_id == document_id
 		).order_by(HiddenDocumentAccess.created_at.desc())
-		return list(self.db.scalars(stmt))
+		result = await self.db.execute(stmt)
+		return list(result.scalars().all())
 
 	async def cleanup_expired_access(self) -> int:
 		"""Clean up expired access records."""
@@ -200,13 +201,14 @@ class SingleViewService:
 			)
 		)
 
+		result = await self.db.execute(stmt)
 		count = 0
-		for access in self.db.scalars(stmt):
+		for access in result.scalars().all():
 			access.is_revoked = True
 			count += 1
 
 		if count > 0:
-			self.db.commit()
+			await self.db.commit()
 			logger.info(f"Cleaned up {count} expired access records")
 
 		return count
@@ -224,4 +226,4 @@ class SingleViewService:
 		stmt = select(HiddenDocumentAccess).where(
 			HiddenDocumentAccess.access_code == access_code
 		)
-		return self.db.scalar(stmt)
+		return await self.db.scalar(stmt)

@@ -7,9 +7,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from papermerge.core.db import get_session
+from papermerge.core.db.engine import get_session
 from papermerge.core.features.auth import get_current_user
-from papermerge.core.features.auth.schema import User
+from papermerge.core.db.models import User
 
 from .service import SerialNumberService, SerialNumberError, DuplicateSerialNumberError
 from .views import (
@@ -214,9 +214,9 @@ async def lookup_by_serial(
 
 @router.get("/search", response_model=list[DocumentSerialNumberOut])
 async def search_serials(
-	query: str = Query(..., min_length=1),
 	service: Annotated[SerialNumberService, Depends(get_service)],
 	user: Annotated[User, Depends(get_current_user)],
+	query: str = Query(..., min_length=1),
 	limit: int = Query(20, ge=1, le=100),
 ):
 	"""Search documents by serial number."""

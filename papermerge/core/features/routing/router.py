@@ -149,6 +149,7 @@ async def route_document(
 
 	result = await auto_router.route_document(
 		document_id=request.document_id,
+		tenant_id=user.tenant_id,
 		mode=request.mode,
 	)
 

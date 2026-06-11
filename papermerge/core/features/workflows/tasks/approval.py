@@ -237,9 +237,13 @@ async def _update_approval_request(
 		from papermerge.core.db.engine import get_session
 		from papermerge.core.features.workflows.db.orm import WorkflowApprovalRequest
 
+		# execution_id is built as "{instance_id}_{node_id}" in translator.py;
+		# the DB column stores the instance UUID, so split and take the first part.
+		instance_uuid = UUID(execution_id.split("_")[0])
+
 		async with get_session() as db:
 			stmt = select(WorkflowApprovalRequest).where(
-				WorkflowApprovalRequest.execution_id == UUID(execution_id)
+				WorkflowApprovalRequest.execution_id == instance_uuid
 			)
 			result = await db.execute(stmt)
 			approval_request = result.scalar_one_or_none()
@@ -283,9 +287,13 @@ async def _escalate_approval(
 		from papermerge.core.db.engine import get_session
 		from papermerge.core.features.workflows.db.orm import WorkflowApprovalRequest
 
+		# execution_id is built as "{instance_id}_{node_id}" in translator.py;
+		# the DB column stores the instance UUID, so split and take the first part.
+		instance_uuid = UUID(execution_id.split("_")[0])
+
 		async with get_session() as db:
 			stmt = select(WorkflowApprovalRequest).where(
-				WorkflowApprovalRequest.execution_id == UUID(execution_id)
+				WorkflowApprovalRequest.execution_id == instance_uuid
 			)
 			result = await db.execute(stmt)
 			approval_request = result.scalar_one_or_none()

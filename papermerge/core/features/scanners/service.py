@@ -3,7 +3,6 @@
 import asyncio
 import concurrent.futures
 import logging
-import sys
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -34,7 +33,8 @@ from .views import (
 	ScannerCreate, ScannerUpdate, ScannerResponse, ScannerStatusResponse,
 	ScannerCapabilitiesResponse, ColorMode, ImageFormat,
 	ScanJobCreate, ScanJobResponse, ScanJobResultResponse,
-	ScanProfileCreate, ScanProfileResponse,
+	ScanProfileCreate, ScanProfileUpdate, ScanProfileResponse,
+	GlobalScannerSettingsUpdate, GlobalScannerSettingsResponse,
 	ScannerDashboard, ScannerUsageStats, ScannerApiKeyResponse,
 	ScannerStatus, ScanJobStatus, ScanOptionsBase,
 	DiscoveredScannerResponse,
@@ -250,6 +250,22 @@ async def get_scanner(
 	scanner_id: str,
 ) -> ScannerResponse | None:
 	"""Get a specific scanner."""
+	result = await session.execute(
+		select(ScannerModel).where(
+			ScannerModel.id == scanner_id,
+			ScannerModel.tenant_id == tenant_id,
+		)
+	)
+	scanner = result.scalar_one_or_none()
+	return _scanner_to_response(scanner) if scanner else None
+
+
+async def get_scanner_by_id(
+	session: AsyncSession,
+	scanner_id: str,
+	tenant_id: str,
+) -> ScannerResponse | None:
+	"""Get a scanner by ID (router-compatible signature)."""
 	result = await session.execute(
 		select(ScannerModel).where(
 			ScannerModel.id == scanner_id,
@@ -481,30 +497,23 @@ async def execute_scan_job_background(
 	"""
 	from papermerge.core.db.engine import AsyncSessionLocal
 
-	# Immediate stderr print for debugging - this MUST appear in logs
-	print(f"[SCAN BG] ENTERED for {job_id}", file=sys.stderr, flush=True)
-	logger.info(f"[SCAN BG] ENTERED for {job_id}")
+	logger.debug(f"[SCAN BG] ENTERED for {job_id}")
 
 	try:
-		print(f"[SCAN BG] Creating new database session for job {job_id}", file=sys.stderr, flush=True)
+		logger.debug(f"[SCAN BG] Creating new database session for job {job_id}")
 		async with AsyncSessionLocal() as session:
-			print(f"[SCAN BG] Calling execute_scan_job for {job_id}", file=sys.stderr, flush=True)
-			logger.info(f"[SCAN BG] Calling execute_scan_job for {job_id}")
+			logger.debug(f"[SCAN BG] Calling execute_scan_job for {job_id}")
 			result = await execute_scan_job(
 				session=session,
 				tenant_id=tenant_id,
 				job_id=job_id,
 			)
-			print(f"[SCAN BG] Job {job_id} completed: success={result.success}, pages={result.pages_scanned}", file=sys.stderr, flush=True)
-			logger.info(f"[SCAN BG] Job {job_id} completed: success={result.success}, pages={result.pages_scanned}")
+			logger.debug(f"[SCAN BG] Job {job_id} completed: success={result.success}, pages={result.pages_scanned}")
 	except Exception as e:
-		import traceback
-		print(f"[SCAN BG] Job {job_id} FAILED with exception: {e}", file=sys.stderr, flush=True)
-		traceback.print_exc(file=sys.stderr)
 		logger.error(f"[SCAN BG] Job {job_id} failed with exception: {e}", exc_info=True)
 		# Try to update job status to failed
 		try:
-			print(f"[SCAN BG] Updating job {job_id} status to failed", file=sys.stderr, flush=True)
+			logger.debug(f"[SCAN BG] Updating job {job_id} status to failed")
 			async with AsyncSessionLocal() as session:
 				from .models import ScanJobModel
 				job_result = await session.execute(
@@ -516,14 +525,11 @@ async def execute_scan_job_background(
 					job.error_message = str(e)
 					job.completed_at = datetime.now()
 					await session.commit()
-					print(f"[SCAN BG] Updated job {job_id} status to failed", file=sys.stderr, flush=True)
-					logger.info(f"[SCAN BG] Updated job {job_id} status to failed")
+					logger.debug(f"[SCAN BG] Updated job {job_id} status to failed")
 		except Exception as inner_e:
-			print(f"[SCAN BG] Failed to update job status: {inner_e}", file=sys.stderr, flush=True)
 			logger.error(f"[SCAN BG] Failed to update job status: {inner_e}")
 
-	print(f"[SCAN BG] FINISHED for job {job_id}", file=sys.stderr, flush=True)
-	logger.info(f"[SCAN BG] FINISHED for job {job_id}")
+	logger.debug(f"[SCAN BG] FINISHED for job {job_id}")
 
 
 def execute_scan_job_in_thread(job_id: str, tenant_id: str) -> None:
@@ -532,18 +538,16 @@ def execute_scan_job_in_thread(job_id: str, tenant_id: str) -> None:
 	Use this if async background tasks are not working reliably.
 	"""
 	def _run():
-		print(f"[SCAN THREAD] Starting for job {job_id}", file=sys.stderr, flush=True)
+		logger.debug(f"[SCAN THREAD] Starting for job {job_id}")
 		loop = asyncio.new_event_loop()
 		asyncio.set_event_loop(loop)
 		try:
 			loop.run_until_complete(_execute_scan_job_async(job_id, tenant_id))
 		except Exception as e:
-			import traceback
-			print(f"[SCAN THREAD] Job {job_id} FAILED: {e}", file=sys.stderr, flush=True)
-			traceback.print_exc(file=sys.stderr)
+			logger.error(f"[SCAN THREAD] Job {job_id} FAILED: {e}", exc_info=True)
 		finally:
 			loop.close()
-			print(f"[SCAN THREAD] Finished for job {job_id}", file=sys.stderr, flush=True)
+			logger.debug(f"[SCAN THREAD] Finished for job {job_id}")
 	
 	_scan_executor.submit(_run)
 
@@ -622,7 +626,7 @@ async def execute_scan_job(
 	job_id: str,
 ) -> ScanJobResultResponse:
 	"""Execute a pending scan job."""
-	print(f"DEBUG: execute_scan_job called for job {job_id}")
+	logger.debug(f"execute_scan_job called for job {job_id}")
 	result = await session.execute(
 		select(ScanJobModel).where(
 			ScanJobModel.id == job_id,
@@ -631,7 +635,7 @@ async def execute_scan_job(
 	)
 	job = result.scalar_one_or_none()
 	if not job:
-		print(f"DEBUG: Job {job_id} not found")
+		logger.debug(f"Job {job_id} not found")
 		return ScanJobResultResponse(
 			job_id=job_id,
 			success=False,
@@ -642,13 +646,13 @@ async def execute_scan_job(
 		)
 
 	# Get scanner
-	print(f"DEBUG: Getting scanner {job.scanner_id} for job {job_id}")
+	logger.debug(f"Getting scanner {job.scanner_id} for job {job_id}")
 	scanner_result = await session.execute(
 		select(ScannerModel).where(ScannerModel.id == job.scanner_id)
 	)
 	scanner = scanner_result.scalar_one_or_none()
 	if not scanner:
-		print(f"DEBUG: Scanner {job.scanner_id} not found for job {job_id}")
+		logger.debug(f"Scanner {job.scanner_id} not found for job {job_id}")
 		job.status = 'failed'
 		job.error_message = 'Scanner not found'
 		await session.commit()
@@ -665,23 +669,20 @@ async def execute_scan_job(
 	job.status = 'scanning'
 	job.started_at = datetime.now()
 	await session.commit()
-	print(f"DEBUG: Starting scan job {job_id} on scanner {scanner.name} ({scanner.connection_uri})")
 	logger.info(f"Starting scan job {job_id} on scanner {scanner.name} ({scanner.connection_uri})")
 
 	try:
-		print(f"DEBUG: Creating scanner instance for {scanner.connection_uri}")
+		logger.debug(f"Creating scanner instance for {scanner.connection_uri}")
 		instance = await get_scanner_instance(scanner)
-		print(f"DEBUG: Scanner instance created: {instance}")
+		logger.debug(f"Scanner instance created: {instance}")
 		options = ScanOptions(**job.options)
-		print(f"DEBUG: Scan options: resolution={options.resolution}, format={options.format}, color_mode={options.color_mode}")
-		logger.info(f"Scan options: resolution={options.resolution}, format={options.format}, color_mode={options.color_mode}")
+		logger.debug(f"Scan options: resolution={options.resolution}, format={options.format}, color_mode={options.color_mode}")
 
-		print(f"DEBUG: Opening scanner connection...")
+		logger.debug(f"Opening scanner connection...")
 		async with instance:
-			print(f"DEBUG: Scanner instance created, starting scan...")
-			logger.info(f"Scanner instance created, starting scan...")
+			logger.debug(f"Scanner connection open, starting scan...")
 			scan_result = await instance.scan(options)
-			print(f"DEBUG: Scan completed: success={scan_result.success}, pages={scan_result.page_count}, errors={scan_result.errors}")
+			logger.debug(f"Scan completed: success={scan_result.success}, pages={scan_result.page_count}, errors={scan_result.errors}")
 			logger.info(f"Scan completed: success={scan_result.success}, pages={scan_result.page_count}, errors={scan_result.errors}")
 
 		if scan_result.success:
@@ -830,6 +831,7 @@ async def cancel_scan_job(
 async def get_scan_jobs(
 	session: AsyncSession,
 	tenant_id: str,
+	user_id: str | None = None,
 	scanner_id: str | None = None,
 	status: str | None = None,
 	limit: int = 50,
@@ -914,7 +916,7 @@ async def get_scan_profiles(
 async def create_scan_profile(
 	session: AsyncSession,
 	tenant_id: str,
-	user_id: str,
+	created_by_id: str,
 	data: ScanProfileCreate,
 ) -> ScanProfileResponse:
 	"""Create a scan profile."""
@@ -927,7 +929,7 @@ async def create_scan_profile(
 
 	profile = ScanProfileModel(
 		tenant_id=tenant_id,
-		created_by_id=user_id,
+		created_by_id=created_by_id,
 		name=data.name,
 		description=data.description,
 		is_default=data.is_default,
@@ -936,6 +938,170 @@ async def create_scan_profile(
 	session.add(profile)
 	await session.commit()
 	return _profile_to_response(profile)
+
+
+async def get_scan_profile_by_id(
+	session: AsyncSession,
+	profile_id: str,
+	tenant_id: str,
+) -> ScanProfileResponse | None:
+	"""Get a scan profile by ID."""
+	result = await session.execute(
+		select(ScanProfileModel).where(
+			ScanProfileModel.id == profile_id,
+			ScanProfileModel.tenant_id == tenant_id,
+		)
+	)
+	profile = result.scalar_one_or_none()
+	return _profile_to_response(profile) if profile else None
+
+
+async def update_scan_profile(
+	session: AsyncSession,
+	profile_id: str,
+	tenant_id: str,
+	data: ScanProfileUpdate,
+) -> ScanProfileResponse | None:
+	"""Update a scan profile."""
+	result = await session.execute(
+		select(ScanProfileModel).where(
+			ScanProfileModel.id == profile_id,
+			ScanProfileModel.tenant_id == tenant_id,
+		)
+	)
+	profile = result.scalar_one_or_none()
+	if not profile:
+		return None
+
+	if data.is_default:
+		await session.execute(
+			update(ScanProfileModel)
+			.where(ScanProfileModel.tenant_id == tenant_id, ScanProfileModel.id != profile_id)
+			.values(is_default=False)
+		)
+
+	updates = data.model_dump(exclude_unset=True)
+	for field, value in updates.items():
+		if field == 'options' and value is not None:
+			profile.options = value if isinstance(value, dict) else data.options.model_dump()
+		else:
+			setattr(profile, field, value)
+
+	profile.updated_at = datetime.now()
+	await session.commit()
+	return _profile_to_response(profile)
+
+
+async def delete_scan_profile(
+	session: AsyncSession,
+	profile_id: str,
+	tenant_id: str,
+) -> bool:
+	"""Delete a scan profile."""
+	result = await session.execute(
+		delete(ScanProfileModel).where(
+			ScanProfileModel.id == profile_id,
+			ScanProfileModel.tenant_id == tenant_id,
+		)
+	)
+	await session.commit()
+	return result.rowcount > 0
+
+
+# === Scanner Settings ===
+
+async def get_scanner_settings(
+	session: AsyncSession,
+	tenant_id: str,
+) -> GlobalScannerSettingsResponse:
+	"""Get global scanner settings for a tenant, creating defaults if absent."""
+	result = await session.execute(
+		select(ScannerSettingsModel).where(ScannerSettingsModel.tenant_id == tenant_id)
+	)
+	settings = result.scalar_one_or_none()
+	if not settings:
+		settings = ScannerSettingsModel(tenant_id=tenant_id)
+		session.add(settings)
+		await session.commit()
+
+	return GlobalScannerSettingsResponse(
+		auto_discovery_enabled=settings.auto_discovery_enabled,
+		discovery_interval_seconds=settings.discovery_interval_seconds,
+		default_profile_id=settings.default_profile_id,
+		auto_process_scans=settings.auto_process_scans,
+		default_destination_folder_id=settings.default_destination_folder_id,
+	)
+
+
+async def update_scanner_settings(
+	session: AsyncSession,
+	tenant_id: str,
+	data: GlobalScannerSettingsUpdate,
+) -> GlobalScannerSettingsResponse:
+	"""Update global scanner settings for a tenant."""
+	result = await session.execute(
+		select(ScannerSettingsModel).where(ScannerSettingsModel.tenant_id == tenant_id)
+	)
+	settings = result.scalar_one_or_none()
+	if not settings:
+		settings = ScannerSettingsModel(tenant_id=tenant_id)
+		session.add(settings)
+
+	for field, value in data.model_dump(exclude_unset=True).items():
+		setattr(settings, field, value)
+
+	await session.commit()
+	return GlobalScannerSettingsResponse(
+		auto_discovery_enabled=settings.auto_discovery_enabled,
+		discovery_interval_seconds=settings.discovery_interval_seconds,
+		default_profile_id=settings.default_profile_id,
+		auto_process_scans=settings.auto_process_scans,
+		default_destination_folder_id=settings.default_destination_folder_id,
+	)
+
+
+async def get_scanner_usage_stats(
+	session: AsyncSession,
+	tenant_id: str,
+	days: int = 30,
+) -> list[ScannerUsageStats]:
+	"""Get per-scanner usage statistics for the last N days."""
+	since = datetime.now() - timedelta(days=days)
+
+	scanners_result = await session.execute(
+		select(ScannerModel).where(ScannerModel.tenant_id == tenant_id)
+	)
+	scanners = scanners_result.scalars().all()
+
+	stats = []
+	for scanner in scanners:
+		jobs_result = await session.execute(
+			select(ScanJobModel).where(
+				ScanJobModel.scanner_id == scanner.id,
+				ScanJobModel.created_at >= since,
+			)
+		)
+		scanner_jobs = jobs_result.scalars().all()
+		total_jobs = len(scanner_jobs)
+		successful = sum(1 for j in scanner_jobs if j.status == 'completed')
+		failed = sum(1 for j in scanner_jobs if j.status == 'failed')
+		total_pages = sum(j.pages_scanned or 0 for j in scanner_jobs)
+		avg_pages = total_pages / total_jobs if total_jobs > 0 else 0.0
+		avg_time = sum(j.scan_time_ms or 0 for j in scanner_jobs) / total_jobs if total_jobs > 0 else 0.0
+
+		stats.append(ScannerUsageStats(
+			scanner_id=scanner.id,
+			scanner_name=scanner.name,
+			total_jobs=total_jobs,
+			total_pages=total_pages,
+			successful_jobs=successful,
+			failed_jobs=failed,
+			average_pages_per_job=avg_pages,
+			average_scan_time_ms=avg_time,
+			uptime_percentage=100.0 if scanner.status == 'online' else 0.0,
+		))
+
+	return stats
 
 
 # === Dashboard ===
@@ -1021,14 +1187,20 @@ async def get_scanner_health(
 	tenant_id: str,
 ) -> dict:
 	"""Get detailed health and diagnostic info for a scanner."""
-	scanner = await get_scanner_by_id(session, scanner_id, tenant_id)
+	result = await session.execute(
+		select(ScannerModel).where(
+			ScannerModel.id == scanner_id,
+			ScannerModel.tenant_id == tenant_id,
+		)
+	)
+	scanner = result.scalar_one_or_none()
 	if not scanner:
 		return {"status": "unknown", "error": "Scanner not found"}
 
 	try:
 		instance = await get_scanner_instance(scanner)
 		status = await instance.get_status()
-		
+
 		# Check for recent failures
 		recent_jobs_result = await session.execute(
 			select(ScanJobModel)
@@ -1042,7 +1214,7 @@ async def get_scanner_health(
 		return {
 			"scanner_id": scanner_id,
 			"name": scanner.name,
-			"status": status.value,
+			"status": scanner.status,
 			"protocol": scanner.protocol,
 			"last_seen": scanner.last_seen_at,
 			"failure_rate_recent": failure_rate,

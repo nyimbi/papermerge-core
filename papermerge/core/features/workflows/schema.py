@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 class WorkflowStepCreate(BaseModel):
 	"""Schema for creating a workflow step."""
 	name: str
+	step_type: str = "action"
 	assignee_type: str = "user"
 	assignee_id: UUID | None = None
 	deadline_hours: int | None = None

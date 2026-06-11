@@ -12,7 +12,7 @@ from papermerge.core.features.auth.dependencies import require_scopes
 from papermerge.core.features.auth import scopes
 from papermerge.core.services.form_recognition import FormRecognitionService
 from . import schema
-from .db.orm import FormTemplate, FormField, FormExtraction, Signature
+from .db.orm import FormTemplate, FormField, FormExtraction, ExtractedFieldValue, Signature
 
 router = APIRouter(
 	prefix="/forms",
@@ -47,7 +47,7 @@ async def list_templates(
 	templates = result.scalars().all()
 
 	return schema.TemplateListResponse(
-		items=[schema.TemplateInfo.model_validate(t) for t in templates],
+		items=[schema.TemplateInfo.from_orm_template(t) for t in templates],
 		total=total,
 		page=page,
 		page_size=page_size,
@@ -72,7 +72,7 @@ async def create_template(
 		page_count=template.page_count,
 	)
 
-	return schema.TemplateInfo.model_validate(result)
+	return schema.TemplateInfo.from_orm_template(result)
 
 
 @router.get("/templates/{template_id}")
@@ -86,10 +86,12 @@ async def get_template(
 	if not template:
 		raise HTTPException(status_code=404, detail="Template not found")
 
-	# Get fields
-	stmt = select(FormField).where(
-		FormField.template_id == template_id
-	).order_by(FormField.order)
+	# ORM FormField has no `order` column — order by page_number, then name.
+	stmt = (
+		select(FormField)
+		.where(FormField.template_id == template_id)
+		.order_by(FormField.page_number, FormField.name)
+	)
 	result = await db_session.execute(stmt)
 	fields = result.scalars().all()
 
@@ -97,10 +99,23 @@ async def get_template(
 		id=template.id,
 		name=template.name,
 		category=template.category,
-		is_multipage=template.is_multipage,
+		# ORM has no is_multipage column; derive from page_count.
+		is_multipage=template.page_count > 1,
 		page_count=template.page_count,
-		is_active=template.is_active,
-		fields=[schema.FieldInfo.model_validate(f) for f in fields],
+		# ORM has no is_active column; all stored templates are considered active.
+		is_active=True,
+		fields=[
+			schema.FieldInfo(
+				id=f.id,
+				name=f.name,
+				field_type=f.field_type,
+				label=f.label,
+				page_number=f.page_number,
+				# ORM column is `required`, schema field is `is_required`.
+				is_required=f.required,
+			)
+			for f in fields
+		],
 	)
 
 
@@ -137,16 +152,25 @@ async def get_extraction_results(
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.ExtractionResult:
 	"""Get form extraction results for a document."""
-	stmt = select(FormExtraction).where(
-		FormExtraction.document_id == document_id
-	).order_by(FormExtraction.created_at.desc())
+	stmt = (
+		select(FormExtraction)
+		.where(FormExtraction.document_id == document_id)
+		.order_by(FormExtraction.created_at.desc())
+	)
 	result = await db_session.execute(stmt)
 	extraction = result.scalar()
 
 	if not extraction:
 		raise HTTPException(status_code=404, detail="No extraction found")
 
-	return schema.ExtractionResult.model_validate(extraction)
+	# Load field_values explicitly (async sessions don't support lazy loading).
+	fv_stmt = select(ExtractedFieldValue).where(
+		ExtractedFieldValue.extraction_id == extraction.id
+	)
+	fv_result = await db_session.execute(fv_stmt)
+	field_values = fv_result.scalars().all()
+
+	return schema.ExtractionResult.from_orm_extraction(extraction, field_values)
 
 
 @router.patch("/extractions/{extraction_id}/corrections")
@@ -172,24 +196,20 @@ async def get_document_signatures(
 	user: require_scopes(scopes.NODE_VIEW),
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.SignatureListResponse:
-	"""Get extracted signatures for a document."""
-	# Get extraction for document
-	stmt = select(FormExtraction).where(
-		FormExtraction.document_id == document_id
-	)
-	result = await db_session.execute(stmt)
-	extraction = result.scalar()
+	"""Get signatures associated with a document.
 
-	if not extraction:
-		return schema.SignatureListResponse(signatures=[])
-
-	# Get signatures
+	ORM Signature has no extraction_id FK.  We look up signatures via
+	captured_from_document_id instead.
+	"""
 	stmt = select(Signature).where(
-		Signature.extraction_id == extraction.id
+		and_(
+			Signature.captured_from_document_id == document_id,
+			Signature.tenant_id == user.tenant_id,
+		)
 	)
 	result = await db_session.execute(stmt)
 	signatures = result.scalars().all()
 
 	return schema.SignatureListResponse(
-		signatures=[schema.SignatureInfo.model_validate(s) for s in signatures]
+		signatures=[schema.SignatureInfo.from_orm_signature(s) for s in signatures]
 	)

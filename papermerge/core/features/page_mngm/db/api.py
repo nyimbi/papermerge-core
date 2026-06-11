@@ -6,7 +6,10 @@ import uuid
 from pathlib import Path
 from typing import List, Tuple
 
-from pikepdf import Pdf
+try:
+	from pikepdf import Pdf
+except ImportError:
+	Pdf = None  # type: ignore[assignment,misc]
 from sqlalchemy import select, delete, ScalarResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload

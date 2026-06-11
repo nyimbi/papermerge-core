@@ -236,6 +236,7 @@ class StorageBackend(str, Enum):
     S3 = 's3'
     R2 = 'r2'
     LINODE = 'linode'
+    MINIO = 'minio'
     LOCAL = 'local'
 
 

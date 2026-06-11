@@ -2,24 +2,24 @@
 """Tenant database API."""
 from uuid import UUID
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .orm import Tenant, TenantBranding, TenantSettings
 
 
-async def get_tenant(db: Session, tenant_id: UUID) -> Tenant | None:
+async def get_tenant(db: AsyncSession, tenant_id: UUID) -> Tenant | None:
 	"""Get tenant by ID."""
-	return db.get(Tenant, tenant_id)
+	return await db.get(Tenant, tenant_id)
 
 
-async def get_tenant_by_slug(db: Session, slug: str) -> Tenant | None:
+async def get_tenant_by_slug(db: AsyncSession, slug: str) -> Tenant | None:
 	"""Get tenant by slug."""
 	stmt = select(Tenant).where(Tenant.slug == slug)
-	return db.scalar(stmt)
+	return await db.scalar(stmt)
 
 
 async def create_tenant(
-	db: Session,
+	db: AsyncSession,
 	name: str,
 	slug: str,
 	contact_email: str | None = None,
@@ -31,7 +31,7 @@ async def create_tenant(
 		contact_email=contact_email,
 	)
 	db.add(tenant)
-	db.flush()
+	await db.flush()
 
 	# Create default branding
 	branding = TenantBranding(tenant_id=tenant.id)
@@ -41,18 +41,18 @@ async def create_tenant(
 	settings = TenantSettings(tenant_id=tenant.id)
 	db.add(settings)
 
-	db.commit()
-	db.refresh(tenant)
+	await db.commit()
+	await db.refresh(tenant)
 	return tenant
 
 
 async def update_tenant(
-	db: Session,
+	db: AsyncSession,
 	tenant_id: UUID,
 	**kwargs
 ) -> Tenant | None:
 	"""Update tenant."""
-	tenant = db.get(Tenant, tenant_id)
+	tenant = await db.get(Tenant, tenant_id)
 	if not tenant:
 		return None
 
@@ -60,19 +60,19 @@ async def update_tenant(
 		if hasattr(tenant, key):
 			setattr(tenant, key, value)
 
-	db.commit()
-	db.refresh(tenant)
+	await db.commit()
+	await db.refresh(tenant)
 	return tenant
 
 
-async def get_branding(db: Session, tenant_id: UUID) -> TenantBranding | None:
+async def get_branding(db: AsyncSession, tenant_id: UUID) -> TenantBranding | None:
 	"""Get tenant branding."""
 	stmt = select(TenantBranding).where(TenantBranding.tenant_id == tenant_id)
-	return db.scalar(stmt)
+	return await db.scalar(stmt)
 
 
 async def update_branding(
-	db: Session,
+	db: AsyncSession,
 	tenant_id: UUID,
 	**kwargs
 ) -> TenantBranding | None:
@@ -85,19 +85,19 @@ async def update_branding(
 		if hasattr(branding, key):
 			setattr(branding, key, value)
 
-	db.commit()
-	db.refresh(branding)
+	await db.commit()
+	await db.refresh(branding)
 	return branding
 
 
-async def get_settings(db: Session, tenant_id: UUID) -> TenantSettings | None:
+async def get_settings(db: AsyncSession, tenant_id: UUID) -> TenantSettings | None:
 	"""Get tenant settings."""
 	stmt = select(TenantSettings).where(TenantSettings.tenant_id == tenant_id)
-	return db.scalar(stmt)
+	return await db.scalar(stmt)
 
 
 async def update_settings(
-	db: Session,
+	db: AsyncSession,
 	tenant_id: UUID,
 	**kwargs
 ) -> TenantSettings | None:
@@ -110,6 +110,6 @@ async def update_settings(
 		if hasattr(settings, key):
 			setattr(settings, key, value)
 
-	db.commit()
-	db.refresh(settings)
+	await db.commit()
+	await db.refresh(settings)
 	return settings

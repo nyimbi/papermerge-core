@@ -4,9 +4,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from papermerge.core.db import get_session
-from papermerge.core.features.auth import get_current_user
-from papermerge.core.features.auth.schema import User
+from papermerge.core.db.engine import get_session
+from papermerge.core.auth import get_current_user
+from papermerge.core.db.models import User
 
 from .service import UserHomeService
 from .views import (
@@ -141,20 +141,25 @@ async def get_notifications(
 @router.post("/notifications/{notification_id}/read", status_code=204)
 async def mark_notification_read(
 	notification_id: str,
+	service: Annotated[UserHomeService, Depends(get_service)],
 	user: Annotated[User, Depends(get_current_user)],
 ):
 	"""Mark a notification as read."""
-	# Would update notification in database
-	pass
+	found = await service.mark_notification_read(
+		user_id=user.id,
+		notification_id=notification_id,
+	)
+	if not found:
+		raise HTTPException(status_code=404, detail="Notification not found")
 
 
 @router.post("/notifications/read-all", status_code=204)
 async def mark_all_notifications_read(
+	service: Annotated[UserHomeService, Depends(get_service)],
 	user: Annotated[User, Depends(get_current_user)],
 ):
 	"""Mark all notifications as read."""
-	# Would update all user notifications
-	pass
+	await service.mark_all_notifications_read(user_id=user.id)
 
 
 # --- Calendar ---
@@ -190,11 +195,11 @@ async def get_recent_searches(
 
 @router.delete("/search/recent", status_code=204)
 async def clear_recent_searches(
+	service: Annotated[UserHomeService, Depends(get_service)],
 	user: Annotated[User, Depends(get_current_user)],
 ):
 	"""Clear user's recent search history."""
-	# Would delete from search history table
-	pass
+	await service.clear_search_history(user_id=user.id)
 
 
 # --- Activity ---

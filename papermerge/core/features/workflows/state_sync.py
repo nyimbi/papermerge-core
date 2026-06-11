@@ -126,7 +126,7 @@ class StateSyncService:
 			execution = result_set.scalar_one_or_none()
 
 			if execution:
-				execution.status = StepStatus.APPROVED.value  # "completed"
+				execution.status = StepStatus.COMPLETED.value
 				execution.completed_at = datetime.now(timezone.utc)
 				execution.result_data = result
 				if prefect_task_run_id:
@@ -177,7 +177,7 @@ class StateSyncService:
 			execution = result.scalar_one_or_none()
 
 			if execution:
-				execution.status = StepStatus.REJECTED.value  # "failed"
+				execution.status = StepStatus.FAILED.value
 				execution.completed_at = datetime.now(timezone.utc)
 				execution.error_message = error
 				execution.retry_count = retry_count

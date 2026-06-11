@@ -149,13 +149,19 @@ async def create_tag(
 ) -> tags_schema.Tag:
     """Creates tag
 
-    If attribute `group_id` is present, tag will be owned
+    If attribute `owner_type` is "group", tag will be owned
     by respective group, otherwise ownership is set to current user.
-    If attribute `group_id` is present then current user should
+    If attribute `owner_type` is "group" then current user should
     belong to that group, otherwise http status 403 (Forbidden) will
     be raised.
     """
-    if attrs.owner_type == "group":
+    # Default owner to current user if not provided
+    if attrs.owner_type is None:
+        attrs.owner_type = OwnerType.USER
+    if attrs.owner_id is None:
+        attrs.owner_id = user.id
+
+    if attrs.owner_type == OwnerType.GROUP:
         group_id = attrs.owner_id
         ok = await users_dbapi.user_belongs_to(db_session, user_id=user.id, group_id=group_id)
         if not ok:
@@ -239,7 +245,7 @@ async def update_tag(
         )
 
     if attrs.owner_type == OwnerType.GROUP:
-        group_id = attrs.group_id
+        group_id = attrs.owner_id
         ok = await users_dbapi.user_belongs_to(db_session, user_id=user.id, group_id=group_id)
         if not ok:
             user_id = user.id

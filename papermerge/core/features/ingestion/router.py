@@ -64,7 +64,7 @@ async def create_ingestion_source(
 		source_type=source.source_type,
 		config=source.config,
 		mode=source.mode,
-		target_folder_id=source.target_folder_id,
+		default_document_type_id=source.default_document_type_id,
 		is_active=False,
 	)
 	db_session.add(db_source)

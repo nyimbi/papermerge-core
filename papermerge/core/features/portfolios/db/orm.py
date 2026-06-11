@@ -34,6 +34,9 @@ class Portfolio(Base, AuditColumns):
 	code: Mapped[str | None] = mapped_column(String(50))
 	description: Mapped[str | None] = mapped_column(Text)
 
+	# Type
+	portfolio_type: Mapped[str | None] = mapped_column(String(100))
+
 	# Status
 	status: Mapped[str] = mapped_column(
 		String(20), default=PortfolioStatus.ACTIVE.value, nullable=False
@@ -86,6 +89,11 @@ class PortfolioAccess(Base):
 	# Validity
 	valid_from: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 	valid_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+	# Who granted this access
+	granted_by: Mapped[UUID | None] = mapped_column(
+		ForeignKey("users.id", ondelete="SET NULL")
+	)
 
 	# Timestamps
 	created_at: Mapped[datetime] = mapped_column(

@@ -7,9 +7,17 @@ from typing import Annotated
 
 from fastapi import Security
 
+import uuid
+from fastapi import Depends
 from papermerge.core.features.auth import get_current_user
 from papermerge.core.features.auth.scopes import Scopes
 from papermerge.core import schema
+
+
+async def get_current_user_id(
+	user: Annotated[schema.User, Depends(get_current_user)],
+) -> uuid.UUID:
+	return uuid.UUID(str(user.id))
 
 
 def require_scopes(*required_scopes: str):

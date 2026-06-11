@@ -530,7 +530,7 @@ async def create_user(
         id=_user_id,
         username=username,
         email=email,
-        password=password,
+        password=pbkdf2_sha256.hash(password),
         tenant_id=_tenant_id,
         is_superuser=is_superuser,
         is_active=is_active,
@@ -1029,9 +1029,9 @@ def _apply_sorting(
     elif sort_by == "email":
         sort_column = orm.User.email
     elif sort_by == "created_at":
-        sort_column = orm.Role.created_at
+        sort_column = orm.User.created_at
     elif sort_by == "updated_at":
-        sort_column = orm.Role.updated_at
+        sort_column = orm.User.updated_at
     elif sort_by == "created_by":
         sort_column = created_user.username
     elif sort_by == "updated_by":

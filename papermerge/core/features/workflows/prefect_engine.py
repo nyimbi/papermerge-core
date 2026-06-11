@@ -7,7 +7,6 @@ from uuid import UUID
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from prefect import get_client
-from prefect.deployments import run_deployment
 
 from papermerge.core.config.prefect import get_prefect_settings
 from .db.orm import Workflow, WorkflowInstance, WorkflowStepExecution, WorkflowStatus, StepStatus
@@ -58,25 +57,16 @@ class PrefectWorkflowEngine:
 		)
 
 		try:
-			deployment = await flow_fn.to_deployment(
-				name=f"doc-{document_id}",
-				work_pool_name=settings.work_pool,
-			)
-			await deployment.apply()
-
-			flow_run = await run_deployment(
-				deployment.name,
-				parameters={
-					"document_id": str(document_id),
-					"instance_id": str(instance.id),
-					"tenant_id": str(workflow.tenant_id),
-					"initiated_by": str(initiated_by) if initiated_by else None,
-					"initial_context": context,
-				},
-				timeout=0,  # Don't wait
+			# Call the @flow function directly; it schedules a Prefect flow run
+			# and returns the result. .to_deployment() does not exist on @flow objects.
+			flow_result = await flow_fn(
+				document_id=str(document_id),
+				instance_id=str(instance.id),
+				tenant_id=str(workflow.tenant_id),
+				initiated_by=str(initiated_by) if initiated_by else None,
+				initial_context=context,
 			)
 
-			instance.prefect_flow_run_id = flow_run.id
 			instance.status = WorkflowStatus.IN_PROGRESS.value
 			await self.db.commit()
 			await self.db.refresh(instance)

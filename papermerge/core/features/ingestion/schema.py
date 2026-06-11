@@ -11,7 +11,7 @@ class SourceCreate(BaseModel):
 	source_type: str  # watched_folder, email, api
 	config: dict
 	mode: str = "operational"  # operational, archival
-	target_folder_id: UUID | None = None
+	default_document_type_id: UUID | None = None
 
 
 class SourceInfo(BaseModel):
@@ -33,9 +33,9 @@ class SourceDetail(BaseModel):
 	source_type: str
 	config: dict
 	mode: str
-	target_folder_id: UUID | None = None
+	default_document_type_id: UUID | None = None
 	is_active: bool
-	last_check_at: datetime | None = None
+	last_checked_at: datetime | None = None
 	created_at: datetime | None = None
 
 	model_config = ConfigDict(from_attributes=True)
@@ -53,10 +53,8 @@ class JobInfo(BaseModel):
 	"""Basic job information."""
 	id: UUID
 	source_id: UUID | None = None
-	source_type: str
-	source_path: str
+	source_path: str | None = None
 	status: str
-	mode: str
 	document_id: UUID | None = None
 	error_message: str | None = None
 	created_at: datetime | None = None
@@ -68,15 +66,14 @@ class JobDetail(BaseModel):
 	"""Detailed job information."""
 	id: UUID
 	source_id: UUID | None = None
-	source_type: str
-	source_path: str
+	source_path: str | None = None
 	status: str
-	mode: str
 	document_id: UUID | None = None
-	documents_processed: int | None = None
 	error_message: str | None = None
 	created_at: datetime | None = None
+	started_at: datetime | None = None
 	completed_at: datetime | None = None
+	retry_count: int = 0
 
 	model_config = ConfigDict(from_attributes=True)
 

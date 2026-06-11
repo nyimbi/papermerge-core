@@ -53,8 +53,8 @@ class RoleEx(BaseModel):
             name=role.name,
             created_at=role.created_at,
             updated_at=role.updated_at,
-            archived_at=role.created_at,
-            deleted_at=role.updated_at,
+            archived_at=role.archived_at,
+            deleted_at=role.deleted_at,
             created_by=ByUser(
                 id=role_row.created_by_id,
                 username=role_row.created_by_username
@@ -160,7 +160,7 @@ class RoleParams(BaseModel):
 
         if self.filter_scope:
             filters["scope"] = {
-                "value": self.filter_operation.split(","),
+                "value": self.filter_scope.split(","),
                 "operator": "in"
             }
 

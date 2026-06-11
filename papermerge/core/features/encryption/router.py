@@ -56,12 +56,12 @@ async def rotate_encryption_key(
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.RotateKeyResponse:
 	"""Rotate the tenant's encryption key."""
-	service = EncryptionService(db_session)
+	service = EncryptionService()
 
 	try:
-		new_kek = await service.rotate_tenant_key(
+		new_kek = await service.rotate_tenant_kek(
+			db=db_session,
 			tenant_id=user.tenant_id,
-			expire_old_in_days=request.expire_old_in_days,
 		)
 		return schema.RotateKeyResponse(
 			success=True,
@@ -214,11 +214,10 @@ async def create_single_view_access(
 		result = await service.create_single_view_access(
 			document_id=request.document_id,
 			created_by=user.id,
-			reason=request.reason,
-			expires_in_hours=request.duration_hours,
+			expires_hours=request.duration_hours,
 		)
 		return schema.SingleViewAccessResponse(
-			access_token=result.access_token,
+			access_token=result.access_code,
 			expires_at=result.expires_at,
 			document_id=result.document_id,
 		)

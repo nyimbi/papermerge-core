@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy import select, and_, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.engine import get_db
@@ -78,7 +79,11 @@ async def get_portfolio(
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.PortfolioDetail:
 	"""Get portfolio details with cases."""
-	portfolio = await db_session.get(Portfolio, portfolio_id)
+	stmt = select(Portfolio).where(
+		Portfolio.id == portfolio_id,
+		Portfolio.tenant_id == user.tenant_id,
+	)
+	portfolio = (await db_session.execute(stmt)).scalar_one_or_none()
 	if not portfolio:
 		raise HTTPException(status_code=404, detail="Portfolio not found")
 
@@ -107,7 +112,11 @@ async def update_portfolio(
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.PortfolioInfo:
 	"""Update portfolio details."""
-	portfolio = await db_session.get(Portfolio, portfolio_id)
+	stmt = select(Portfolio).where(
+		Portfolio.id == portfolio_id,
+		Portfolio.tenant_id == user.tenant_id,
+	)
+	portfolio = (await db_session.execute(stmt)).scalar_one_or_none()
 	if not portfolio:
 		raise HTTPException(status_code=404, detail="Portfolio not found")
 
@@ -132,7 +141,11 @@ async def delete_portfolio(
 	db_session: AsyncSession = Depends(get_db),
 ) -> dict:
 	"""Delete a portfolio."""
-	portfolio = await db_session.get(Portfolio, portfolio_id)
+	stmt = select(Portfolio).where(
+		Portfolio.id == portfolio_id,
+		Portfolio.tenant_id == user.tenant_id,
+	)
+	portfolio = (await db_session.execute(stmt)).scalar_one_or_none()
 	if not portfolio:
 		raise HTTPException(status_code=404, detail="Portfolio not found")
 
@@ -150,7 +163,11 @@ async def grant_portfolio_access(
 	db_session: AsyncSession = Depends(get_db),
 ) -> schema.PortfolioAccessInfo:
 	"""Grant access to a portfolio."""
-	portfolio = await db_session.get(Portfolio, portfolio_id)
+	stmt = select(Portfolio).where(
+		Portfolio.id == portfolio_id,
+		Portfolio.tenant_id == user.tenant_id,
+	)
+	portfolio = (await db_session.execute(stmt)).scalar_one_or_none()
 	if not portfolio:
 		raise HTTPException(status_code=404, detail="Portfolio not found")
 
@@ -169,8 +186,18 @@ async def grant_portfolio_access(
 		granted_by=user.id,
 	)
 	db_session.add(access)
-	await db_session.commit()
-	await db_session.refresh(access)
+	try:
+		await db_session.commit()
+		await db_session.refresh(access)
+	except IntegrityError:
+		await db_session.rollback()
+		# Unique constraint hit — return the existing record
+		existing_stmt = select(PortfolioAccess).where(
+			PortfolioAccess.portfolio_id == portfolio_id,
+			PortfolioAccess.subject_type == request.subject_type,
+			PortfolioAccess.subject_id == request.subject_id,
+		)
+		access = (await db_session.execute(existing_stmt)).scalar_one()
 
 	return schema.PortfolioAccessInfo.model_validate(access)
 

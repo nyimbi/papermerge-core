@@ -68,6 +68,25 @@ class Settings(BaseSettings):
 	default_tenant_slug: str | None = None
 	require_tenant: bool = False
 
+	# MinIO / S3-compatible object storage
+	minio_endpoint: str = "http://62.84.181.55:9002"
+	minio_access_key: str = "pjsadmin"
+	minio_secret_key: str = "Car3Ana1234PJS"
+	minio_bucket: str = "darchiva"
+	minio_secure: bool = False
+
+	# SMTP (Stalwart at mail.lindela.io)
+	smtp_host: str = "mail.lindela.io"
+	smtp_port: int = 587
+	smtp_user: str = ""
+	smtp_password: str = ""
+	smtp_from: str = "noreply@lindela.io"
+	smtp_from_name: str = "dArchiva"
+	smtp_use_tls: bool = True  # STARTTLS on 587; set False + port 465 for implicit TLS
+
+	# Application
+	app_base_url: str = "http://localhost"
+
 	# Security
 	csrf_secret_key: str = Field(default="change-me-in-production")
 	rate_limit_requests_per_minute: int = Field(gt=0, default=100)

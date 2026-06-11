@@ -69,8 +69,9 @@ async def notify_task(ctx: dict, config: dict) -> dict:
 
 		# Add document link if requested
 		if include_document_link:
-			# TODO: Get proper base URL from settings
-			notify_context["document_url"] = f"/documents/{document_id}"
+			import os
+			base_url = os.environ.get("APP_BASE_URL", "http://localhost")
+			notify_context["document_url"] = f"{base_url}/documents/{document_id}"
 
 		# Add previous step results for template variables
 		for step_type, step_result in ctx.get("previous_results", {}).items():
@@ -126,8 +127,11 @@ async def _send_email_notification(
 	template: str | None,
 	context: dict,
 ) -> dict:
-	"""Send email notification."""
-	result = {
+	"""Send email via Stalwart (mail.lindela.io) using settings."""
+	from papermerge.core.config.settings import get_settings
+	cfg = get_settings()
+
+	result: dict = {
 		"channel": "email",
 		"recipients": recipients,
 		"sent": False,
@@ -135,18 +139,62 @@ async def _send_email_notification(
 	}
 
 	try:
-		# TODO: Integrate with email service
-		# For now, simulate email sending
-		for recipient in recipients:
-			# Would actually send email here
-			result["delivery_status"].append({
-				"recipient": recipient,
-				"status": "queued",
-				"message_id": None,
-			})
+		import smtplib
+		import asyncio
+		from email.mime.text import MIMEText
+		from email.mime.multipart import MIMEMultipart
+		from functools import partial
 
-		result["sent"] = True
-		logger.info(f"Email notification queued for {len(recipients)} recipients")
+		host = cfg.smtp_host
+		port = cfg.smtp_port
+		user = cfg.smtp_user
+		password = cfg.smtp_password
+		from_addr = f"{cfg.smtp_from_name} <{cfg.smtp_from}>" if cfg.smtp_from_name else cfg.smtp_from
+		use_tls = cfg.smtp_use_tls
+
+		# Render body — substitute {{key}} placeholders from context
+		body = message
+		for key, value in context.items():
+			if isinstance(value, str):
+				body = body.replace(f"{{{{{key}}}}}", value)
+
+		def _send_via_smtp(to_addrs: list[str]) -> list[dict]:
+			statuses: list[dict] = []
+			try:
+				# Port 465 → implicit TLS (SMTP_SSL); all others → STARTTLS
+				if port == 465:
+					smtp_cls = smtplib.SMTP_SSL(host, port)
+				else:
+					smtp_cls = smtplib.SMTP(host, port)
+					smtp_cls.ehlo()
+					if use_tls:
+						smtp_cls.starttls()
+						smtp_cls.ehlo()
+
+				with smtp_cls as smtp:
+					if user and password:
+						smtp.login(user, password)
+					for recipient in to_addrs:
+						msg = MIMEMultipart("alternative")
+						msg["Subject"] = subject
+						msg["From"] = from_addr
+						msg["To"] = recipient
+						msg.attach(MIMEText(body, "plain"))
+						try:
+							smtp.sendmail(cfg.smtp_from, [recipient], msg.as_string())
+							statuses.append({"recipient": recipient, "status": "sent"})
+						except smtplib.SMTPException as exc:
+							statuses.append({"recipient": recipient, "status": "failed", "error": str(exc)})
+			except smtplib.SMTPException as smtp_err:
+				for recipient in to_addrs:
+					statuses.append({"recipient": recipient, "status": "failed", "error": str(smtp_err)})
+			return statuses
+
+		loop = asyncio.get_event_loop()
+		delivery_statuses = await loop.run_in_executor(None, partial(_send_via_smtp, recipients))
+		result["delivery_status"] = delivery_statuses
+		result["sent"] = any(s["status"] == "sent" for s in delivery_statuses)
+		logger.info("Email sent for %d recipients via %s:%d", len(recipients), host, port)
 
 	except Exception as e:
 		logger.exception("Failed to send email notification")
@@ -224,14 +272,49 @@ async def _create_in_app_notification(
 	}
 
 	try:
-		# TODO: Integrate with notification service
-		# Would create notification records in database
-		for recipient in recipients:
-			# Simulated notification creation
-			result["notification_ids"].append(f"notif_{recipient}_{context.get('document_id')}")
+		import uuid
+		from datetime import datetime, timezone
+		from papermerge.core.db.engine import AsyncSessionLocal
+		from papermerge.core.features.user_home.models import UserNotification
+
+		document_id = context.get("document_id")
+		workflow_id = context.get("workflow_id")
+		document_url = context.get("document_url")
+
+		title = f"Workflow notification for document {document_id}"
+		notif_type = "workflow"
+		metadata = {
+			"workflow_id": workflow_id,
+			"instance_id": context.get("instance_id"),
+			"document_id": document_id,
+		}
+
+		async with AsyncSessionLocal() as db:
+			for recipient in recipients:
+				try:
+					user_uuid = uuid.UUID(str(recipient))
+				except (ValueError, AttributeError):
+					logger.warning(f"Skipping invalid recipient UUID: {recipient!r}")
+					continue
+
+				notif = UserNotification(
+					id=uuid.uuid4(),
+					user_id=user_uuid,
+					type=notif_type,
+					title=title,
+					message=message,
+					is_read=False,
+					link=document_url,
+					notification_metadata=metadata,
+					created_at=datetime.now(timezone.utc),
+				)
+				db.add(notif)
+				result["notification_ids"].append(str(notif.id))
+
+			await db.commit()
 
 		result["sent"] = True
-		logger.info(f"In-app notification created for {len(recipients)} recipients")
+		logger.info(f"In-app notification created for {len(result['notification_ids'])} recipients")
 
 	except Exception as e:
 		logger.exception("Failed to create in-app notification")

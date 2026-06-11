@@ -14,7 +14,7 @@ from papermerge.core.routers.common import OPEN_API_GENERIC_JSON_DETAIL
 from papermerge.core.features.document_types import schema as dt_schema
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.ownership.db import api as ownership_api
-from papermerge.core.types import ResourceType
+from papermerge.core.types import ResourceType, OwnerType
 from papermerge.core.features.audit.db.audit_context import AsyncAuditContext
 from .schema import DocumentTypeParams, DocumentTypeEx
 
@@ -76,7 +76,7 @@ async def get_document_types_without_pagination(
         }
     },
 )
-async def get_document_types_without_pagination(
+async def get_document_types_grouped_without_pagination(
     user: require_scopes(scopes.DOCUMENT_TYPE_VIEW),
     db_session: AsyncSession = Depends(get_db),
 ) -> list[dt_schema.GroupedDocumentType]:
@@ -150,9 +150,15 @@ async def create_document_type(
 ) -> schema.DocumentTypeShort:
     """Creates document type
 
-    If attribute `group_id` is present, document type will be owned
+    If attribute `owner_type` is "group", document type will be owned
     by respective group, otherwise ownership is set to current user.
     """
+    # Default owner to current user if not provided
+    if dtype.owner_type is None:
+        dtype.owner_type = OwnerType.USER
+    if dtype.owner_id is None:
+        dtype.owner_id = user.id
+
     try:
         async with AsyncAuditContext(
             db_session,

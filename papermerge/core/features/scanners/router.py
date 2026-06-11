@@ -287,21 +287,20 @@ async def get_scan_job(
 	return job
 
 
-@router.post("/jobs/{job_id}/cancel", response_model=ScanJobResponse)
+@router.post("/jobs/{job_id}/cancel", status_code=204)
 async def cancel_scan_job(
 	job_id: str,
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScanJobResponse:
+) -> None:
 	"""Cancel a running scan job."""
-	job = await service.cancel_scan_job(
+	cancelled = await service.cancel_scan_job(
 		session=session,
 		job_id=job_id,
 		tenant_id=str(user.tenant_id),
 	)
-	if not job:
-		raise HTTPException(status_code=404, detail="Scan job not found")
-	return job
+	if not cancelled:
+		raise HTTPException(status_code=404, detail="Scan job not found or not cancellable")
 
 
 @router.get("/jobs/{job_id}/result", response_model=ScanJobResultResponse)

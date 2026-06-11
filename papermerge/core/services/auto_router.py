@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, and_
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from papermerge.core.features.routing.db.orm import RoutingRule, RoutingLog
 
@@ -37,7 +38,7 @@ class RoutingResult:
 class AutoRouterService:
 	"""Route documents based on metadata and rules."""
 
-	def __init__(self, db: Session):
+	def __init__(self, db: AsyncSession):
 		self.db = db
 
 	async def route_document(
@@ -60,22 +61,47 @@ class AutoRouterService:
 			)
 		).order_by(RoutingRule.priority)
 
-		rules = list(self.db.scalars(stmt))
+		result = await self.db.execute(stmt)
+		rules = list(result.scalars().all())
 
 		for rule in rules:
 			if self._matches_conditions(document_data, rule.conditions):
-				result = await self._apply_rule(document_id, tenant_id, rule)
+				routing_result = await self._apply_rule(document_id, tenant_id, rule)
 				await self._log_routing(
 					tenant_id, document_id, rule.id, True,
-					result.destination_type, result.destination_id, mode, rule.conditions
+					routing_result.destination_type, routing_result.destination_id, mode, rule.conditions
 				)
-				return result
+				return routing_result
 
 		# No matching rule
 		await self._log_routing(
 			tenant_id, document_id, None, False, None, None, mode, None
 		)
 		return RoutingResult(routed=False, message="No matching routing rule found")
+
+	async def find_matching_rule(
+		self,
+		tenant_id: UUID,
+		metadata: dict,
+		mode: str = "operational",
+	) -> RoutingRule | None:
+		"""Evaluate rules against the given metadata and return first matching rule or None."""
+		stmt = select(RoutingRule).where(
+			and_(
+				RoutingRule.tenant_id == tenant_id,
+				RoutingRule.is_active == True,
+				RoutingRule.mode.in_([mode, "both"]),
+			)
+		).order_by(RoutingRule.priority)
+
+		result = await self.db.execute(stmt)
+		rules = list(result.scalars().all())
+
+		for rule in rules:
+			if self._matches_conditions(metadata, rule.conditions):
+				return rule
+
+		return None
 
 	def _matches_conditions(
 		self,
@@ -198,24 +224,24 @@ class AutoRouterService:
 	async def _move_to_folder(self, document_id: UUID, folder_id: UUID) -> None:
 		"""Move document to folder."""
 		from papermerge.core.features.nodes.db.orm import Node
-		node = self.db.get(Node, document_id)
+		node = await self.db.get(Node, document_id)
 		if node:
 			node.parent_id = folder_id
-			self.db.commit()
+			await self.db.commit()
 
 	async def _route_to_inbox(self, document_id: UUID, user_id: UUID) -> None:
 		"""Route document to user's inbox."""
 		from papermerge.core.features.users.db.orm import User
-		user = self.db.get(User, user_id)
+		user = await self.db.get(User, user_id)
 		if user and user.inbox_folder_id:
 			await self._move_to_folder(document_id, user.inbox_folder_id)
 
 	async def _get_document_data(self, document_id: UUID) -> dict:
 		"""Get document data for routing evaluation."""
 		from papermerge.core.features.document.db.orm import Document
-		from papermerge.core.features.custom_fields.db.orm import CustomFieldValue
+		from papermerge.core.features.custom_fields.db.orm import CustomFieldValue, CustomField
 
-		doc = self.db.get(Document, document_id)
+		doc = await self.db.get(Document, document_id)
 		if not doc:
 			return {}
 
@@ -227,12 +253,15 @@ class AutoRouterService:
 			"metadata": {},
 		}
 
-		# Get custom field values
-		stmt = select(CustomFieldValue).where(
-			CustomFieldValue.document_id == document_id
+		# Get custom field values with joined CustomField to avoid lazy-load on AsyncSession
+		stmt = (
+			select(CustomFieldValue, CustomField)
+			.join(CustomField, CustomField.id == CustomFieldValue.field_id)
+			.where(CustomFieldValue.document_id == document_id)
 		)
-		for cfv in self.db.scalars(stmt):
-			data["metadata"][cfv.custom_field.name] = cfv.value
+		result = await self.db.execute(stmt)
+		for cfv, cf in result.all():
+			data["metadata"][cf.name] = cfv.value
 
 		return data
 
@@ -259,4 +288,8 @@ class AutoRouterService:
 			evaluated_conditions=conditions,
 		)
 		self.db.add(log)
-		self.db.commit()
+		await self.db.commit()
+
+
+# Alias for backwards-compat and router import
+AutoRouter = AutoRouterService

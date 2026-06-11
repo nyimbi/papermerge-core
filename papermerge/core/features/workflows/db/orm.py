@@ -35,6 +35,8 @@ class StepType(str, Enum):
 class StepStatus(str, Enum):
 	PENDING = "pending"
 	IN_PROGRESS = "in_progress"
+	COMPLETED = "completed"
+	FAILED = "failed"
 	APPROVED = "approved"
 	REJECTED = "rejected"
 	SKIPPED = "skipped"
@@ -104,6 +106,9 @@ class Workflow(Base):
 		TIMESTAMP(timezone=True), default=utc_now, onupdate=func.now(), nullable=False
 	)
 	created_by: Mapped[UUID | None] = mapped_column(
+		ForeignKey("users.id", ondelete="SET NULL")
+	)
+	updated_by: Mapped[UUID | None] = mapped_column(
 		ForeignKey("users.id", ondelete="SET NULL")
 	)
 

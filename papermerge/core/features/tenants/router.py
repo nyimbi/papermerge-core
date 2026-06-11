@@ -182,7 +182,8 @@ async def get_tenant_usage(
 ) -> schema.TenantUsageInfo:
 	"""Get tenant usage statistics."""
 	from papermerge.core.features.users.db.orm import User
-	from papermerge.core.features.document.db.orm import Document
+	from papermerge.core.features.document.db.orm import Document, DocumentVersion
+	from papermerge.core.features.ownership.db.orm import Ownership
 
 	# Count users
 	user_count_stmt = select(func.count()).select_from(User).where(
@@ -190,15 +191,35 @@ async def get_tenant_usage(
 	)
 	total_users = await db_session.scalar(user_count_stmt) or 0
 
-	# Count documents
-	doc_count_stmt = select(func.count()).select_from(Document).where(
-		Document.tenant_id == user.tenant_id
+	# Count documents owned by users in this tenant
+	# Ownership links resource_id (document node id) -> owner_id (user id), owner_type='user', resource_type='node'
+	doc_count_stmt = (
+		select(func.count())
+		.select_from(Document)
+		.join(
+			Ownership,
+			(Ownership.resource_id == Document.id) &
+			(Ownership.owner_type == "user") &
+			(Ownership.resource_type == "node"),
+		)
+		.join(User, User.id == Ownership.owner_id)
+		.where(User.tenant_id == user.tenant_id)
 	)
 	total_documents = await db_session.scalar(doc_count_stmt) or 0
 
-	# Get storage used (sum of document sizes)
-	storage_stmt = select(func.coalesce(func.sum(Document.file_size), 0)).where(
-		Document.tenant_id == user.tenant_id
+	# Get storage used: sum DocumentVersion.size for versions of documents owned by tenant's users
+	storage_stmt = (
+		select(func.coalesce(func.sum(DocumentVersion.size), 0))
+		.select_from(DocumentVersion)
+		.join(Document, Document.id == DocumentVersion.document_id)
+		.join(
+			Ownership,
+			(Ownership.resource_id == Document.id) &
+			(Ownership.owner_type == "user") &
+			(Ownership.resource_type == "node"),
+		)
+		.join(User, User.id == Ownership.owner_id)
+		.where(User.tenant_id == user.tenant_id)
 	)
 	storage_used = await db_session.scalar(storage_stmt) or 0
 
@@ -629,8 +650,8 @@ async def provision_tenant(
 ) -> schema.TenantProvisionResponse:
 	"""Provision a complete new tenant with storage, AI, and admin user (system admin only)."""
 	import secrets
+	from passlib.hash import pbkdf2_sha256
 	from papermerge.core.features.users.db.orm import User
-	from papermerge.core.utils.security import hash_password
 
 	# Check slug uniqueness
 	stmt = select(Tenant).where(Tenant.slug == provision_data.slug)
@@ -706,7 +727,7 @@ async def provision_tenant(
 		tenant_id=tenant.id,
 		email=provision_data.admin_email,
 		username=provision_data.admin_email.split("@")[0],
-		password_hash=hash_password(password),
+		password=pbkdf2_sha256.hash(password),
 		is_active=True,
 		is_superuser=False,  # Tenant admin, not system admin
 	)

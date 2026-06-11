@@ -40,7 +40,7 @@ async def get_user_group_homes(
 
 
 @router.get("/group-inboxes")
-async def get_user_group_homes(
+async def get_user_group_inboxes(
     user: require_scopes(scopes.NODE_VIEW),
     db_session: AsyncSession = Depends(get_db),
 ) -> list[schema.UserInbox]:
@@ -141,7 +141,7 @@ async def get_user_group_users(
 
 
 @router.get("/user-groups")
-async def get_user_group_users(
+async def get_user_groups_for_current_user(
     user: Annotated[schema.User, Depends(get_current_user)],
     db_session: AsyncSession = Depends(get_db),
 ) -> list[schema.GroupShort]:

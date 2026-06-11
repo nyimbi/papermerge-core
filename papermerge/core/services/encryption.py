@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.features.encryption.db.orm import (
 	KeyEncryptionKey,
@@ -42,7 +42,7 @@ class EncryptionService:
 
 	async def encrypt_document(
 		self,
-		db: Session,
+		db: AsyncSession,
 		document_id: UUID,
 		content: bytes,
 		tenant_id: UUID,
@@ -79,7 +79,7 @@ class EncryptionService:
 
 	async def decrypt_document(
 		self,
-		db: Session,
+		db: AsyncSession,
 		document_id: UUID,
 		encrypted_content: bytes,
 	) -> bytes:
@@ -112,7 +112,7 @@ class EncryptionService:
 
 	async def rotate_document_key(
 		self,
-		db: Session,
+		db: AsyncSession,
 		document_id: UUID,
 		content: bytes,
 	) -> bytes:
@@ -146,13 +146,13 @@ class EncryptionService:
 		key_record.encrypted_key = encrypted_dek
 		key_record.key_version += 1
 		key_record.rotated_at = datetime.now(timezone.utc)
-		db.commit()
+		await db.commit()
 
 		return nonce + encrypted_content
 
 	async def rotate_tenant_kek(
 		self,
-		db: Session,
+		db: AsyncSession,
 		tenant_id: UUID,
 	) -> KeyEncryptionKey:
 		"""Rotate tenant KEK - requires re-encrypting all document DEKs."""
@@ -173,7 +173,7 @@ class EncryptionService:
 			is_active=True,
 		)
 		db.add(new_kek)
-		db.commit()
+		await db.commit()
 
 		logger.info(f"Rotated KEK for tenant {tenant_id}, new version: {new_kek.key_version}")
 		return new_kek
@@ -193,7 +193,7 @@ class EncryptionService:
 
 	async def _get_or_create_tenant_kek(
 		self,
-		db: Session,
+		db: AsyncSession,
 		tenant_id: UUID,
 	) -> KeyEncryptionKey:
 		"""Get active KEK or create new one."""
@@ -212,13 +212,13 @@ class EncryptionService:
 			is_active=True,
 		)
 		db.add(kek)
-		db.commit()
-		db.refresh(kek)
+		await db.commit()
+		await db.refresh(kek)
 		return kek
 
 	async def _get_active_kek(
 		self,
-		db: Session,
+		db: AsyncSession,
 		tenant_id: UUID,
 	) -> KeyEncryptionKey | None:
 		"""Get active KEK for tenant."""
@@ -226,19 +226,19 @@ class EncryptionService:
 			KeyEncryptionKey.tenant_id == tenant_id,
 			KeyEncryptionKey.is_active == True,
 		)
-		return db.scalar(stmt)
+		return await db.scalar(stmt)
 
 	async def _get_kek_by_id(
 		self,
-		db: Session,
+		db: AsyncSession,
 		kek_id: UUID,
 	) -> KeyEncryptionKey | None:
 		"""Get KEK by ID."""
-		return db.get(KeyEncryptionKey, kek_id)
+		return await db.get(KeyEncryptionKey, kek_id)
 
 	async def _store_document_key(
 		self,
-		db: Session,
+		db: AsyncSession,
 		document_id: UUID,
 		encrypted_dek: bytes,
 		kek_id: UUID,
@@ -250,17 +250,17 @@ class EncryptionService:
 			kek_id=kek_id,
 		)
 		db.add(dek_record)
-		db.commit()
-		db.refresh(dek_record)
+		await db.commit()
+		await db.refresh(dek_record)
 		return dek_record
 
 	async def _get_document_key(
 		self,
-		db: Session,
+		db: AsyncSession,
 		document_id: UUID,
 	) -> DocumentEncryptionKey | None:
 		"""Get document encryption key."""
 		stmt = select(DocumentEncryptionKey).where(
 			DocumentEncryptionKey.document_id == document_id
 		).order_by(DocumentEncryptionKey.key_version.desc())
-		return db.scalar(stmt)
+		return await db.scalar(stmt)
