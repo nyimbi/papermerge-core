@@ -41,9 +41,10 @@ def test_get_document_not_found():
     assert response.status_code in (404, 422, 500)
 
 
-def test_delete_document_not_found():
+def test_delete_document_no_endpoint():
+    # Documents have no dedicated DELETE — deletion goes through DELETE /nodes/ (bulk)
     response = client.delete(f"/documents/{uuid.uuid4()}")
-    assert response.status_code in (204, 404, 405, 422, 500)
+    assert response.status_code == 405
 
 
 def test_get_custom_fields_not_found():

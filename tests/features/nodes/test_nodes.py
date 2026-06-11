@@ -51,6 +51,13 @@ def test_get_node_breadcrumb():
     assert response.status_code in (200, 404, 422, 500)
 
 
-def test_delete_node_not_found():
-    response = client.delete(f"/nodes/{uuid.uuid4()}")
-    assert response.status_code in (204, 404, 405, 422, 500)
+def test_bulk_delete_nodes_empty():
+    # DELETE /nodes/ takes a JSON array of UUIDs; empty list returns 200 with []
+    response = client.request("DELETE", "/nodes/", json=[])
+    assert response.status_code in (200, 403, 422, 500)
+
+
+def test_bulk_delete_nodes_nonexistent():
+    # Non-existent node: has_node_perm returns falsy → 403 Forbidden
+    response = client.request("DELETE", "/nodes/", json=[str(uuid.uuid4())])
+    assert response.status_code in (200, 403, 422, 500)

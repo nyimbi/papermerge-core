@@ -45,15 +45,13 @@ def test_get_project_not_found():
 
 
 def test_list_locations():
-    # /locations is after /{project_id} in router — may be captured as project lookup
     response = client.get("/scanning-projects/locations")
-    assert response.status_code in (200, 404, 500)
+    assert response.status_code in (200, 500)
 
 
 def test_list_shifts():
-    # /shifts is after /{project_id} in router — may be captured as project lookup
     response = client.get("/scanning-projects/shifts")
-    assert response.status_code in (200, 404, 500)
+    assert response.status_code in (200, 500)
 
 
 def test_create_project_missing_body():

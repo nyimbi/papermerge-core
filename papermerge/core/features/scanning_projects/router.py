@@ -1591,3 +1591,22 @@ async def get_operator_performance(
 ) -> list[dict]:
 	"""Get hourly performance for the current operator."""
 	return await service.get_hourly_performance(session, user.id)
+
+
+# Route ordering fix: static collection paths (/resources, /locations, /shifts,
+# /shift-assignments, /gamification, /batch-priority) must precede /{project_id}
+# so FastAPI doesn't match them as project ID values.
+_STATIC_PREFIXES = (
+	"/scanning-projects/resources",
+	"/scanning-projects/locations",
+	"/scanning-projects/shifts",
+	"/scanning-projects/shift-assignments",
+	"/scanning-projects/gamification",
+	"/scanning-projects/batch-priority",
+)
+_static_routes = [
+	r for r in router.routes
+	if any(getattr(r, "path", "").startswith(p) for p in _STATIC_PREFIXES)
+]
+_other_routes = [r for r in router.routes if r not in _static_routes]
+router.routes = _static_routes + _other_routes
