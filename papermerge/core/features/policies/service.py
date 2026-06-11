@@ -105,13 +105,23 @@ class PolicyService:
 		# 2. Fetch Department-level permissions (DepartmentAccessRule)
 		dept_permissions = {}
 		if user_id:
-			# Convert user_id to UUID if it's a string
-			import uuid
-			u_id = uuid.UUID(user_id) if isinstance(user_id, str) else user_id
-			# We assume resource_type might map to document_type_id in some cases
-			# For now, we fetch general permissions for the user's departments
+			import uuid as _uuid
+			from sqlalchemy import select as _select
+			u_id = _uuid.UUID(user_id) if isinstance(user_id, str) else user_id
+			doc_type_id = None
+			# Resolve document_type_id from the resource when resource_type is "document"
+			if resource_type == "document" and resource_id:
+				try:
+					from papermerge.core.features.document.db.orm import Document as _Doc
+					_r_id = _uuid.UUID(str(resource_id))
+					_doc_result = await self.session.execute(
+						_select(_Doc.document_type_id).where(_Doc.id == _r_id)
+					)
+					doc_type_id = _doc_result.scalar_one_or_none()
+				except Exception:
+					pass
 			dept_permissions = await dept_api.get_effective_permissions(
-				self.session, u_id, document_type_id=None # TODO: Map resource_id to doc_type if applicable
+				self.session, u_id, document_type_id=doc_type_id
 			)
 
 		# 3. Build context

@@ -307,10 +307,22 @@ def _send_escalation_notification(
 	request: WorkflowApprovalRequest,
 	target_user_id: UUID,
 ) -> None:
-	"""Send notification to escalation target."""
-	# This would integrate with the notification system
-	# For now, log the action
+	"""Create a UserNotification record for the escalation target."""
+	from papermerge.core.features.user_home.models import UserNotification
+	notification = UserNotification(
+		user_id=target_user_id,
+		type="task",
+		title="Workflow Escalation",
+		message=f"A workflow approval has been escalated to you (request {request.id})",
+		is_read=False,
+		link=f"/workflows/tasks/{request.id}",
+		notification_metadata={
+			"request_id": str(request.id),
+			"escalated": True,
+		},
+	)
+	session.add(notification)
 	logger.info(
-		f"Would send escalation notification to user {target_user_id} "
-		f"for request {request.id}"
+		"Queued escalation notification for user %s for request %s",
+		target_user_id, request.id,
 	)
