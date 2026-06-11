@@ -128,14 +128,38 @@ async def extract_form_data(
 	"""Extract form data from a document."""
 	from papermerge.core.tasks import send_task
 
-	# Queue extraction task
+	# Check for an existing pending/processing extraction to avoid duplicates
+	existing_stmt = (
+		select(FormExtraction)
+		.where(
+			FormExtraction.document_id == request.document_id,
+			FormExtraction.status.in_(["pending", "processing"]),
+		)
+	)
+	existing = (await db_session.execute(existing_stmt)).scalar()
+	if existing:
+		return schema.ExtractionResponse(
+			success=True,
+			message="Extraction already in progress",
+			document_id=request.document_id,
+		)
+
+	# Create DB record synchronously so GET /extractions/{doc_id} can track status
+	extraction = FormExtraction(
+		document_id=request.document_id,
+		template_id=request.template_id,
+		status="pending",
+	)
+	db_session.add(extraction)
+	await db_session.commit()
+
 	send_task(
 		"darchiva.form.process",
 		kwargs={
 			"document_id": str(request.document_id),
 			"template_id": str(request.template_id) if request.template_id else None,
 			"tenant_id": str(user.tenant_id),
-		}
+		},
 	)
 
 	return schema.ExtractionResponse(

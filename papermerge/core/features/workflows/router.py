@@ -4,6 +4,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.engine import get_db
@@ -261,9 +262,24 @@ async def process_workflow_action(
 	instance_id: UUID,
 	action: schema.WorkflowActionRequest,
 	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
 	engine: PrefectWorkflowEngine = Depends(get_workflow_engine),
 ) -> schema.WorkflowInstanceInfo:
 	"""Process an action on a workflow step via Prefect."""
+	from .db.orm import WorkflowStepExecution
+
+	# Validate the step execution belongs to the claimed instance
+	stmt = select(WorkflowStepExecution).where(
+		WorkflowStepExecution.id == action.execution_id,
+		WorkflowStepExecution.instance_id == instance_id,
+	)
+	execution = (await db_session.execute(stmt)).scalar_one_or_none()
+	if not execution:
+		raise HTTPException(
+			status_code=404,
+			detail="Step execution not found in this workflow instance",
+		)
+
 	try:
 		instance = await engine.process_step_action(
 			execution_id=action.execution_id,
