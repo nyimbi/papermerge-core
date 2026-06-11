@@ -95,4 +95,8 @@ app.conf.beat_schedule = {
         "task": "workflow.sla_dashboard_refresh",
         "schedule": 3600.0,  # Every hour
     },
+    "sync-all-email-accounts": {
+        "task": "papermerge.core.tasks.sync_all_email_accounts",
+        "schedule": 300.0,  # Every 5 minutes — respects per-account sync_interval_minutes
+    },
 }

@@ -2,12 +2,11 @@
 from uuid import UUID, uuid4
 
 try:
-    from uuid_extension import uuid7 as _uuid7
+    from uuid6 import uuid7 as _uuid7
 except ImportError:
     try:
         from uuid_extension import uuid7 as _uuid7
     except ImportError:
-        # Fallback to uuid4 if uuid7 is not available
         _uuid7 = uuid4
 
 
