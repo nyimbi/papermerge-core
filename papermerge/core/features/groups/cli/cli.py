@@ -1,3 +1,5 @@
+import uuid
+
 import typer
 from rich.console import Console
 from sqlalchemy import select
@@ -10,12 +12,25 @@ from papermerge.core.features.groups import schema
 
 app = typer.Typer(help="Groups basic management")
 
+_SYSTEM_UUID = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
+async def _get_superuser_id(session) -> uuid.UUID:
+    """Return first superuser ID, falling back to nil UUID."""
+    from papermerge.core.features.users.db.orm import User
+    result = await session.execute(
+        select(User.id).where(User.is_superuser == True).limit(1)
+    )
+    row = result.scalar_one_or_none()
+    return row if row is not None else _SYSTEM_UUID
+
 
 @app.command()
 async def create_admin(exists_ok: bool = True):
     """Creates group named 'admin'"""
     async with AsyncSessionLocal() as db_session:
-        await dbapi.create_group(db_session, name="admin", exists_ok=exists_ok)
+        created_by = await _get_superuser_id(db_session)
+        await dbapi.create_group(db_session, name="admin", created_by=created_by, exists_ok=exists_ok)
 
 
 @app.command("ls")

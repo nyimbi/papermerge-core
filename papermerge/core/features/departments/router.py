@@ -11,6 +11,8 @@ from papermerge.core.db.engine import get_session as get_async_session
 from papermerge.core.features.auth.dependencies import get_current_user_id
 
 from .db import api as db_api
+from papermerge.core.schemas.common import ByUser
+
 from .schema import (
 	Department,
 	DepartmentAccessRule,
@@ -70,7 +72,7 @@ async def get_department_tree(
 			is_active=dept.is_active,
 			member_count=dept.member_count,
 			children=[build_tree(c) for c in dept.children if c.deleted_at is None],
-			head_user=None,  # TODO: Add head user
+			head_user=ByUser(id=dept.head_users[0].user_id) if dept.head_users else None,
 		)
 
 	return [build_tree(d) for d in departments]
