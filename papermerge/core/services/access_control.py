@@ -211,9 +211,20 @@ class HierarchicalAccessResolver:
 		now = datetime.now(timezone.utc)
 
 		if resource_type == ResourceType.PAGE:
-			# Get document ID from page
-			# TODO: Implement page → document lookup
-			return AccessResult(allowed=False, reason="Page access not implemented")
+			# Resolve page → document_version → document, then re-check as DOCUMENT
+			from papermerge.core.features.document.db.orm import Page, DocumentVersion
+			page = self.db.get(Page, resource_id)
+			if not page:
+				return AccessResult(allowed=False, reason="Page not found")
+			doc_version = self.db.get(DocumentVersion, page.document_version_id)
+			if not doc_version:
+				return AccessResult(allowed=False, reason="Document version not found")
+			return await self._check_inherited_access(
+				ResourceType.DOCUMENT,
+				doc_version.document_id,
+				subjects,
+				action,
+			)
 
 		elif resource_type == ResourceType.DOCUMENT:
 			# Check if document is in any bundle

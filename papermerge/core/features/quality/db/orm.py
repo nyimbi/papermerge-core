@@ -147,6 +147,11 @@ class QualityAssessment(Base):
 	width_px: Mapped[int | None] = mapped_column(Integer)
 	height_px: Mapped[int | None] = mapped_column(Integer)
 
+	# Tenant isolation
+	tenant_id: Mapped[UUID | None] = mapped_column(
+		ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+	)
+
 	# Issues summary
 	issue_count: Mapped[int] = mapped_column(Integer, default=0)
 	critical_issues: Mapped[int] = mapped_column(Integer, default=0)

@@ -176,8 +176,8 @@ async def list_assessments(
 	"""List quality assessments."""
 	offset = (page - 1) * page_size
 
-	# Build conditions - need to join with documents to filter by tenant
-	conditions = []
+	# Filter by tenant first, then optional caller filters
+	conditions = [QualityAssessment.tenant_id == user.tenant_id]
 	if document_id:
 		conditions.append(QualityAssessment.document_id == document_id)
 	if passed is not None:
@@ -187,14 +187,10 @@ async def list_assessments(
 	if max_score is not None:
 		conditions.append(QualityAssessment.quality_score <= max_score)
 
-	count_stmt = select(func.count()).select_from(QualityAssessment)
-	if conditions:
-		count_stmt = count_stmt.where(*conditions)
+	count_stmt = select(func.count()).select_from(QualityAssessment).where(*conditions)
 	total = await db_session.scalar(count_stmt) or 0
 
-	stmt = select(QualityAssessment)
-	if conditions:
-		stmt = stmt.where(*conditions)
+	stmt = select(QualityAssessment).where(*conditions)
 	stmt = stmt.order_by(QualityAssessment.assessed_at.desc()).offset(offset).limit(page_size)
 
 	result = await db_session.execute(stmt)
@@ -403,34 +399,40 @@ async def get_quality_stats(
 	days: int = 7,
 ) -> schema.QualityStatsInfo:
 	"""Get quality statistics for the tenant."""
+	tenant_filter = QualityAssessment.tenant_id == user.tenant_id
+
 	# Total assessments
-	total_stmt = select(func.count()).select_from(QualityAssessment)
+	total_stmt = select(func.count()).select_from(QualityAssessment).where(tenant_filter)
 	total = await db_session.scalar(total_stmt) or 0
 
 	# Passed/failed counts
 	passed_stmt = select(func.count()).select_from(QualityAssessment).where(
-		QualityAssessment.passed == True
+		tenant_filter, QualityAssessment.passed == True
 	)
 	passed = await db_session.scalar(passed_stmt) or 0
 	failed = total - passed
 
 	# Average score
-	avg_stmt = select(func.avg(QualityAssessment.quality_score))
+	avg_stmt = select(func.avg(QualityAssessment.quality_score)).where(tenant_filter)
 	avg_score = await db_session.scalar(avg_stmt) or 0.0
 
-	# Issues by severity
-	severity_stmt = select(
-		QualityIssueRecord.severity,
-		func.count().label("count")
-	).group_by(QualityIssueRecord.severity)
+	# Issues by severity — join through assessment to scope to tenant
+	severity_stmt = (
+		select(QualityIssueRecord.severity, func.count().label("count"))
+		.join(QualityAssessment, QualityAssessment.id == QualityIssueRecord.assessment_id)
+		.where(tenant_filter)
+		.group_by(QualityIssueRecord.severity)
+	)
 	severity_result = await db_session.execute(severity_stmt)
 	issues_by_severity = {row[0]: row[1] for row in severity_result.fetchall()}
 
 	# Issues by metric
-	metric_stmt = select(
-		QualityIssueRecord.metric,
-		func.count().label("count")
-	).group_by(QualityIssueRecord.metric)
+	metric_stmt = (
+		select(QualityIssueRecord.metric, func.count().label("count"))
+		.join(QualityAssessment, QualityAssessment.id == QualityIssueRecord.assessment_id)
+		.where(tenant_filter)
+		.group_by(QualityIssueRecord.metric)
+	)
 	metric_result = await db_session.execute(metric_stmt)
 	issues_by_metric = {row[0]: row[1] for row in metric_result.fetchall()}
 
@@ -441,19 +443,17 @@ async def get_quality_stats(
 		next_day = day + timedelta(days=1)
 
 		day_count_stmt = select(func.count()).select_from(QualityAssessment).where(
-			and_(
-				QualityAssessment.assessed_at >= day,
-				QualityAssessment.assessed_at < next_day,
-			)
+			tenant_filter,
+			QualityAssessment.assessed_at >= day,
+			QualityAssessment.assessed_at < next_day,
 		)
 		day_count = await db_session.scalar(day_count_stmt) or 0
 
 		day_passed_stmt = select(func.count()).select_from(QualityAssessment).where(
-			and_(
-				QualityAssessment.assessed_at >= day,
-				QualityAssessment.assessed_at < next_day,
-				QualityAssessment.passed == True,
-			)
+			tenant_filter,
+			QualityAssessment.assessed_at >= day,
+			QualityAssessment.assessed_at < next_day,
+			QualityAssessment.passed == True,
 		)
 		day_passed = await db_session.scalar(day_passed_stmt) or 0
 

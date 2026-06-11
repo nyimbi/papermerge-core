@@ -111,8 +111,26 @@ class WorkflowEngine:
 				raise ValueError("Cannot return from first step")
 
 		elif action == "forwarded":
-			# Forward to another user - create new execution
-			pass
+			# comments must be a valid UUID string identifying the target user
+			if not comments:
+				raise ValueError("Forward action requires a target user ID in comments")
+			try:
+				target_user_id = UUID(comments.strip())
+			except ValueError:
+				raise ValueError(f"Invalid target user ID for forward: {comments!r}")
+			# Create a new pending execution for the forwarded-to user, same step
+			forwarded = WorkflowStepExecution(
+				instance_id=execution.instance_id,
+				step_id=execution.step_id,
+				status=StepStatus.PENDING.value,
+				assigned_to=target_user_id,
+				started_at=datetime.now(timezone.utc),
+				deadline_at=execution.deadline_at,
+			)
+			self.db.add(forwarded)
+			logger.info(
+				f"Forwarded execution {execution_id} to user {target_user_id}"
+			)
 
 		self.db.commit()
 		self.db.refresh(instance)
@@ -235,7 +253,27 @@ class WorkflowEngine:
 		assigned_to = None
 		if step.assignee_type == "user" and step.assignee_id:
 			assigned_to = step.assignee_id
-		# TODO: Handle role/group/dynamic assignment
+		elif step.assignee_type == "role" and step.assignee_id:
+			# Pick the first active user with that role
+			from papermerge.core.features.users.db.orm import User
+			from papermerge.core.features.roles.db.orm import UserRole
+			stmt = (
+				select(User.id)
+				.join(UserRole, UserRole.user_id == User.id)
+				.where(UserRole.role_id == step.assignee_id)
+				.limit(1)
+			)
+			assigned_to = self.db.scalar(stmt)
+		elif step.assignee_type == "group" and step.assignee_id:
+			from papermerge.core.features.users.db.orm import User
+			from papermerge.core.features.groups.db.orm import UserGroup
+			stmt = (
+				select(User.id)
+				.join(UserGroup, UserGroup.user_id == User.id)
+				.where(UserGroup.group_id == step.assignee_id)
+				.limit(1)
+			)
+			assigned_to = self.db.scalar(stmt)
 
 		execution = WorkflowStepExecution(
 			instance_id=instance_id,
