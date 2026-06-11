@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict, AfterValidator, field_serializer
+from pydantic import BaseModel, Field, ConfigDict, AfterValidator, BeforeValidator, field_serializer
 from papermerge.core.utils.uuid_compat import uuid7str
 
 
@@ -22,6 +22,7 @@ def validate_positive(v: int) -> int:
 
 
 PositiveInt = Annotated[int, AfterValidator(validate_positive)]
+UUIDStr = Annotated[str, BeforeValidator(uuid_to_str)]
 
 
 class ScanningProjectStatus(str, Enum):
@@ -188,7 +189,7 @@ class ScanningProject(ScanningProjectBase):
 
 
 class ScanningBatchBase(BaseModel):
-	model_config = ConfigDict(extra="forbid", populate_by_name=True)
+	model_config = ConfigDict(extra="forbid", populate_by_name=True, from_attributes=True)
 
 	batch_number: str = Field(..., min_length=1, max_length=100)
 	type: ScanningBatchType = ScanningBatchType.BOX
@@ -218,19 +219,63 @@ class ScanningBatchUpdate(BaseModel):
 
 
 class ScanningBatch(ScanningBatchBase):
-	id: str = Field(default_factory=uuid7str)
-	project_id: str
+	id: UUIDStr = Field(default_factory=uuid7str)
+	project_id: UUIDStr
 	actual_pages: PositiveInt = 0
 	scanned_pages: PositiveInt = 0
 	status: ScanningBatchStatus = ScanningBatchStatus.PENDING
-	assigned_operator_id: str | None = None
+	assigned_operator_id: UUIDStr | None = None
 	assigned_operator_name: str | None = None
-	assigned_scanner_id: str | None = None
+	assigned_scanner_id: UUIDStr | None = None
 	assigned_scanner_name: str | None = None
 	started_at: datetime | None = None
 	completed_at: datetime | None = None
 	created_at: datetime = Field(default_factory=datetime.utcnow)
 	updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# =====================================================
+# Batch Document Models
+# =====================================================
+
+
+class BatchDocumentStatus(str, Enum):
+	PENDING = "pending"
+	ACCEPTED = "accepted"
+	REJECTED = "rejected"
+	RESCANNING = "rescanning"
+
+
+class ScanningBatchDocument(BaseModel):
+	"""A document scanned as part of a batch."""
+	model_config = ConfigDict(extra="forbid", populate_by_name=True, from_attributes=True)
+
+	id: UUIDStr = Field(default_factory=uuid7str)
+	batch_id: UUIDStr
+	document_id: UUIDStr
+	page_number: int
+	scan_job_id: str | None = None
+	quality_score: int = Field(default=90, ge=0, le=100)
+	status: str = "accepted"
+	needs_review: bool = False
+	has_issues: bool = False
+	issue_details: dict | None = None
+	scanned_at: datetime = Field(default_factory=datetime.utcnow)
+	created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ScanningBatchDocumentCreate(BaseModel):
+	"""Create a batch document record."""
+	model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+	document_id: str
+	page_number: int
+	scan_job_id: str | None = None
+	quality_score: int = Field(default=90, ge=0, le=100)
+	status: str = "accepted"
+	needs_review: bool = False
+	has_issues: bool = False
+	issue_details: dict | None = None
 
 
 # =====================================================

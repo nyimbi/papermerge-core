@@ -488,6 +488,18 @@ class ESCLScanner(Scanner):
 
 	async def _create_scan_job(self, options: ScanOptions) -> str:
 		"""Create a scan job and return the job URL."""
+		import sys
+		print(f"=" * 60, file=sys.stderr, flush=True)
+		print(f"[_create_scan_job] ENTERING", file=sys.stderr, flush=True)
+		print(f"[_create_scan_job] self._host='{self._host}'", file=sys.stderr, flush=True)
+		print(f"[_create_scan_job] self._port={self._port}", file=sys.stderr, flush=True)
+		print(f"[_create_scan_job] self._base_url='{self._base_url}'", file=sys.stderr, flush=True)
+		print(f"=" * 60, file=sys.stderr, flush=True)
+
+		# CRITICAL: Validate host is not empty
+		if not self._host:
+			raise ValueError(f"[ESCL] FATAL: self._host is empty! Cannot create scan job. base_url={self._base_url}")
+
 		# Build scan settings XML
 		scan_settings = self._build_scan_settings(options)
 		logger.info(f"Creating scan job at {self._base_url}/ScanJobs")
@@ -509,18 +521,37 @@ class ESCLScanner(Scanner):
 
 			if response.status_code == 201:
 				# Job created, get location directly from header
-				job_url = response.headers.get('Location')
-				logger.info(f"Location header: {job_url}")
+				raw_location = response.headers.get('Location')
+				print(f"[_create_scan_job] RAW Location header: '{raw_location}'", file=sys.stderr, flush=True)
+				print(f"[_create_scan_job] All response headers: {dict(response.headers)}", file=sys.stderr, flush=True)
+				logger.info(f"Location header: {raw_location}")
 
-				if job_url:
-					if job_url.startswith('http'):
-						# Full URL provided - use as-is
-						logger.info(f"Using full job URL: {job_url}")
+				if raw_location:
+					# Check if it's a full URL with a valid host
+					if raw_location.startswith('http'):
+						# Parse to check if host is present
+						parsed = urlparse(raw_location)
+						print(f"[_create_scan_job] Parsed full URL: scheme='{parsed.scheme}', netloc='{parsed.netloc}', path='{parsed.path}'", file=sys.stderr, flush=True)
+
+						if parsed.netloc and ':' not in parsed.netloc[:1]:  # Has host (not starting with :)
+							# Full URL with valid host - use as-is
+							job_url = raw_location
+							logger.info(f"Using full job URL: {job_url}")
+							print(f"[_create_scan_job] Using full job URL as-is: {job_url}", file=sys.stderr, flush=True)
+						else:
+							# Full URL but missing/invalid host - extract path and reconstruct
+							path = parsed.path
+							print(f"[_create_scan_job] Full URL has empty host, extracting path: '{path}'", file=sys.stderr, flush=True)
+							job_url = f"{self._scheme}://{self._host}:80{path}"
+							logger.info(f"Reconstructed job URL from invalid full URL: {job_url}")
+							print(f"[_create_scan_job] Reconstructed job URL: {job_url}", file=sys.stderr, flush=True)
 					else:
 						# Relative URL - construct with port 80 for document retrieval
 						# HP scanners use port 80 for NextDocument even if API is on 8080
-						job_url = f"{self._scheme}://{self._host}:80{job_url}"
+						print(f"[_create_scan_job] Building URL from: scheme='{self._scheme}', host='{self._host}', location='{raw_location}'", file=sys.stderr, flush=True)
+						job_url = f"{self._scheme}://{self._host}:80{raw_location}"
 						logger.info(f"Constructed job URL (port 80): {job_url}")
+						print(f"[_create_scan_job] Final job URL: {job_url}", file=sys.stderr, flush=True)
 
 					return job_url
 

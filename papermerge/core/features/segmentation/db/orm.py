@@ -22,7 +22,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 from papermerge.core.db.base import Base
 

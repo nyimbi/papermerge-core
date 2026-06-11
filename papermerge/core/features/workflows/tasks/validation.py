@@ -1,6 +1,8 @@
 # (c) Copyright Datacraft, 2026
 """Validation and transformation tasks for workflow engine."""
 import logging
+import re
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -8,6 +10,55 @@ from prefect import task
 
 from papermerge.core.config.prefect import get_prefect_settings
 from .base import TaskResult, log_task_start, log_task_complete
+
+# Compiled format patterns
+_FORMAT_PATTERNS: dict[str, re.Pattern] = {
+    "email": re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$"),
+    "phone": re.compile(r"^\+?[\d\s\-().]{7,20}$"),
+    "url": re.compile(
+        r"^https?://"
+        r"(?:(?:[A-Z0-9](?:[A-Z0-9\-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|"
+        r"localhost|\d{1,3}(?:\.\d{1,3}){3})"
+        r"(?::\d+)?(?:/?|[/?]\S+)$",
+        re.IGNORECASE,
+    ),
+    "number": re.compile(r"^-?\d+(?:[.,]\d+)?$"),
+}
+
+# Common date formats to try when parsing
+_DATE_PARSE_FORMATS = [
+    "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y",
+    "%d %B %Y", "%B %d, %Y", "%d %b %Y", "%b %d, %Y",
+    "%Y%m%d", "%d.%m.%Y",
+]
+
+
+def _validate_format(value: str, format_type: str, custom_regex: str | None = None) -> tuple[bool, str | None]:
+    """Return (is_valid, error_message)."""
+    if format_type == "custom_regex":
+        if not custom_regex:
+            return False, "custom_regex format requires a 'regex' pattern"
+        try:
+            pattern = re.compile(custom_regex)
+        except re.error as e:
+            return False, f"Invalid regex pattern: {e}"
+        return bool(pattern.match(str(value))), None
+
+    if format_type == "date":
+        for fmt in _DATE_PARSE_FORMATS:
+            try:
+                datetime.strptime(str(value).strip(), fmt)
+                return True, None
+            except ValueError:
+                continue
+        return False, f"Value '{value}' does not match any recognised date format"
+
+    pattern = _FORMAT_PATTERNS.get(format_type)
+    if pattern is None:
+        # Unknown format type — pass through rather than false-positive fail
+        return True, None
+
+    return bool(pattern.match(str(value).strip())), None
 
 logger = logging.getLogger(__name__)
 settings = get_prefect_settings()
@@ -105,14 +156,51 @@ async def validate_task(ctx: dict, config: dict) -> dict:
 				field_value = validation_result["fields"].get(field_name)
 
 				if field_value:
-					# TODO: Implement format validation
-					# For now, assume valid
-					validation_result["rules_passed"] += 1
+					custom_regex = rule.get("regex")
+					is_valid, fmt_error = _validate_format(field_value, expected_format, custom_regex)
+					if is_valid:
+						validation_result["rules_passed"] += 1
+					else:
+						error = {
+							"rule": rule_name,
+							"field": field_name,
+							"message": fmt_error or f"Field '{field_name}' value '{field_value}' does not match format '{expected_format}'",
+						}
+						if required:
+							validation_result["errors"].append(error)
+						else:
+							validation_result["warnings"].append(error)
+				else:
+					validation_result["rules_passed"] += 1  # absent field checked by required_field rule
 
 			elif rule_type == "expression":
 				expression = rule.get("expression")
-				# TODO: Evaluate custom expression
-				validation_result["rules_passed"] += 1
+				if expression:
+					from papermerge.core.features.workflows.expressions import evaluate_condition
+					eval_context = {
+						**validation_result["fields"],
+						"document_id": document_id,
+						**{k: v.get("data", {}) for k, v in ctx.get("previous_results", {}).items()},
+					}
+					try:
+						passed = evaluate_condition(expression, eval_context)
+					except Exception as expr_err:
+						passed = False
+						logger.warning(f"Expression evaluation failed for rule '{rule_name}': {expr_err}")
+					if passed:
+						validation_result["rules_passed"] += 1
+					else:
+						error = {
+							"rule": rule_name,
+							"expression": expression,
+							"message": f"Expression rule '{rule_name}' evaluated to False",
+						}
+						if required:
+							validation_result["errors"].append(error)
+						else:
+							validation_result["warnings"].append(error)
+				else:
+					validation_result["rules_passed"] += 1
 
 		# Determine overall validity
 		if validation_result["errors"]:
@@ -203,7 +291,20 @@ async def transform_task(ctx: dict, config: dict) -> dict:
 				field = transform.get("field")
 				target_format = transform.get("format", "%Y-%m-%d")
 				if field in output_data:
-					# TODO: Implement actual date formatting
+					raw_value = str(output_data[field]).strip()
+					parsed_dt: datetime | None = None
+					for fmt in _DATE_PARSE_FORMATS:
+						try:
+							parsed_dt = datetime.strptime(raw_value, fmt)
+							break
+						except ValueError:
+							continue
+					if parsed_dt is not None:
+						output_data[field] = parsed_dt.strftime(target_format)
+					else:
+						logger.warning(
+							f"format_date: could not parse date '{raw_value}' for field '{field}'; leaving unchanged"
+						)
 					transform_result["transformations_applied"] += 1
 
 			elif transform_type == "map_value":

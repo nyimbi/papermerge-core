@@ -35,8 +35,16 @@ async def get_folder_tree(
 
     Required scope: `node.view`
     """
-    # Return empty tree for now - can be expanded to fetch actual folder structure
-    return {"nodes": []}
+    home_folder_id = user.home_folder_id
+    if home_folder_id is None:
+        return {"nodes": []}
+
+    try:
+        tree = await nodes_dbapi.get_folder_tree(db_session, home_folder_id)
+        return {"nodes": tree}
+    except Exception as e:
+        logger.error(f"Error fetching folder tree for user {user.id}: {e}", exc_info=True)
+        return {"nodes": []}
 
 
 @router.get("/")
@@ -49,13 +57,38 @@ async def get_root_nodes(
 
     Required scope: `node.view`
     """
-    # Return empty paginated response for root view
-    return PaginatedResponse(
-        page_size=params.page_size,
-        page_number=params.page_number,
-        num_pages=0,
-        items=[],
-    )
+    # Get user's home folder
+    home_folder_id = user.home_folder_id
+    if home_folder_id is None:
+        logger.warning(f"User {user.username} has no home folder")
+        return PaginatedResponse(
+            page_size=params.page_size,
+            page_number=params.page_number,
+            num_pages=0,
+            items=[],
+        )
+
+    try:
+        filters = params.to_filters()
+        result = await nodes_dbapi.get_paginated_nodes(
+            db_session=db_session,
+            parent_id=home_folder_id,
+            page_size=params.page_size,
+            page_number=params.page_number,
+            sort_by=params.sort_by,
+            sort_direction=params.sort_direction,
+            filters=filters,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameters: {str(e)}")
+    except Exception as e:
+        logger.error(
+            f"Error fetching root nodes for user {user.id}: {e}",
+            exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    return result
 
 
 @router.get(
@@ -130,15 +163,21 @@ async def create_folder(
     Optionally you may pass ID attribute. If ID is present and has
     non-emtpy UUID value, then newly create node will be assigned this
     custom ID.
-    If node has `parent_id` empty then node will not be accessible to user.
-    The only nodes with `parent_id` set to empty value are "user custom folders"
-    like Home and Inbox.
+    If node has `parent_id` empty, defaults to user's home folder.
     """
 
     error = None
+    # Default to user's home folder if no parent specified
+    parent_id = pynode.parent_id
+    logger.info(f"create_folder: pynode.parent_id={pynode.parent_id}, user.home_folder_id={user.home_folder_id}")
+    if parent_id is None:
+        parent_id = user.home_folder_id
+        logger.info(f"create_folder: Using home folder as parent: {parent_id}")
+
+    logger.info(f"create_folder: Checking permission for parent_id={parent_id}, user.id={user.id}")
     if not await dbapi_common.has_node_perm(
             db_session,
-            node_id=pynode.parent_id,
+            node_id=parent_id,
             codename=scopes.NODE_CREATE,
             user_id=user.id,
     ):
@@ -147,7 +186,7 @@ async def create_folder(
     attrs = dict(
         title=pynode.title,
         ctype="folder",
-        parent_id=pynode.parent_id,
+        parent_id=parent_id,
     )
     if pynode.id:
         attrs["id"] = pynode.id

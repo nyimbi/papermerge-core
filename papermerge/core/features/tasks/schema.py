@@ -30,7 +30,10 @@ LangCode = Literal[
     "rus",
 ]
 
+OCREngine = Literal["tesseract", "qwen-vl", "auto"]
+
 
 class OCRTaskIn(BaseModel):
     document_id: UUID  # document model ID
     lang: LangCode
+    engine: OCREngine | None = None  # None or "auto" = auto-select based on config

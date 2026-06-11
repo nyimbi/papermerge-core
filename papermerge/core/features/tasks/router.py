@@ -23,13 +23,22 @@ def start_ocr(
     """Triggers OCR for specific document
 
     Required scope: `{scope}`
+
+    Engine options:
+    - `tesseract`: Traditional Tesseract OCR via ocrmypdf
+    - `qwen-vl`: Vision-language model OCR via Ollama (requires Ollama with qwen model)
+    - `auto` or omitted: Auto-select based on server configuration
     """
+    kwargs = {
+        "document_id": str(ocr_task.document_id),
+        "lang": ocr_task.lang,
+    }
+    # Pass engine if explicitly specified (not "auto" or None)
+    if ocr_task.engine and ocr_task.engine != "auto":
+        kwargs["engine"] = ocr_task.engine
 
     tasks.send_task(
         constants.WORKER_OCR_DOCUMENT,
-        kwargs={
-            "document_id": str(ocr_task.document_id),
-            "lang": ocr_task.lang,
-        },
+        kwargs=kwargs,
         route_name="ocr",
     )

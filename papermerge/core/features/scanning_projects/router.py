@@ -19,6 +19,8 @@ from .views import (
 	ScanningBatch,
 	ScanningBatchCreate,
 	ScanningBatchUpdate,
+	ScanningBatchDocument,
+	ScanningBatchDocumentCreate,
 	ScanningMilestone,
 	ScanningMilestoneCreate,
 	ScanningMilestoneUpdate,
@@ -206,6 +208,20 @@ async def create_batch(
 	return await service.create_batch(session, project_id, data)
 
 
+@router.get("/{project_id}/batches/{batch_id}", response_model=ScanningBatch)
+async def get_batch(
+	project_id: str,
+	batch_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> ScanningBatch:
+	"""Get a single batch by ID."""
+	batch = await service.get_batch(session, batch_id)
+	if not batch:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found")
+	return batch
+
+
 @router.patch("/{project_id}/batches/{batch_id}", response_model=ScanningBatch)
 async def update_batch(
 	project_id: str,
@@ -248,6 +264,50 @@ async def complete_batch_scan(
 	if not batch:
 		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found")
 	return batch
+
+
+# =====================================================
+# Batch Documents Endpoints
+# =====================================================
+
+
+@router.get("/{project_id}/batches/{batch_id}/documents", response_model=list[ScanningBatchDocument])
+async def list_batch_documents(
+	project_id: str,
+	batch_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> list[ScanningBatchDocument]:
+	"""List all documents scanned in a batch."""
+	docs = await service.get_batch_documents(session, batch_id)
+	return list(docs)
+
+
+@router.post(
+	"/{project_id}/batches/{batch_id}/documents",
+	response_model=ScanningBatchDocument,
+	status_code=status.HTTP_201_CREATED,
+)
+async def add_batch_document(
+	project_id: str,
+	batch_id: str,
+	data: ScanningBatchDocumentCreate,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> ScanningBatchDocument:
+	"""Add a scanned document to a batch."""
+	return await service.add_document_to_batch(
+		session=session,
+		batch_id=batch_id,
+		document_id=data.document_id,
+		page_number=data.page_number,
+		scan_job_id=data.scan_job_id,
+		quality_score=data.quality_score,
+		status=data.status,
+		needs_review=data.needs_review,
+		has_issues=data.has_issues,
+		issue_details=data.issue_details,
+	)
 
 
 # =====================================================

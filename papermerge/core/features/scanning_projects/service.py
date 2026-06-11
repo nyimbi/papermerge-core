@@ -270,6 +270,19 @@ async def get_project_batches(
 	return [ScanningBatch.model_validate(row) for row in result.scalars().all()]
 
 
+async def get_batch(
+	session: AsyncSession,
+	batch_id: str,
+) -> ScanningBatch | None:
+	"""Get a single batch by ID."""
+	stmt = select(ScanningBatchModel).where(ScanningBatchModel.id == batch_id)
+	result = await session.execute(stmt)
+	batch = result.scalar_one_or_none()
+	if batch:
+		return ScanningBatch.model_validate(batch)
+	return None
+
+
 async def create_batch(
 	session: AsyncSession,
 	project_id: str,
@@ -360,6 +373,100 @@ async def complete_batch_scan(
 	await session.commit()
 	await session.refresh(batch)
 	return ScanningBatch.model_validate(batch)
+
+
+# =====================================================
+# Batch Document Service
+# =====================================================
+
+
+async def get_batch_documents(
+	session: AsyncSession,
+	batch_id: str,
+) -> Sequence["ScanningBatchDocument"]:
+	"""Get all documents in a batch."""
+	from .views import ScanningBatchDocument
+	from .models import ScanningBatchDocumentModel
+
+	stmt = select(ScanningBatchDocumentModel).where(
+		ScanningBatchDocumentModel.batch_id == batch_id
+	).order_by(ScanningBatchDocumentModel.page_number)
+	result = await session.execute(stmt)
+	return [ScanningBatchDocument.model_validate(row) for row in result.scalars().all()]
+
+
+async def add_document_to_batch(
+	session: AsyncSession,
+	batch_id: str,
+	document_id: str,
+	page_number: int,
+	scan_job_id: str | None = None,
+	quality_score: int = 90,
+	status: str = "accepted",
+	needs_review: bool = False,
+	has_issues: bool = False,
+	issue_details: dict | None = None,
+) -> "ScanningBatchDocument":
+	"""Add a document to a batch."""
+	from .views import ScanningBatchDocument, BatchDocumentStatus
+	from .models import ScanningBatchDocumentModel
+
+	# Convert string status to enum
+	status_enum = BatchDocumentStatus(status.lower())
+
+	doc = ScanningBatchDocumentModel(
+		id=uuid7(),
+		batch_id=batch_id,
+		document_id=document_id,
+		page_number=page_number,
+		scan_job_id=scan_job_id,
+		quality_score=quality_score,
+		status=status_enum,
+		needs_review=needs_review,
+		has_issues=has_issues,
+		issue_details=issue_details,
+		scanned_at=datetime.utcnow(),
+		created_at=datetime.utcnow(),
+	)
+	session.add(doc)
+
+	# Update batch scanned_pages count
+	batch_stmt = select(ScanningBatchModel).where(ScanningBatchModel.id == batch_id)
+	batch_result = await session.execute(batch_stmt)
+	batch = batch_result.scalar_one_or_none()
+	if batch:
+		batch.scanned_pages = (batch.scanned_pages or 0) + 1
+		batch.actual_pages = (batch.actual_pages or 0) + 1
+		batch.updated_at = datetime.utcnow()
+
+	await session.commit()
+	await session.refresh(doc)
+	return ScanningBatchDocument.model_validate(doc)
+
+
+async def update_batch_document_status(
+	session: AsyncSession,
+	document_id: str,
+	status: str,
+	needs_review: bool = False,
+) -> "ScanningBatchDocument | None":
+	"""Update a batch document status."""
+	from .views import ScanningBatchDocument
+	from .models import ScanningBatchDocumentModel
+
+	stmt = select(ScanningBatchDocumentModel).where(
+		ScanningBatchDocumentModel.document_id == document_id
+	)
+	result = await session.execute(stmt)
+	doc = result.scalar_one_or_none()
+	if not doc:
+		return None
+
+	doc.status = status
+	doc.needs_review = needs_review
+	await session.commit()
+	await session.refresh(doc)
+	return ScanningBatchDocument.model_validate(doc)
 
 
 # =====================================================
@@ -634,7 +741,7 @@ async def get_project_metrics(
 	# Calculate average pages per day
 	days_active = 1
 	if project.start_date:
-		days_active = max(1, (datetime.utcnow() - project.start_date).days)
+		days_active = max(1, (datetime.utcnow().date() - project.start_date).days)
 	avg_pages_per_day = project.scanned_pages / days_active
 
 	# Estimate completion date

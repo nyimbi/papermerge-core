@@ -934,3 +934,64 @@ def _apply_node_sorting(
 
     sort_column = sort_columns.get(sort_by, orm.Node.title)
     return query.order_by(direction(sort_column))
+
+
+async def get_folder_tree(
+    db_session: AsyncSession,
+    root_folder_id: UUID,
+) -> list[dict]:
+    """
+    Get a tree of folders starting from the given root folder.
+
+    Returns a list of folder nodes with their children (recursively).
+    Uses a recursive CTE to fetch all descendants.
+    """
+    from sqlalchemy import text
+
+    # Recursive CTE to get all folders under root
+    recursive_query = text("""
+        WITH RECURSIVE folder_tree AS (
+            -- Base case: direct children of root
+            SELECT id, title, parent_id, 1 as depth
+            FROM nodes
+            WHERE parent_id = :root_id AND ctype = 'folder'
+
+            UNION ALL
+
+            -- Recursive case: children of children
+            SELECT n.id, n.title, n.parent_id, ft.depth + 1
+            FROM nodes n
+            INNER JOIN folder_tree ft ON n.parent_id = ft.id
+            WHERE n.ctype = 'folder'
+        )
+        SELECT id, title, parent_id FROM folder_tree
+        ORDER BY depth, title
+    """)
+
+    result = await db_session.execute(recursive_query, {"root_id": str(root_folder_id)})
+    folders = result.all()
+
+    # Build a map of parent_id -> children
+    children_map: dict[UUID, list[dict]] = {}
+    folder_map: dict[UUID, dict] = {}
+
+    for folder_id, title, parent_id in folders:
+        # Convert string UUIDs if needed
+        fid = folder_id if isinstance(folder_id, UUID) else UUID(str(folder_id))
+        pid = parent_id if isinstance(parent_id, UUID) else UUID(str(parent_id)) if parent_id else None
+
+        node = {"id": str(fid), "title": title, "ctype": "folder", "children": []}
+        folder_map[fid] = node
+
+        if pid:
+            if pid not in children_map:
+                children_map[pid] = []
+            children_map[pid].append(node)
+
+    # Attach children to their parents
+    for folder_id, node in folder_map.items():
+        if folder_id in children_map:
+            node["children"] = children_map[folder_id]
+
+    # Return only the direct children of root (not root itself)
+    return children_map.get(root_folder_id, [])

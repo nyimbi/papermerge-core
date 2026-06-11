@@ -68,9 +68,34 @@ async def source_task(ctx: dict, config: dict) -> dict:
 				"mime_type": getattr(document, "mime_type", "application/pdf"),
 			}
 
-			# Get storage location
-			# TODO: Integrate with storage service
-			doc_info["storage_path"] = f"/media/{document_id}"
+			# Get storage location from actual document version
+			try:
+				from papermerge.storage.base import get_storage_backend
+				from papermerge.core import pathlib as plib
+				from papermerge.core.features.document.db.orm import DocumentVersion
+				from sqlalchemy import select as _select
+
+				async with get_session() as ver_db:
+					ver_stmt = (
+						_select(DocumentVersion)
+						.where(DocumentVersion.document_id == document.id)
+						.order_by(DocumentVersion.number.desc())
+						.limit(1)
+					)
+					ver_result = await ver_db.execute(ver_stmt)
+					latest_ver = ver_result.scalar_one_or_none()
+
+				if latest_ver and latest_ver.file_name:
+					storage_path = str(plib.docver_path(latest_ver.id, latest_ver.file_name))
+					doc_info["file_name"] = latest_ver.file_name
+					doc_info["document_version_id"] = str(latest_ver.id)
+				else:
+					storage_path = f"/media/{document_id}"
+			except Exception as _e:
+				logger.warning(f"Could not resolve storage path for {document_id}: {_e}")
+				storage_path = f"/media/{document_id}"
+
+			doc_info["storage_path"] = storage_path
 			doc_info["storage_tier"] = storage_tier
 
 			result = TaskResult.success_result(
@@ -323,14 +348,26 @@ async def index_task(ctx: dict, config: dict) -> dict:
 		}
 
 		if index_fulltext and text_content:
-			# TODO: Integrate with search service
-			# For now, mark as indexed
-			indexing_results["fulltext_indexed"] = True
-			logger.info(f"Full-text indexed document {document_id}")
+			# Index via PostgreSQL upsert_document_search_index function
+			try:
+				from papermerge.core.db.engine import get_session
+				from sqlalchemy import text as _text
+				from uuid import UUID as _UUID
+
+				async with get_session() as idx_db:
+					await idx_db.execute(
+						_text("SELECT upsert_document_search_index(:doc_id)"),
+						{"doc_id": _UUID(document_id)},
+					)
+					await idx_db.commit()
+
+				indexing_results["fulltext_indexed"] = True
+				logger.info(f"Full-text indexed document {document_id}")
+			except Exception as _e:
+				logger.warning(f"Full-text indexing failed for {document_id}: {_e}")
 
 		if index_semantic and text_content:
-			# TODO: Integrate with embedding service
-			# Chunk the text and generate embeddings
+			# Chunk the text and queue embedding generation via Celery
 			chunk_size = config.get("chunk_size", 500)
 			words = text_content.split()
 			chunks = [
@@ -338,9 +375,24 @@ async def index_task(ctx: dict, config: dict) -> dict:
 				for i in range(0, len(words), chunk_size)
 			]
 			indexing_results["chunk_count"] = len(chunks)
-			indexing_results["semantic_indexed"] = True
 			indexing_results["embedding_model"] = embedding_model
-			logger.info(f"Semantic indexed document {document_id} ({len(chunks)} chunks)")
+
+			try:
+				from papermerge.core.tasks import send_task as _send_task
+
+				_send_task(
+					"generate_embeddings",
+					kwargs={
+						"document_id": document_id,
+						"chunks": chunks,
+						"embedding_model": embedding_model,
+					},
+				)
+				indexing_results["semantic_indexed"] = True
+				logger.info(f"Queued embedding generation for document {document_id} ({len(chunks)} chunks)")
+			except Exception as _e:
+				logger.warning(f"Could not queue embedding task for {document_id}: {_e}")
+				indexing_results["semantic_indexed"] = False
 
 		result = TaskResult.success_result(
 			"Document indexed successfully",

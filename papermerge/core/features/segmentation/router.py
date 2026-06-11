@@ -4,6 +4,10 @@ import logging
 from datetime import datetime
 from typing import Annotated
 
+from pathlib import Path
+from uuid import UUID
+import tempfile
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +16,13 @@ from celery.app import default_app as celery_app
 from papermerge.core.db.engine import get_session
 from papermerge.core.features.auth import get_current_user
 from papermerge.core.features.users.db.orm import User
+from papermerge.core.features.document.db import api as doc_dbapi
+from papermerge.core.features.document import schema as doc_schema
+from papermerge.core.features.document.db.orm import DocumentVersion, Page
+from papermerge.core.types import MimeType
+from papermerge.core.tasks import send_task
+from papermerge.storage.base import get_storage_backend
+from papermerge.core import pathlib as plib
 
 from .db.orm import (
 	ScanSegment,
@@ -351,17 +362,114 @@ async def create_document_from_segment(
 			detail="Cannot create document from rejected segment",
 		)
 
-	# TODO: Implement document creation from segment file
-	# This would involve:
-	# 1. Loading segment image from segment_file_path
-	# 2. Creating new document in destination folder
-	# 3. Linking segment to document
-	# 4. Triggering OCR on the new document
+	# Determine title
+	title = request.title or f"Segment_{segment.segment_number}"
 
-	raise HTTPException(
-		status_code=status.HTTP_501_NOT_IMPLEMENTED,
-		detail="Document creation from segment not yet implemented",
+	# Determine MIME type from segment_file_path extension (default jpeg for scan segments)
+	mime = MimeType.image_jpeg
+	if segment.segment_file_path:
+		ext = Path(segment.segment_file_path).suffix.lower().lstrip(".")
+		if ext == "png":
+			mime = MimeType.image_png
+		elif ext in ("tif", "tiff"):
+			mime = MimeType.image_tiff
+		elif ext == "pdf":
+			mime = MimeType.application_pdf
+
+	# Create the document record in the destination folder
+	new_doc_attrs = doc_schema.NewDocument(
+		title=title,
+		parent_id=UUID(request.folder_id),
+		lang="deu",
+		ocr=True,
+		created_by=user.id,
+		updated_by=user.id,
 	)
+
+	try:
+		created_docs = await doc_dbapi.bulk_create_documents(
+			db_session=db,
+			documents_data=[(new_doc_attrs, mime)],
+		)
+	except Exception as e:
+		logger.error(f"Failed to create document from segment {segment_id}: {e}")
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail=f"Failed to create document: {e}",
+		)
+
+	doc = created_docs[0]
+
+	# Persist segment file to storage and create page record
+	if segment.segment_file_path:
+		try:
+			storage = get_storage_backend()
+
+			ver_result = await db.execute(
+				select(DocumentVersion).where(DocumentVersion.document_id == doc.id)
+			)
+			doc_ver = ver_result.scalar_one_or_none()
+
+			if doc_ver:
+				file_name = Path(segment.segment_file_path).name
+				doc_ver.file_name = file_name
+
+				object_key = str(plib.docver_path(doc_ver.id, file_name=file_name))
+
+				# Read the segment file from storage into a temp file, then upload
+				with tempfile.TemporaryDirectory() as tmpdir:
+					local_path = Path(tmpdir) / file_name
+					await storage.download_file_to_path(segment.segment_file_path, local_path)
+					file_bytes = local_path.read_bytes()
+					doc_ver.size = len(file_bytes)
+
+				await storage.upload_file(
+					object_key=object_key,
+					content=file_bytes,
+					content_type=mime.value,
+				)
+
+				# Create a single Page record for the segment image
+				import uuid as _uuid
+				page = Page(
+					id=_uuid.uuid4(),
+					number=1,
+					page_count=1,
+					lang=doc_ver.lang or "deu",
+					document_version_id=doc_ver.id,
+				)
+				db.add(page)
+				doc_ver.page_count = 1
+		except Exception as e:
+			logger.warning(f"Could not persist segment file to storage: {e}")
+
+	# Link the segment to the new document
+	segment.document_id = str(doc.id)
+	segment.status = DBSegmentStatus.APPROVED
+	segment.updated_at = datetime.utcnow()
+	await db.commit()
+
+	# Queue OCR processing
+	try:
+		ver_result2 = await db.execute(
+			select(DocumentVersion).where(DocumentVersion.document_id == doc.id)
+		)
+		doc_ver2 = ver_result2.scalar_one_or_none()
+		if doc_ver2:
+			send_task(
+				"process_upload",
+				kwargs={
+					"document_id": str(doc.id),
+					"document_version_id": str(doc_ver2.id),
+					"lang": doc_ver2.lang or "deu",
+					"user_id": str(user.id),
+				},
+				route_name="s3",
+			)
+	except Exception as e:
+		logger.debug(f"Could not queue OCR task for segment document {doc.id}: {e}")
+
+	return {"document_id": str(doc.id), "segment_id": segment_id}
 
 
 @router.delete(

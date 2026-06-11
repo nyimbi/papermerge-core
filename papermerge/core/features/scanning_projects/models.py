@@ -17,6 +17,7 @@ from .views import (
 	ResourceStatus,
 	MilestoneStatus,
 	QCReviewStatus,
+	BatchDocumentStatus,
 )
 
 
@@ -66,7 +67,7 @@ class ScanningBatchModel(Base):
 	)
 	batch_number: Mapped[str] = mapped_column(String(100))
 	type: Mapped[ScanningBatchType] = mapped_column(
-		Enum(ScanningBatchType),
+		Enum(ScanningBatchType, values_callable=lambda x: [e.value for e in x], native_enum=True, create_constraint=False),
 		default=ScanningBatchType.BOX,
 	)
 	physical_location: Mapped[str] = mapped_column(String(255))
@@ -75,7 +76,7 @@ class ScanningBatchModel(Base):
 	actual_pages: Mapped[int] = mapped_column(Integer, default=0)
 	scanned_pages: Mapped[int] = mapped_column(Integer, default=0)
 	status: Mapped[ScanningBatchStatus] = mapped_column(
-		Enum(ScanningBatchStatus),
+		Enum(ScanningBatchStatus, values_callable=lambda x: [e.value for e in x], native_enum=True, create_constraint=False),
 		default=ScanningBatchStatus.PENDING,
 	)
 	assigned_operator_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
@@ -92,6 +93,11 @@ class ScanningBatchModel(Base):
 	qc_samples: Mapped[list["QualityControlSampleModel"]] = relationship(
 		back_populates="batch",
 		cascade="all, delete-orphan",
+	)
+	documents: Mapped[list["ScanningBatchDocumentModel"]] = relationship(
+		back_populates="batch",
+		cascade="all, delete-orphan",
+		order_by="ScanningBatchDocumentModel.page_number",
 	)
 
 
@@ -110,13 +116,52 @@ class ScanningMilestoneModel(Base):
 	target_pages: Mapped[int] = mapped_column(Integer, default=0)
 	actual_pages: Mapped[int] = mapped_column(Integer, default=0)
 	status: Mapped[MilestoneStatus] = mapped_column(
-		Enum(MilestoneStatus),
+		Enum(MilestoneStatus, values_callable=lambda x: [e.value for e in x], native_enum=True, create_constraint=False),
 		default=MilestoneStatus.PENDING,
 	)
 	completed_at: Mapped[datetime | None] = mapped_column(DateTime)
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 	# project: Mapped["ScanningProjectModel"] = relationship(back_populates="milestones")
+
+
+class ScanningBatchDocumentModel(Base):
+	"""
+	Links scanned documents to their scanning batch.
+	Tracks documents created during a scanning session.
+	"""
+	__tablename__ = "scanning_batch_documents"
+
+	id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+	batch_id: Mapped[UUID] = mapped_column(
+		PG_UUID(as_uuid=True),
+		ForeignKey("scanning_batches.id", ondelete="CASCADE"),
+		index=True,
+	)
+	document_id: Mapped[UUID] = mapped_column(
+		PG_UUID(as_uuid=True),
+		ForeignKey("nodes.id", ondelete="CASCADE"),
+		index=True,
+	)
+	page_number: Mapped[int] = mapped_column(Integer)  # Order in the batch
+	scan_job_id: Mapped[str | None] = mapped_column(String(36))  # Reference to scan job
+	quality_score: Mapped[int] = mapped_column(Integer, default=90)
+	status: Mapped[BatchDocumentStatus] = mapped_column(
+		Enum(
+			BatchDocumentStatus,
+			name="batchdocumentstatus",
+			create_type=False,
+			values_callable=lambda x: [e.value for e in x],
+		),
+		default=BatchDocumentStatus.ACCEPTED,
+	)
+	needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+	has_issues: Mapped[bool] = mapped_column(Boolean, default=False)
+	issue_details: Mapped[dict | None] = mapped_column(JSON)  # blur, skew, etc.
+	scanned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+	batch: Mapped["ScanningBatchModel"] = relationship(back_populates="documents")
 
 
 class QualityControlSampleModel(Base):
@@ -131,7 +176,7 @@ class QualityControlSampleModel(Base):
 	page_id: Mapped[str] = mapped_column(String(36))
 	page_number: Mapped[int] = mapped_column(Integer)
 	review_status: Mapped[QCReviewStatus] = mapped_column(
-		Enum(QCReviewStatus),
+		Enum(QCReviewStatus, values_callable=lambda x: [e.value for e in x], native_enum=True, create_constraint=False),
 		default=QCReviewStatus.PENDING,
 	)
 	image_quality: Mapped[int] = mapped_column(Integer, default=0)
@@ -151,11 +196,11 @@ class ScanningResourceModel(Base):
 
 	id: Mapped[str] = mapped_column(String(36), primary_key=True)
 	tenant_id: Mapped[str] = mapped_column(String(36), index=True)
-	type: Mapped[ResourceType] = mapped_column(Enum(ResourceType))
+	type: Mapped[ResourceType] = mapped_column(Enum(ResourceType, values_callable=lambda x: [e.value for e in x], native_enum=True, create_constraint=False))
 	name: Mapped[str] = mapped_column(String(255))
 	description: Mapped[str | None] = mapped_column(String(1000))
 	status: Mapped[ResourceStatus] = mapped_column(
-		Enum(ResourceStatus),
+		Enum(ResourceStatus, values_callable=lambda x: [e.value for e in x], native_enum=True, create_constraint=False),
 		default=ResourceStatus.AVAILABLE,
 	)
 	# Scanner-specific

@@ -1,8 +1,10 @@
 import logging
+import uuid
 from typing import Annotated, List
 
-from fastapi import APIRouter, Security, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Security, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.features.document.db import api as doc_dbapi
@@ -21,6 +23,18 @@ from papermerge.core.features.audit.db.audit_context import AsyncAuditContext
 logger = logging.getLogger(__name__)
 config = get_settings()
 MAX_PAGES = 10
+
+
+class UpdatePageTextRequest(BaseModel):
+    """Request body for updating page OCR text."""
+    text: str
+
+
+class UpdatePageTextResponse(BaseModel):
+    """Response for page text update."""
+    page_id: str
+    text: str
+    success: bool
 
 router = APIRouter(
     prefix="/pages",
@@ -145,3 +159,68 @@ async def extract_pages(
     model = schema.ExtractPagesOut(source=source, target=target_nodes)
 
     return schema.ExtractPagesOut.model_validate(model)
+
+
+@router.patch("/{page_id}/text")
+@utils.docstring_parameter(scope=scopes.NODE_UPDATE)
+async def update_page_text(
+    page_id: str,
+    body: UpdatePageTextRequest,
+    user: Annotated[
+        schema.User, Security(get_current_user, scopes=[scopes.NODE_UPDATE])
+    ],
+    db_session: AsyncSession = Depends(get_db),
+) -> UpdatePageTextResponse:
+    """Update the OCR text content of a specific page.
+
+    Required scope: `{scope}`
+
+    This endpoint is used by the browser-based VLM OCR feature to save
+    extracted text back to the document page.
+    """
+    try:
+        page_uuid = uuid.UUID(page_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid page ID format")
+
+    # Verify page exists and user has permission
+    stmt = select(orm.Page).where(orm.Page.id == page_uuid)
+    result = await db_session.execute(stmt)
+    page = result.scalar_one_or_none()
+
+    if not page:
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    # Update the page text
+    async with AsyncAuditContext(
+        db_session,
+        user_id=user.id,
+        username=user.username
+    ):
+        update_stmt = update(orm.Page).where(orm.Page.id == page_uuid).values(text=body.text)
+        await db_session.execute(update_stmt)
+
+        # Also update the document version text (concatenated from all pages)
+        doc_version_id = page.document_version_id
+        pages_stmt = (
+            select(orm.Page.text)
+            .where(orm.Page.document_version_id == doc_version_id)
+            .order_by(orm.Page.number)
+        )
+        pages_result = await db_session.execute(pages_stmt)
+        all_texts = [row.text or '' for row in pages_result]
+        combined_text = ' '.join(t.strip() for t in all_texts if t.strip())
+
+        doc_version_update = (
+            update(orm.DocumentVersion)
+            .where(orm.DocumentVersion.id == doc_version_id)
+            .values(text=combined_text)
+        )
+        await db_session.execute(doc_version_update)
+        await db_session.commit()
+
+    return UpdatePageTextResponse(
+        page_id=page_id,
+        text=body.text,
+        success=True
+    )

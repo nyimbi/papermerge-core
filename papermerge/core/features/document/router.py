@@ -336,6 +336,180 @@ async def upload_document(
     return doc
 
 
+@router.post(
+    "/upload-scan",
+    status_code=201,
+    response_model=schema.DocumentUploadResponse,
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_CREATE}` or `{scopes.DOCUMENT_UPLOAD}` permission",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        }
+    },
+)
+async def upload_scanned_document(
+    user: require_scopes(scopes.NODE_CREATE, scopes.DOCUMENT_UPLOAD),
+    file: UploadFile,
+    project_id: str | None = Form(None),
+    batch_id: str | None = Form(None),
+    parent_id: uuid.UUID | None = Form(None),
+    db_session: AsyncSession = Depends(get_db),
+):
+    """
+    Upload a scanned document from browser-based scanning.
+
+    This endpoint is used when the frontend directly scans from a local
+    network scanner and needs to upload the result to the backend.
+
+    The scanned image is stored and associated with the given project/batch
+    if provided.
+    """
+    # Default to user's inbox if no parent specified
+    if parent_id is None:
+        parent_id = user.inbox_folder_id
+
+    # Generate filename from timestamp
+    import time
+    ext = file.filename.split('.')[-1] if file.filename and '.' in file.filename else 'jpg'
+    title = f"scan_{int(time.time())}.{ext}"
+
+    # Check permission on parent
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=parent_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    # Use default language
+    lang = user.preferences.document_default_lang or config.default_lang
+
+    # Generate IDs
+    doc_id = uuid.uuid4()
+    document_version_id = uuid.uuid4()
+
+    # Read first chunk for mime type detection
+    first_chunk = await file.read(8192)
+    await file.seek(0)
+
+    client_content_type = file.headers.get("content-type")
+
+    # Detect and validate mime type
+    try:
+        mime_type = detect_and_validate_mime_type(
+            first_chunk,
+            title,
+            client_content_type=client_content_type,
+            validate_structure=False
+        )
+    except UnsupportedFileTypeError as e:
+        logger.warning(f"Unsupported file type for scan: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {e}"
+        )
+    except InvalidFileError as e:
+        logger.warning(f"Invalid file structure for scan: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"File is corrupted or invalid: {e}"
+        )
+
+    max_file_size = config.max_file_size_mb * 1024 * 1024
+    if file.size and file.size > max_file_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {max_file_size / (1024*1024)}MB"
+        )
+
+    from papermerge.storage.base import get_storage_backend
+    from papermerge.storage.exc import StorageUploadError, FileTooLargeError
+
+    storage = get_storage_backend()
+
+    object_key = str(pathlib.docver_path(
+        document_version_id,
+        file_name=title)
+    )
+
+    try:
+        await storage.upload_file(
+            file=file,
+            object_key=object_key,
+            content_type=mime_type,
+            max_file_size=max_file_size
+        )
+    except FileTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    except StorageUploadError as e:
+        logger.error(f"Storage upload failed for scanned document {doc_id}: {e}")
+        raise HTTPException(status_code=500, detail="File upload failed")
+
+    async with AsyncAuditContext(
+        db_session,
+        user_id=user.id,
+        username=user.username
+    ):
+        new_document = schema.NewDocument(
+            id=doc_id,
+            title=title,
+            lang=lang,
+            parent_id=parent_id,
+            size=file.size or 0,
+            page_count=1,  # Single page for scanned images
+            ocr=False,
+            file_name=title,
+            ctype="document",
+            created_by=user.id,
+            updated_by=user.id
+        )
+
+        try:
+            doc = await doc_dbapi.create_document(
+                db_session,
+                new_document,
+                mime_type=mime_type,
+                document_version_id=document_version_id
+            )
+        except Exception as e:
+            try:
+                await storage.delete_file(object_key)
+            except Exception as clean_ex:
+                logger.warning(f"Failed to cleanup uploaded scan {object_key}: {clean_ex}")
+            raise HTTPException(status_code=400, detail=str(e))
+
+    # Process the upload for thumbnail generation
+    send_task(
+        "process_upload",
+        kwargs={
+            "document_id": str(doc.id),
+            "document_version_id": str(document_version_id),
+            "lang": str(lang),
+            "user_id": str(user.id),
+        },
+        route_name="s3"
+    )
+
+    # If batch tracking is enabled, add to batch documents
+    if project_id and batch_id:
+        try:
+            from papermerge.core.features.scanning_projects.db import api as scanning_dbapi
+            await scanning_dbapi.add_batch_document(
+                db_session,
+                batch_id=uuid.UUID(batch_id),
+                document_id=doc.id,
+                page_number=1,
+                quality_score=90,  # Default quality for browser scans
+            )
+        except Exception as e:
+            logger.warning(f"Failed to add document to batch: {e}")
+
+    logger.info(f"Scanned document {doc.id} uploaded from browser")
+
+    return doc
+
+
 @router.get(
     "/{doc_id}/last-version/",
     responses={

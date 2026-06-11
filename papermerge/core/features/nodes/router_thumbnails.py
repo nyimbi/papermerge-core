@@ -96,3 +96,63 @@ async def get_document_thumbnail(
         )
 
     return JPEGFileResponse(jpg_abs_path)
+
+
+@router.get(
+    "/{document_id}/full",
+    responses={
+        200: {
+            "description": "Full resolution document image",
+            "content": {
+                "application/pdf": {},
+                "image/jpeg": {},
+                "image/png": {},
+                "image/tiff": {},
+            }
+        },
+        309: {
+            "description": "Document not ready for preview yet",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+        404: {
+            "description": "Document not found",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+    },
+)
+@utils.docstring_parameter(scope=scopes.NODE_VIEW)
+async def get_document_full(
+    document_id: uuid.UUID,
+    user: Annotated[
+        usr_schema.User, Security(get_current_user, scopes=[scopes.NODE_VIEW])
+    ],
+    db_session: AsyncSession = Depends(get_db),
+):
+    """Retrieves full resolution document (last version)
+
+    Required scope: `{scope}`
+    """
+    from papermerge.core.features.document.response import DocumentFileResponse
+
+    ok = await has_node_perm(
+        db_session, user_id=user.id, codename=scopes.NODE_VIEW, node_id=document_id
+    )
+    if not ok:
+        raise HTTP403Forbidden()
+
+    try:
+        doc_ver = await dbapi.get_last_doc_ver(db_session, doc_id=document_id)
+    except NoResultFound:
+        raise HTTP404NotFound
+
+    if not doc_ver.file_path.exists():
+        raise HTTPException(
+            status_code=309,
+            detail="Document file not ready yet",
+        )
+
+    return DocumentFileResponse(
+        doc_ver.file_path,
+        filename=doc_ver.file_name,
+        content_disposition_type="inline"  # Display in browser, don't download
+    )

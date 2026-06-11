@@ -3,12 +3,15 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import UUID
 
-import numpy as np
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# Lazy import numpy to avoid breaking the document router if numpy is not installed
+if TYPE_CHECKING:
+	import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +110,9 @@ class AnomalyDetectionService:
 		
 		# 3. Run IsolationForest
 		try:
+			import numpy as np
 			from sklearn.ensemble import IsolationForest
-			
+
 			X = np.array(peer_amounts).reshape(-1, 1)
 			clf = IsolationForest(contamination=0.05, random_state=42)
 			clf.fit(X)
@@ -137,9 +141,15 @@ class AnomalyDetectionService:
 			)
 			
 		except ImportError:
-			logger.warning("scikit-learn not available, using simple Z-score fallback")
-			avg = np.mean(peer_amounts)
-			std = np.std(peer_amounts)
+			logger.warning("scikit-learn or numpy not available, using simple Z-score fallback")
+			# Calculate mean/std without numpy if numpy not available
+			try:
+				import numpy as np
+				avg = np.mean(peer_amounts)
+				std = np.std(peer_amounts)
+			except ImportError:
+				avg = sum(peer_amounts) / len(peer_amounts)
+				std = (sum((x - avg) ** 2 for x in peer_amounts) / len(peer_amounts)) ** 0.5
 			z_score = (doc_amount - avg) / std if std > 0 else 0
 			
 			is_anomaly = abs(z_score) > 3
