@@ -53,10 +53,17 @@ class Settings(BaseSettings):
 	# Semantic search / embeddings settings
 	embedding_provider: str = 'ollama'
 	embedding_model: str = 'nomic-embed-text'
-	ollama_base_url: str = 'http://localhost:11434'
+	ollama_base_url: str = 'http://62.169.25.77:11434'
 	semantic_search_enabled: bool = False
 	semantic_search_threshold: float = 0.5
 	hybrid_search_semantic_weight: float = 0.5
+
+	# LiteLLM / AI gateway settings
+	litellm_base_url: str = 'http://84.247.181.100:4000/v1'
+	litellm_api_key: str = 'sk-pjs-litellm-master-key'
+	litellm_default_model: str = 'gpt-4o'
+	litellm_ocr_model: str = 'gpt-4o'
+	litellm_extraction_model: str = 'claude-sonnet'
 
 	preview_page_size_sm: int = Field(gt=0, default=200)
 	prefix: str = ''
@@ -78,8 +85,8 @@ class Settings(BaseSettings):
 	# SMTP (Stalwart at mail.lindela.io)
 	smtp_host: str = "mail.lindela.io"
 	smtp_port: int = 587
-	smtp_user: str = ""
-	smtp_password: str = ""
+	smtp_user: str = "noreply@lindela.io"
+	smtp_password: str = "dArchiva2026!noreply"
 	smtp_from: str = "noreply@lindela.io"
 	smtp_from_name: str = "dArchiva"
 	smtp_use_tls: bool = True  # STARTTLS on 587; set False + port 465 for implicit TLS
