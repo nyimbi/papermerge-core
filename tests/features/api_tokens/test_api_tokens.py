@@ -24,11 +24,11 @@ def _db():
     result.scalar_one_or_none.return_value = None
     result.scalar.return_value = 0
     db.execute.return_value = result
-    # Handle db.scalars() direct usage (some endpoints bypass db.execute)
     _sr = MagicMock()
     _sr.all.return_value = []
     db.scalars.return_value = _sr
     db.scalar.return_value = 0
+    db.get.return_value = None
     return db
 
 
@@ -41,7 +41,8 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_list_tokens_empty():
     response = client.get("/tokens")
-    assert response.status_code in (200, 404)
+    assert response.status_code == 200
+    assert response.json()["items"] == []
 
 
 def test_create_token_missing_body_422():
@@ -51,9 +52,9 @@ def test_create_token_missing_body_422():
 
 def test_create_token_valid_body():
     response = client.post("/tokens", json={"name": "ci-token"})
-    assert response.status_code in (200, 201, 422, 500)
+    assert response.status_code in (200, 201, 500)
 
 
 def test_delete_nonexistent_token():
     response = client.delete(f"/tokens/{uuid.uuid4()}")
-    assert response.status_code in (204, 404, 422, 500)
+    assert response.status_code == 404

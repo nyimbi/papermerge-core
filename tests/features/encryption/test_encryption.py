@@ -24,7 +24,6 @@ def _db():
     result.scalar_one_or_none.return_value = None
     result.scalar.return_value = 0
     db.execute.return_value = result
-    # Handle db.scalars() direct usage (some endpoints bypass db.execute)
     _sr = MagicMock()
     _sr.all.return_value = []
     db.scalars.return_value = _sr
@@ -41,19 +40,23 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_list_encryption_keys():
     response = client.get("/encryption/keys")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
+    body = response.json()
+    assert "items" in body
 
 
 def test_get_key_not_found():
     response = client.get(f"/encryption/keys/{uuid.uuid4()}")
-    assert response.status_code in (404, 422, 500)
+    assert response.status_code in (404, 422)
 
 
 def test_list_access_requests():
     response = client.get("/encryption/hidden-access/pending")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
+    body = response.json()
+    assert "items" in body
 
 
-def test_request_single_view():
+def test_request_single_view_missing_body():
     response = client.post("/encryption/single-view", json={})
-    assert response.status_code in (200, 201, 422, 500)
+    assert response.status_code == 422

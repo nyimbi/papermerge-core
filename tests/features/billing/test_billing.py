@@ -23,12 +23,15 @@ def _db():
     result.scalars.return_value.all.return_value = []
     result.scalar_one_or_none.return_value = None
     result.scalar.return_value = 0
+    # billing /dashboard calls result.one() to unpack two-column aggregates
+    result.one.return_value = (0, 0)
     db.execute.return_value = result
-    # Handle db.scalars() direct usage (some endpoints bypass db.execute)
     _sr = MagicMock()
     _sr.all.return_value = []
     db.scalars.return_value = _sr
     db.scalar.return_value = 0
+    # db.get() must return None so 404 guards work
+    db.get.return_value = None
     return db
 
 
@@ -41,24 +44,27 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_billing_dashboard_ok():
     response = client.get("/billing/dashboard")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
 
 
 def test_billing_alerts_list():
     response = client.get("/billing/alerts")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_billing_invoices_list():
     response = client.get("/billing/invoices")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_billing_usage_daily():
     response = client.get("/billing/usage")
-    assert response.status_code in (200, 404, 500)
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_cost_estimate_missing_body():
     response = client.post("/billing/estimate", json={})
-    assert response.status_code in (200, 422, 500)
+    assert response.status_code == 422

@@ -758,6 +758,9 @@ async def get_folder(
 async def delete_nodes(
     db_session: AsyncSession, node_ids: list[UUID], user_id: UUID
 ) -> schema.Error | None:
+    if not node_ids:
+        return None
+
     all_ids_to_be_deleted = [
         item[0] for item in await get_descendants(db_session, node_ids=node_ids)
     ]

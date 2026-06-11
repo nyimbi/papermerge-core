@@ -25,10 +25,5 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_liveness_probe_ok():
     response = client.get("/probe/")
-    assert response.status_code in (200, 500)
-
-
-def test_liveness_probe_returns_empty():
-    response = client.get("/probe/")
-    if response.status_code == 200:
-        assert response.content == b""
+    assert response.status_code == 200
+    assert response.content == b""

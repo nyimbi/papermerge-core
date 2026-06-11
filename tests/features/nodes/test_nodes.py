@@ -26,7 +26,6 @@ def _db():
     result.scalar_one_or_none.return_value = None
     result.scalar.return_value = 0
     db.execute.return_value = result
-    # Handle db.scalars() direct usage (some endpoints bypass db.execute)
     _sr = MagicMock()
     _sr.all.return_value = []
     db.scalars.return_value = _sr
@@ -43,28 +42,27 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_get_folder_tree():
     response = client.get("/nodes/tree")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
 
 
 def test_get_node_children_empty():
-    # GET /{parent_id} returns paginated children — returns 200 with empty list
-    # when parent has no children (or parent doesn't exist but user has access)
+    # GET /{parent_id} returns paginated children — 200 with empty items
     response = client.get(f"/nodes/{uuid.uuid4()}")
-    assert response.status_code in (200, 403, 500)
+    assert response.status_code in (200, 403)
 
 
 def test_get_node_breadcrumb():
     response = client.get(f"/nodes/{uuid.uuid4()}/breadcrumb")
-    assert response.status_code in (200, 404, 422, 500)
+    assert response.status_code in (200, 404)
 
 
 def test_bulk_delete_nodes_empty():
-    # DELETE /nodes/ takes a JSON array of UUIDs; empty list returns 200 with []
+    # DELETE /nodes/ with empty list returns 200 with []
     response = client.request("DELETE", "/nodes/", json=[])
-    assert response.status_code in (200, 403, 422, 500)
+    assert response.status_code in (200, 403)
 
 
 def test_bulk_delete_nodes_nonexistent():
     # Non-existent node: has_node_perm returns falsy → 403 Forbidden
     response = client.request("DELETE", "/nodes/", json=[str(uuid.uuid4())])
-    assert response.status_code in (200, 403, 422, 500)
+    assert response.status_code in (200, 403)

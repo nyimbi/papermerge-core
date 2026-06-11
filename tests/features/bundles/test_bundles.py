@@ -24,11 +24,12 @@ def _db():
     result.scalar_one_or_none.return_value = None
     result.scalar.return_value = 0
     db.execute.return_value = result
-    # Handle db.scalars() direct usage (some endpoints bypass db.execute)
     _sr = MagicMock()
     _sr.all.return_value = []
     db.scalars.return_value = _sr
     db.scalar.return_value = 0
+    # db.get() must return None so 404 guards fire correctly
+    db.get.return_value = None
     return db
 
 
@@ -41,17 +42,18 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_list_bundles_empty():
     response = client.get("/bundles/")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
+    assert response.json()["items"] == []
 
 
 def test_create_bundle_missing_body():
     response = client.post("/bundles/", json={})
-    assert response.status_code in (200, 201, 422, 500)
+    assert response.status_code == 422
 
 
 def test_get_bundle_not_found():
     response = client.get(f"/bundles/{uuid.uuid4()}")
-    assert response.status_code in (404, 422, 500)
+    assert response.status_code == 404
 
 
 def test_add_document_to_nonexistent_bundle():
@@ -59,4 +61,4 @@ def test_add_document_to_nonexistent_bundle():
         f"/bundles/{uuid.uuid4()}/documents",
         json={"document_id": str(uuid.uuid4())},
     )
-    assert response.status_code in (200, 201, 404, 422, 500)
+    assert response.status_code == 404

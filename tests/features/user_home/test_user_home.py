@@ -9,9 +9,10 @@ os.environ.setdefault("PM_DB_URL", "postgresql+asyncpg://x:x@localhost/x")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from papermerge.core.features.user_home.router import router as user_home_router
+from papermerge.core.features.user_home.router import get_service
+from papermerge.core.features.user_home.views import UserHomeDataOut, UserInfo, UserStats
 from papermerge.core.features.auth import get_current_user
 from papermerge.core.db.engine import get_session
-from papermerge.core.features.user_home.router import get_service
 
 
 def _make_user():
@@ -24,21 +25,14 @@ def _make_user():
 
 def _make_service():
     svc = AsyncMock()
-    svc.get_user_home_data = AsyncMock(return_value=MagicMock(
-        model_dump=lambda **kw: {
-            "recent_documents": [],
-            "pending_tasks": [],
-            "favorites": [],
-            "notifications": [],
-            "calendar_events": [],
-            "recent_searches": [],
-            "stats": {},
-        }
+    svc.get_user_home_data = AsyncMock(return_value=UserHomeDataOut(
+        user=UserInfo(id=str(uuid.uuid4()), name="Test User", email="test@example.com"),
+        stats=UserStats(),
     ))
     svc._get_workflow_tasks = AsyncMock(return_value=[])
-    svc.get_recent_documents = AsyncMock(return_value=[])
-    svc.get_favorites = AsyncMock(return_value=[])
-    svc.get_notifications = AsyncMock(return_value=[])
+    svc._get_recent_documents = AsyncMock(return_value=[])
+    svc._get_favorites = AsyncMock(return_value=[])
+    svc._get_notifications = AsyncMock(return_value=[])
     return svc
 
 
@@ -53,7 +47,10 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_get_user_home_ok():
     response = client.get("/users/me/home")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
+    body = response.json()
+    assert "user" in body
+    assert "stats" in body
 
 
 def test_get_assigned_tasks_ok():

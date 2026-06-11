@@ -24,11 +24,12 @@ def _db():
     result.scalar_one_or_none.return_value = None
     result.scalar.return_value = 0
     db.execute.return_value = result
-    # Handle db.scalars() direct usage (some endpoints bypass db.execute)
     _sr = MagicMock()
     _sr.all.return_value = []
     db.scalars.return_value = _sr
     db.scalar.return_value = 0
+    # db.get() must return None so 404 guards fire correctly
+    db.get.return_value = None
     return db
 
 
@@ -41,19 +42,21 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_list_cases_empty():
     response = client.get("/cases/")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
+    assert response.json()["items"] == []
 
 
 def test_create_case_missing_name():
     response = client.post("/cases/", json={})
-    assert response.status_code in (200, 201, 422, 500)
+    assert response.status_code == 422
 
 
 def test_get_case_not_found():
     response = client.get(f"/cases/{uuid.uuid4()}")
-    assert response.status_code in (404, 422, 500)
+    assert response.status_code == 404
 
 
 def test_list_case_access():
     response = client.get(f"/cases/{uuid.uuid4()}/access")
-    assert response.status_code in (200, 404, 422, 500)
+    assert response.status_code == 200
+    assert response.json()["items"] == []

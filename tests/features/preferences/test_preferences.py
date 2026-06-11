@@ -24,6 +24,9 @@ def _db():
     result.scalar_one_or_none.return_value = None
     result.scalar.return_value = None
     db.execute.return_value = result
+    _sr = MagicMock()
+    _sr.all.return_value = []
+    db.scalars.return_value = _sr
     return db
 
 
@@ -36,14 +39,16 @@ client = TestClient(app, raise_server_exceptions=False)
 
 def test_get_preferences():
     response = client.get("/preferences/me")
-    assert response.status_code in (200, 500)
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, dict)
 
 
 def test_get_system_preferences():
     response = client.get("/preferences/system")
-    assert response.status_code in (200, 404, 500)
+    assert response.status_code in (200, 404)
 
 
 def test_update_preferences():
     response = client.patch("/preferences/me", json={"timezone": "UTC"})
-    assert response.status_code in (200, 422, 500)
+    assert response.status_code == 200
