@@ -75,6 +75,10 @@ app.conf.task_routes = {
     "workflow.deadline_monitor": {"queue": prefixed("workflow")},
     "workflow.metrics_collector": {"queue": prefixed("workflow")},
     "workflow.sla_dashboard_refresh": {"queue": prefixed("workflow")},
+    # Ingestion and form tasks run on the core worker
+    "darchiva.ingestion.start_watcher": {"queue": prefixed("core")},
+    "darchiva.ingestion.process_file": {"queue": prefixed("core")},
+    "darchiva.form.process": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks

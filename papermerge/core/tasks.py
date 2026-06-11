@@ -14,16 +14,32 @@ def _log_task(name: str) -> str:
 
 
 @shared_task
-def delete_user_data(user_id):
-    pass
-    #try:
-    #    user = User.objects.get(id=user_id)
-        # first delete all files associated with the user
-    #    user.delete_user_data()
-        # then delete the user DB entry
-    #    user.delete()
-    #except User.DoesNotExist:
-    #    logger.info(f"User: {user_id} already deleted")
+def delete_user_data(user_id: str):
+	"""Soft-delete a user and their associated data."""
+	logger.info(_log_task(f"delete_user_data:{user_id[:8]}"))
+
+	import uuid as _uuid
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.users.db import api as users_dbapi
+
+		async_session = get_async_session_maker()
+		async with async_session() as session:
+			try:
+				uid = _uuid.UUID(user_id)
+				await users_dbapi.delete_user(
+					session,
+					user_id=uid,
+					deleted_by_user_id=uid,
+				)
+				await session.commit()
+				logger.info(f"Deleted user data for {user_id}")
+			except Exception as e:
+				logger.error(f"Failed to delete user data for {user_id}: {e}")
+				raise
+
+	asyncio.run(_run())
 
 @if_redis_present
 def send_task(*args, **kwargs):
@@ -268,6 +284,75 @@ def start_ingestion_watcher(source_id: str):
 					"darchiva.ingestion.process_file",
 					kwargs={"source_id": source_id, "file_path": file_path},
 				)
+
+	asyncio.run(_run())
+
+
+@shared_task(name="darchiva.ingestion.process_file")
+def process_ingestion_file(source_id: str, file_path: str):
+	"""Read a file from a watched folder and create a document from it."""
+	logger.info(_log_task(f"process_ingestion_file:{file_path}"))
+
+	import os
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.ingestion.db.orm import IngestionSource, IngestionJob, JobStatus
+		from sqlalchemy import select
+		from datetime import datetime, timezone
+
+		async_session = get_async_session_maker()
+
+		async with async_session() as session:
+			# Find the pending job for this file
+			stmt = select(IngestionJob).where(
+				IngestionJob.source_id == source_id,
+				IngestionJob.source_path == file_path,
+				IngestionJob.status == JobStatus.PENDING,
+			)
+			result = await session.execute(stmt)
+			job = result.scalar_one_or_none()
+
+			if not job:
+				logger.warning(f"No pending ingestion job found for {file_path}")
+				return
+
+			job.status = JobStatus.PROCESSING
+			job.started_at = datetime.now(timezone.utc)
+			await session.commit()
+
+			try:
+				if not os.path.isfile(file_path):
+					raise FileNotFoundError(f"File not found: {file_path}")
+
+				source = await session.get(IngestionSource, source_id)
+				file_size = os.path.getsize(file_path)
+				file_name = os.path.basename(file_path)
+
+				# Queue the actual document upload through the OCR pipeline
+				send_task(
+					"process_upload",
+					kwargs={
+						"file_path": file_path,
+						"file_name": file_name,
+						"file_size": file_size,
+						"source_id": source_id,
+						"apply_ocr": source.apply_ocr if source else True,
+					},
+				)
+
+				job.status = JobStatus.COMPLETED
+				job.completed_at = datetime.now(timezone.utc)
+				await session.commit()
+				logger.info(f"Queued ingestion for {file_name}")
+
+			except Exception as e:
+				job.status = JobStatus.FAILED
+				job.error_message = str(e)
+				job.completed_at = datetime.now(timezone.utc)
+				await session.commit()
+				logger.error(f"Failed to process ingestion file {file_path}: {e}")
+				raise
 
 	asyncio.run(_run())
 
