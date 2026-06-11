@@ -399,6 +399,62 @@ class UserHomeService:
 			for row in rows
 		]
 
+	# --- Workflow task actions ---
+
+	async def execute_workflow_task_action(
+		self,
+		task_id: str,
+		action_id: str,
+		user_id: str,
+		comment: str | None = None,
+	) -> dict:
+		"""Advance a WorkflowStepExecution based on the requested action.
+
+		approve/complete  → completed
+		reject            → failed
+		forward           → in_progress (stays in queue for re-assignment)
+		comment/custom    → no status change; acknowledged
+		"""
+		from datetime import timezone as _tz
+		WorkflowStepExecution, *_ = _workflow_orm()
+		uid = uuid.UUID(str(user_id))
+		try:
+			exe_id = uuid.UUID(task_id)
+		except ValueError:
+			raise ValueError(f"Invalid task_id: {task_id}")
+
+		stmt = select(WorkflowStepExecution).where(
+			WorkflowStepExecution.id == exe_id,
+			WorkflowStepExecution.assigned_to == uid,
+		)
+		result = await self.session.execute(stmt)
+		exe = result.scalar_one_or_none()
+
+		if not exe:
+			return {"status": "not_found", "task_id": task_id, "action_id": action_id}
+
+		_action_to_status = {
+			"approve": "completed",
+			"complete": "completed",
+			"reject": "failed",
+			"forward": "in_progress",
+		}
+		new_status = _action_to_status.get(action_id)
+		if new_status and exe.status != new_status:
+			exe.status = new_status
+			if new_status in ("completed", "failed"):
+				exe.completed_at = datetime.now(_tz.utc)
+			if comment:
+				exe.result_data = {**(exe.result_data or {}), "comment": comment}
+			await self.session.commit()
+
+		return {
+			"status": "success",
+			"task_id": task_id,
+			"action_id": action_id,
+			"new_status": exe.status,
+		}
+
 	# --- Favorite management ---
 
 	async def add_favorite(

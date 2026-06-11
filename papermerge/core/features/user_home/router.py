@@ -60,9 +60,17 @@ async def execute_task_action(
 	service: Annotated[UserHomeService, Depends(get_service)],
 	user: Annotated[User, Depends(get_current_user)],
 ):
-	"""Execute an action on a workflow task."""
-	# Would delegate to workflow service
-	return {"status": "success", "task_id": task_id, "action_id": data.action_id}
+	"""Execute an action on a workflow task (approve, reject, complete, etc.)."""
+	try:
+		return await service.execute_workflow_task_action(
+			task_id=task_id,
+			action_id=data.action_id,
+			user_id=str(user.id),
+			comment=data.comment,
+		)
+	except ValueError as e:
+		from fastapi import HTTPException
+		raise HTTPException(status_code=422, detail=str(e))
 
 
 # --- Recent Documents ---
