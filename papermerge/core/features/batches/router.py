@@ -46,7 +46,7 @@ async def list_locations(
 	limit: int = 100,
 ):
 	"""List source locations with optional filtering."""
-	query = select(SourceLocation)
+	query = select(SourceLocation).where(SourceLocation.tenant_id == user.tenant_id)
 
 	if location_type:
 		query = query.where(SourceLocation.location_type == location_type)
@@ -70,7 +70,7 @@ async def get_location_tree(
 	active_only: bool = True,
 ):
 	"""Get hierarchical tree of all locations."""
-	query = select(SourceLocation)
+	query = select(SourceLocation).where(SourceLocation.tenant_id == user.tenant_id)
 	if active_only:
 		query = query.where(SourceLocation.is_active == True)
 
@@ -194,7 +194,7 @@ async def list_batches(
 	limit: int = 50,
 ):
 	"""List scan batches with optional filtering."""
-	query = select(ScanBatch)
+	query = select(ScanBatch).where(ScanBatch.tenant_id == user.tenant_id)
 
 	if status_filter:
 		query = query.where(ScanBatch.status == status_filter)
@@ -217,12 +217,16 @@ async def get_batch_stats(
 ):
 	"""Get batch dashboard statistics."""
 	# Total batches
-	total_result = await db.execute(select(func.count(ScanBatch.id)))
+	total_result = await db.execute(
+		select(func.count(ScanBatch.id))
+		.where(ScanBatch.tenant_id == user.tenant_id)
+	)
 	total_batches = total_result.scalar() or 0
 
 	# Active batches
 	active_result = await db.execute(
 		select(func.count(ScanBatch.id))
+		.where(ScanBatch.tenant_id == user.tenant_id)
 		.where(ScanBatch.status.in_([BatchStatus.CREATED, BatchStatus.IN_PROGRESS, BatchStatus.PAUSED]))
 	)
 	active_batches = active_result.scalar() or 0
@@ -230,6 +234,7 @@ async def get_batch_stats(
 	# Completed batches
 	completed_result = await db.execute(
 		select(func.count(ScanBatch.id))
+		.where(ScanBatch.tenant_id == user.tenant_id)
 		.where(ScanBatch.status == BatchStatus.COMPLETED)
 	)
 	completed_batches = completed_result.scalar() or 0
@@ -242,12 +247,14 @@ async def get_batch_stats(
 			func.sum(ScanBatch.documents_requiring_rescan),
 			func.avg(ScanBatch.average_quality_score),
 		)
+		.where(ScanBatch.tenant_id == user.tenant_id)
 	)
 	totals = totals_result.one()
 
 	# Batches by status
 	status_result = await db.execute(
 		select(ScanBatch.status, func.count(ScanBatch.id))
+		.where(ScanBatch.tenant_id == user.tenant_id)
 		.group_by(ScanBatch.status)
 	)
 	batches_by_status = {str(row[0].value): row[1] for row in status_result}
@@ -255,6 +262,7 @@ async def get_batch_stats(
 	# Recent batches
 	recent_result = await db.execute(
 		select(ScanBatch)
+		.where(ScanBatch.tenant_id == user.tenant_id)
 		.order_by(ScanBatch.created_at.desc())
 		.limit(10)
 	)
@@ -412,8 +420,98 @@ async def complete_batch(
 	if not batch:
 		raise HTTPException(status_code=404, detail="Batch not found")
 
+	if batch.status != BatchStatus.IN_PROGRESS:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Cannot complete batch with status {batch.status.value}; must be in_progress"
+		)
+
 	batch.status = BatchStatus.COMPLETED
 	batch.completed_at = datetime.utcnow()
+	batch.updated_at = datetime.utcnow()
+
+	await db.commit()
+	await db.refresh(batch)
+	return batch
+
+
+@router.post("/{batch_id}/cancel", response_model=ScanBatchSchema)
+async def cancel_batch(
+	batch_id: str,
+	db: Annotated[AsyncSession, Depends(get_db)],
+	user: Annotated[User, Depends(get_current_user)],
+):
+	"""Cancel a scan batch."""
+	result = await db.execute(
+		select(ScanBatch).where(ScanBatch.id == batch_id)
+	)
+	batch = result.scalar_one_or_none()
+	if not batch:
+		raise HTTPException(status_code=404, detail="Batch not found")
+
+	if batch.status in [BatchStatus.COMPLETED, BatchStatus.CANCELLED]:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Cannot cancel batch with status {batch.status.value}"
+		)
+
+	batch.status = BatchStatus.CANCELLED
+	batch.updated_at = datetime.utcnow()
+
+	await db.commit()
+	await db.refresh(batch)
+	return batch
+
+
+@router.post("/{batch_id}/review", response_model=ScanBatchSchema)
+async def review_batch(
+	batch_id: str,
+	db: Annotated[AsyncSession, Depends(get_db)],
+	user: Annotated[User, Depends(get_current_user)],
+):
+	"""Move a batch to under_review status."""
+	result = await db.execute(
+		select(ScanBatch).where(ScanBatch.id == batch_id)
+	)
+	batch = result.scalar_one_or_none()
+	if not batch:
+		raise HTTPException(status_code=404, detail="Batch not found")
+
+	if batch.status not in [BatchStatus.COMPLETED, BatchStatus.IN_PROGRESS]:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Cannot move batch to under_review from status {batch.status.value}"
+		)
+
+	batch.status = BatchStatus.UNDER_REVIEW
+	batch.updated_at = datetime.utcnow()
+
+	await db.commit()
+	await db.refresh(batch)
+	return batch
+
+
+@router.post("/{batch_id}/fail", response_model=ScanBatchSchema)
+async def fail_batch(
+	batch_id: str,
+	db: Annotated[AsyncSession, Depends(get_db)],
+	user: Annotated[User, Depends(get_current_user)],
+):
+	"""Mark a batch as failed."""
+	result = await db.execute(
+		select(ScanBatch).where(ScanBatch.id == batch_id)
+	)
+	batch = result.scalar_one_or_none()
+	if not batch:
+		raise HTTPException(status_code=404, detail="Batch not found")
+
+	if batch.status in [BatchStatus.COMPLETED, BatchStatus.CANCELLED, BatchStatus.FAILED]:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Cannot fail batch with status {batch.status.value}"
+		)
+
+	batch.status = BatchStatus.FAILED
 	batch.updated_at = datetime.utcnow()
 
 	await db.commit()

@@ -1,5 +1,6 @@
 # (c) Copyright Datacraft, 2026
 """Document ingestion service for watched folders and email."""
+import base64
 import logging
 import asyncio
 from pathlib import Path
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from sqlalchemy import select, and_
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.features.ingestion.db.orm import IngestionSource, IngestionJob
 
@@ -44,7 +45,7 @@ class IngestionService:
 
 	def __init__(
 		self,
-		db: Session,
+		db: AsyncSession,
 		document_processor: Callable[[bytes, dict], Awaitable[UUID]] | None = None,
 	):
 		self.db = db
@@ -68,14 +69,14 @@ class IngestionService:
 				message=f"File not found: {file_path}",
 			)
 
-		# Create ingestion job
-		job = await self._create_job(
-			tenant_id=tenant_id,
-			source_id=source_id,
-			source_type="file",
-			source_path=str(file_path),
-			mode=mode.value,
-		)
+		# Create ingestion job — source_id is required (non-nullable FK); skip job
+		# creation when no source is associated and surface as metadata only.
+		job = None
+		if source_id is not None:
+			job = await self._create_job(
+				source_id=source_id,
+				source_path=str(file_path),
+			)
 
 		try:
 			# Read file content
@@ -97,28 +98,30 @@ class IngestionService:
 				document_id = await self._default_process(tenant_id, content, doc_metadata)
 
 			# Update job
-			job.status = JobStatus.COMPLETED.value
-			job.document_id = document_id
-			job.completed_at = datetime.now(timezone.utc)
-			self.db.commit()
+			if job is not None:
+				job.status = JobStatus.COMPLETED.value
+				job.document_id = document_id
+				job.completed_at = datetime.now(timezone.utc)
+				await self.db.commit()
 
 			return IngestionResult(
 				success=True,
 				document_id=document_id,
-				job_id=job.id,
+				job_id=job.id if job else None,
 				metadata=doc_metadata,
 			)
 
 		except Exception as e:
 			logger.error(f"Ingestion failed for {file_path}: {e}")
-			job.status = JobStatus.FAILED.value
-			job.error_message = str(e)
-			job.completed_at = datetime.now(timezone.utc)
-			self.db.commit()
+			if job is not None:
+				job.status = JobStatus.FAILED.value
+				job.error_message = str(e)
+				job.completed_at = datetime.now(timezone.utc)
+				await self.db.commit()
 
 			return IngestionResult(
 				success=False,
-				job_id=job.id,
+				job_id=job.id if job else None,
 				message=str(e),
 			)
 
@@ -132,24 +135,29 @@ class IngestionService:
 		"""Ingest documents from email attachments."""
 		results = []
 
-		# Create job for email
-		job = await self._create_job(
-			tenant_id=tenant_id,
-			source_id=source_id,
-			source_type="email",
-			source_path=email_data.get("message_id", "unknown"),
-			mode=mode.value,
-		)
+		# Create job for email — only when source_id is available (non-nullable FK)
+		job = None
+		if source_id is not None:
+			job = await self._create_job(
+				source_id=source_id,
+				source_path=email_data.get("message_id", "unknown"),
+			)
 
 		try:
 			attachments = email_data.get("attachments", [])
 
 			for attachment in attachments:
 				filename = attachment.get("filename", "unknown")
-				content = attachment.get("content")  # bytes
-
-				if not content:
+				# content_base64 is base64-encoded; decode to raw bytes before processing
+				raw = attachment.get("content_base64") or attachment.get("content")
+				if not raw:
 					continue
+
+				if isinstance(raw, str):
+					content = base64.b64decode(raw)
+				else:
+					# Already bytes — assume caller pre-decoded
+					content = raw
 
 				# Build metadata from email
 				doc_metadata = {
@@ -173,26 +181,27 @@ class IngestionService:
 				results.append(IngestionResult(
 					success=True,
 					document_id=document_id,
-					job_id=job.id,
+					job_id=job.id if job else None,
 					metadata=doc_metadata,
 				))
 
 			# Update job
-			job.status = JobStatus.COMPLETED.value
-			job.documents_processed = len(results)
-			job.completed_at = datetime.now(timezone.utc)
-			self.db.commit()
+			if job is not None:
+				job.status = JobStatus.COMPLETED.value
+				job.completed_at = datetime.now(timezone.utc)
+				await self.db.commit()
 
 		except Exception as e:
 			logger.error(f"Email ingestion failed: {e}")
-			job.status = JobStatus.FAILED.value
-			job.error_message = str(e)
-			job.completed_at = datetime.now(timezone.utc)
-			self.db.commit()
+			if job is not None:
+				job.status = JobStatus.FAILED.value
+				job.error_message = str(e)
+				job.completed_at = datetime.now(timezone.utc)
+				await self.db.commit()
 
 			results.append(IngestionResult(
 				success=False,
-				job_id=job.id,
+				job_id=job.id if job else None,
 				message=str(e),
 			))
 
@@ -203,7 +212,7 @@ class IngestionService:
 		source_id: UUID,
 	) -> bool:
 		"""Start watching a folder for new files."""
-		source = self.db.get(IngestionSource, source_id)
+		source = await self.db.get(IngestionSource, source_id)
 		if not source or source.source_type != "watched_folder":
 			return False
 
@@ -218,7 +227,7 @@ class IngestionService:
 
 		# Update source status
 		source.is_active = True
-		self.db.commit()
+		await self.db.commit()
 
 		logger.info(f"Started folder watcher for source {source_id}")
 		return True
@@ -232,10 +241,10 @@ class IngestionService:
 		del self._watchers[source_id]
 
 		# Update source status
-		source = self.db.get(IngestionSource, source_id)
+		source = await self.db.get(IngestionSource, source_id)
 		if source:
 			source.is_active = False
-			self.db.commit()
+			await self.db.commit()
 
 		logger.info(f"Stopped folder watcher for source {source_id}")
 		return True
@@ -247,7 +256,6 @@ class IngestionService:
 		source_type: str,
 		config: dict,
 		mode: IngestionMode = IngestionMode.OPERATIONAL,
-		target_folder_id: UUID | None = None,
 	) -> IngestionSource:
 		"""Create an ingestion source."""
 		source = IngestionSource(
@@ -256,12 +264,11 @@ class IngestionService:
 			source_type=source_type,
 			config=config,
 			mode=mode.value,
-			target_folder_id=target_folder_id,
 			is_active=False,
 		)
 		self.db.add(source)
-		self.db.commit()
-		self.db.refresh(source)
+		await self.db.commit()
+		await self.db.refresh(source)
 		return source
 
 	async def get_sources(self, tenant_id: UUID) -> list[IngestionSource]:
@@ -269,49 +276,44 @@ class IngestionService:
 		stmt = select(IngestionSource).where(
 			IngestionSource.tenant_id == tenant_id
 		)
-		return list(self.db.scalars(stmt))
+		result = await self.db.execute(stmt)
+		return list(result.scalars())
 
 	async def get_jobs(
 		self,
-		tenant_id: UUID,
-		source_id: UUID | None = None,
+		source_id: UUID,
 		status: str | None = None,
 		limit: int = 100,
 	) -> list[IngestionJob]:
-		"""Get ingestion jobs."""
-		conditions = [IngestionJob.tenant_id == tenant_id]
+		"""Get ingestion jobs for a source."""
+		conditions: list = [IngestionJob.source_id == source_id]
 
-		if source_id:
-			conditions.append(IngestionJob.source_id == source_id)
 		if status:
 			conditions.append(IngestionJob.status == status)
 
-		stmt = select(IngestionJob).where(
-			and_(*conditions)
-		).order_by(IngestionJob.created_at.desc()).limit(limit)
-
-		return list(self.db.scalars(stmt))
+		stmt = (
+			select(IngestionJob)
+			.where(and_(*conditions))
+			.order_by(IngestionJob.created_at.desc())
+			.limit(limit)
+		)
+		result = await self.db.execute(stmt)
+		return list(result.scalars())
 
 	async def _create_job(
 		self,
-		tenant_id: UUID,
-		source_id: UUID | None,
-		source_type: str,
+		source_id: UUID,
 		source_path: str,
-		mode: str,
 	) -> IngestionJob:
 		"""Create an ingestion job record."""
 		job = IngestionJob(
-			tenant_id=tenant_id,
 			source_id=source_id,
-			source_type=source_type,
 			source_path=source_path,
-			mode=mode,
 			status=JobStatus.PROCESSING.value,
 		)
 		self.db.add(job)
-		self.db.commit()
-		self.db.refresh(job)
+		await self.db.commit()
+		await self.db.refresh(job)
 		return job
 
 	async def _watch_folder(
@@ -338,7 +340,7 @@ class IngestionService:
 
 		while True:
 			try:
-				source = self.db.get(IngestionSource, source_id)
+				source = await self.db.get(IngestionSource, source_id)
 				if not source or not source.is_active:
 					break
 
@@ -363,8 +365,8 @@ class IngestionService:
 								file_path.rename(dest)
 
 				# Update last check time
-				source.last_check_at = datetime.now(timezone.utc)
-				self.db.commit()
+				source.last_checked_at = datetime.now(timezone.utc)
+				await self.db.commit()
 
 				await asyncio.sleep(poll_interval)
 
@@ -383,12 +385,10 @@ class IngestionService:
 		"""Default document processing - create document and trigger OCR."""
 		import tempfile
 		from pathlib import Path
-		from uuid_extensions import uuid7
-		from sqlalchemy.ext.asyncio import AsyncSession
+		from uuid6 import uuid7
 
 		from papermerge.core.features.document.db import api as doc_dbapi
 		from papermerge.core.features.document import schema as doc_schema
-		from papermerge.core.features.nodes.db.api import get_node_by_id
 		from papermerge.core.lib.mime import detect_and_validate_mime_type
 		from papermerge.core.tasks import send_task
 		from papermerge.core import pathlib as plib
@@ -407,7 +407,7 @@ class IngestionService:
 
 		# Get tenant's inbox folder for ingested documents
 		from papermerge.core.features.tenants.db.orm import Tenant
-		tenant = self.db.get(Tenant, tenant_id)
+		tenant = await self.db.get(Tenant, tenant_id)
 		if not tenant:
 			raise ValueError(f"Tenant not found: {tenant_id}")
 
@@ -444,17 +444,12 @@ class IngestionService:
 			ctype="document",
 		)
 
-		# Need async session for document creation
-		from papermerge.core.db.engine import get_async_session_maker
-		async_session = get_async_session_maker()
-
-		async with async_session() as session:
-			doc = await doc_dbapi.create_document(
-				session,
-				new_document,
-				mime_type=mime_type,
-				document_version_id=document_version_id
-			)
+		doc = await doc_dbapi.create_document(
+			self.db,
+			new_document,
+			mime_type=mime_type,
+			document_version_id=document_version_id
+		)
 
 		# Trigger post-upload processing (page extraction, OCR)
 		send_task(

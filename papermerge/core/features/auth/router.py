@@ -17,9 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import selectinload
 from passlib.hash import pbkdf2_sha256
-import json
-import base64
+from jose import jwt
 
+from papermerge.core.config import get_settings
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.users.db import api as usr_dbapi
 from papermerge.core.features.users.db import orm as user_orm
@@ -46,9 +46,10 @@ class TokenPayload(BaseModel):
 
 
 def create_jwt_token(user_id: str, username: str, email: str | None, user_scopes: list[str]) -> str:
-	"""Create a simple JWT token (unsigned, for local dev)."""
+	"""Create a signed HS256 JWT token."""
+	cfg = get_settings()
 	now = datetime.now(timezone.utc)
-	exp = now + timedelta(hours=24)
+	exp = now + timedelta(hours=cfg.jwt_expire_hours)
 
 	payload = {
 		"sub": user_id,
@@ -59,13 +60,7 @@ def create_jwt_token(user_id: str, username: str, email: str | None, user_scopes
 		"iat": int(now.timestamp()),
 	}
 
-	# Create unsigned JWT (header.payload.signature)
-	# Use compact JSON (no spaces) for proper JWT format
-	header = {"alg": "none", "typ": "JWT"}
-	header_b64 = base64.urlsafe_b64encode(json.dumps(header, separators=(',', ':')).encode()).decode().rstrip("=")
-	payload_b64 = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip("=")
-
-	return f"{header_b64}.{payload_b64}."
+	return jwt.encode(payload, cfg.jwt_secret_key, algorithm=cfg.jwt_algorithm)
 
 
 @router.post("/token", response_model=Token)

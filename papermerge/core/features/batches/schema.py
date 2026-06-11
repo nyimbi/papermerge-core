@@ -17,7 +17,7 @@ class SourceLocationBase(BaseModel):
 	description: str | None = None
 	parent_id: str | None = None
 	address: str | None = None
-	metadata: dict | None = None
+	extra_data: dict | None = None
 	barcode: str | None = Field(None, max_length=100)
 	is_active: bool = True
 
@@ -33,7 +33,7 @@ class SourceLocationUpdate(BaseModel):
 	description: str | None = None
 	parent_id: str | None = None
 	address: str | None = None
-	metadata: dict | None = None
+	extra_data: dict | None = None
 	barcode: str | None = Field(None, max_length=100)
 	is_active: bool | None = None
 
@@ -61,7 +61,7 @@ class ScanBatchBase(BaseModel):
 	box_label: str | None = Field(None, max_length=100)
 	folder_label: str | None = Field(None, max_length=100)
 	scan_settings: dict | None = None
-	metadata: dict | None = None
+	extra_data: dict | None = None
 	notes: str | None = None
 
 
@@ -79,7 +79,7 @@ class ScanBatchUpdate(BaseModel):
 	box_label: str | None = Field(None, max_length=100)
 	folder_label: str | None = Field(None, max_length=100)
 	scan_settings: dict | None = None
-	metadata: dict | None = None
+	extra_data: dict | None = None
 	notes: str | None = None
 
 

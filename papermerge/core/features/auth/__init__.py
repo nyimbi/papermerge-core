@@ -94,6 +94,18 @@ def extract_token_data(token: str) -> types.TokenData | None:
         logger.error(f"Failed to decode token payload: {e}")
         return None
 
+    # Verify expiry if present
+    exp = data.get("exp")
+    if exp is not None:
+        import time
+        if int(time.time()) > int(exp):
+            logger.warning("JWT token has expired")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has expired",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
     logger.debug(f"Decoded data: {data}")
 
     user_id: str = data.get("sub")

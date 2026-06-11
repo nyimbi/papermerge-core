@@ -60,8 +60,8 @@ async def get_billing_dashboard(
 	tenant_id: UUID | None = None,
 ):
 	"""Get billing dashboard overview."""
-	# Use tenant from context or parameter
-	tid = tenant_id  # In production, get from tenant context
+	# Use authenticated user's tenant, allow superadmin override via query param
+	tid = tenant_id if tenant_id is not None else user.tenant_id
 
 	today = date.today()
 	month_start = today.replace(day=1)
@@ -71,6 +71,7 @@ async def get_billing_dashboard(
 	# Current month costs
 	current_result = await db.execute(
 		select(func.sum(UsageDailyORM.cost_total_cents))
+		.where(UsageDailyORM.tenant_id == tid)
 		.where(UsageDailyORM.usage_date >= month_start)
 	)
 	current_cost = current_result.scalar() or 0
@@ -78,6 +79,7 @@ async def get_billing_dashboard(
 	# Previous month costs
 	prev_result = await db.execute(
 		select(func.sum(UsageDailyORM.cost_total_cents))
+		.where(UsageDailyORM.tenant_id == tid)
 		.where(UsageDailyORM.usage_date >= prev_month_start)
 		.where(UsageDailyORM.usage_date <= prev_month_end)
 	)
@@ -89,6 +91,7 @@ async def get_billing_dashboard(
 	# Latest usage
 	latest_usage = await db.execute(
 		select(UsageDailyORM)
+		.where(UsageDailyORM.tenant_id == tid)
 		.order_by(UsageDailyORM.usage_date.desc())
 		.limit(1)
 	)
@@ -100,6 +103,7 @@ async def get_billing_dashboard(
 			func.count(UsageAlertORM.id).filter(UsageAlertORM.status == AlertStatus.ACTIVE),
 			func.count(UsageAlertORM.id).filter(UsageAlertORM.status == AlertStatus.TRIGGERED),
 		)
+		.where(UsageAlertORM.tenant_id == tid)
 	)
 	active_alerts, triggered_alerts = alert_result.one()
 
@@ -109,15 +113,27 @@ async def get_billing_dashboard(
 			func.count(InvoiceORM.id).filter(InvoiceORM.status == InvoiceStatus.PENDING),
 			func.count(InvoiceORM.id).filter(InvoiceORM.status == InvoiceStatus.OVERDUE),
 		)
+		.where(InvoiceORM.tenant_id == tid)
 	)
 	pending_invoices, overdue_invoices = invoice_result.one()
 
-	# Cost by service (from cost_breakdown)
-	cost_by_service = {}
+	# Cost by service — aggregate cost_breakdown JSONB from current month records
+	cost_breakdown_result = await db.execute(
+		select(UsageDailyORM.cost_breakdown)
+		.where(UsageDailyORM.tenant_id == tid)
+		.where(UsageDailyORM.usage_date >= month_start)
+		.where(UsageDailyORM.cost_breakdown.isnot(None))
+	)
+	cost_by_service: dict[str, int] = {}
+	for (breakdown,) in cost_breakdown_result:
+		if isinstance(breakdown, dict):
+			for service, cents in breakdown.items():
+				cost_by_service[service] = cost_by_service.get(service, 0) + int(cents)
 
 	# Daily costs for chart
 	daily_result = await db.execute(
 		select(UsageDailyORM)
+		.where(UsageDailyORM.tenant_id == tid)
 		.where(UsageDailyORM.usage_date >= month_start)
 		.order_by(UsageDailyORM.usage_date)
 	)
@@ -160,20 +176,52 @@ async def estimate_costs(
 ):
 	"""Estimate monthly costs based on projected usage."""
 	calculator = CostCalculator(db)
-	estimated = await calculator.estimate_monthly_cost(
-		storage_gb=storage_gb,
-		transfer_gb=transfer_gb,
-		documents=documents,
-		users=users,
+	pricing = await calculator._get_pricing()
+
+	line_items = []
+	total = 0
+
+	storage_item = await calculator._calculate_tiered_cost(
+		ServiceType.STORAGE,
+		storage_gb,
+		"GB-month",
+		pricing,
+		f"Storage ({storage_gb} GB-month)",
 	)
+	if storage_item:
+		line_items.append(storage_item)
+		total += storage_item.total_cents
+
+	transfer_item = await calculator._calculate_tiered_cost(
+		ServiceType.TRANSFER_OUT,
+		transfer_gb,
+		"GB",
+		pricing,
+		f"Data Transfer Out ({transfer_gb} GB)",
+	)
+	if transfer_item:
+		line_items.append(transfer_item)
+		total += transfer_item.total_cents
+
+	breakdown = [
+		{
+			"service": item.service.value,
+			"description": item.description,
+			"quantity": str(item.quantity),
+			"unit_name": item.unit_name,
+			"unit_price_cents": item.unit_price_cents,
+			"total_cents": item.total_cents,
+		}
+		for item in line_items
+	]
 
 	return CostEstimate(
 		storage_gb=storage_gb,
 		transfer_gb=transfer_gb,
 		documents=documents,
 		users=users,
-		estimated_monthly_cost_cents=estimated,
-		breakdown=[],
+		estimated_monthly_cost_cents=total,
+		breakdown=breakdown,
 	)
 
 
@@ -271,7 +319,7 @@ async def create_alert(
 	"""Create a new usage alert."""
 	manager = UsageAlertManager(db)
 	alert = await manager.create_alert(
-		tenant_id=tenant_id or user.id,  # Use user ID as fallback
+		tenant_id=tenant_id if tenant_id is not None else user.tenant_id,
 		**data.model_dump(),
 	)
 	return alert
@@ -328,7 +376,7 @@ async def check_alerts(
 ):
 	"""Manually check all alerts and trigger notifications."""
 	manager = UsageAlertManager(db)
-	notifications = await manager.check_alerts(tenant_id or user.id)
+	notifications = await manager.check_alerts(tenant_id if tenant_id is not None else user.tenant_id)
 	return {"notifications": notifications}
 
 
@@ -388,7 +436,7 @@ async def create_invoice(
 
 	invoice = InvoiceORM(
 		id=uuid7str(),
-		tenant_id=tenant_id or user.id,
+		tenant_id=tenant_id if tenant_id is not None else user.tenant_id,
 		invoice_number=invoice_number,
 		**data.model_dump(exclude={"line_items"}),
 	)
@@ -442,6 +490,72 @@ async def update_invoice(
 		setattr(invoice, key, value)
 
 	invoice.updated_at = datetime.utcnow()
+	await db.commit()
+	await db.refresh(invoice)
+	return invoice
+
+
+@router.post("/invoices/{invoice_id}/pay", response_model=Invoice)
+async def pay_invoice(
+	invoice_id: str,
+	db: Annotated[AsyncSession, Depends(get_db)],
+	user: Annotated[User, Depends(get_current_user)],
+	payment_method: str | None = None,
+	payment_id: str | None = None,
+):
+	"""Mark an invoice as PAID."""
+	result = await db.execute(
+		select(InvoiceORM).where(InvoiceORM.id == invoice_id)
+	)
+	invoice = result.scalar_one_or_none()
+	if not invoice:
+		raise HTTPException(status_code=404, detail="Invoice not found")
+
+	if invoice.status == InvoiceStatus.PAID:
+		raise HTTPException(status_code=409, detail="Invoice is already paid")
+
+	if invoice.status == InvoiceStatus.CANCELLED:
+		raise HTTPException(status_code=409, detail="Cannot pay a cancelled invoice")
+
+	invoice.status = InvoiceStatus.PAID
+	invoice.paid_at = datetime.utcnow()
+	invoice.paid_cents = invoice.total_cents
+	invoice.balance_due_cents = 0
+	if payment_method is not None:
+		invoice.payment_method = payment_method
+	if payment_id is not None:
+		invoice.payment_id = payment_id
+	invoice.updated_at = datetime.utcnow()
+
+	await db.commit()
+	await db.refresh(invoice)
+	return invoice
+
+
+@router.post("/invoices/{invoice_id}/send", response_model=Invoice)
+async def send_invoice(
+	invoice_id: str,
+	db: Annotated[AsyncSession, Depends(get_db)],
+	user: Annotated[User, Depends(get_current_user)],
+):
+	"""Mark an invoice as SENT."""
+	result = await db.execute(
+		select(InvoiceORM).where(InvoiceORM.id == invoice_id)
+	)
+	invoice = result.scalar_one_or_none()
+	if not invoice:
+		raise HTTPException(status_code=404, detail="Invoice not found")
+
+	if invoice.status not in (InvoiceStatus.DRAFT, InvoiceStatus.PENDING):
+		raise HTTPException(
+			status_code=409,
+			detail=f"Cannot send invoice in status '{invoice.status.value}'",
+		)
+
+	invoice.status = InvoiceStatus.SENT
+	invoice.issued_at = invoice.issued_at or datetime.utcnow()
+	invoice.updated_at = datetime.utcnow()
+
 	await db.commit()
 	await db.refresh(invoice)
 	return invoice

@@ -10,6 +10,8 @@ from uuid_extensions import uuid7str
 from papermerge.core.db.engine import get_session
 from papermerge.core.auth import get_current_user
 from papermerge.core.features.users.db.orm import User
+from papermerge.core.features.auth.dependencies import require_scopes
+from papermerge.core.features.auth import scopes
 
 from .db import PolicyDB, PolicyEvaluationLogModel
 from .models import Policy, PolicyRule, PolicyCondition, PolicyEffect, PolicyStatus
@@ -32,7 +34,7 @@ router = APIRouter(prefix="/policies", tags=["policies"])
 async def create_policy(
 	data: PolicyCreate,
 	session: Annotated[AsyncSession, Depends(get_session)],
-	current_user: Annotated[User, Depends(get_current_user)],
+	current_user: require_scopes(scopes.TENANT_ADMIN),
 ):
 	"""Create a new policy."""
 	db = PolicyDB(session)
@@ -97,7 +99,22 @@ async def list_policies(
 	offset: int = Query(0, ge=0),
 ):
 	"""List policies with optional filters."""
+	from .db.orm import PolicyModel
 	db = PolicyDB(session)
+
+	# COUNT query for true total (not page size)
+	count_conditions = []
+	if current_user.tenant_id is not None:
+		count_conditions.append(PolicyModel.tenant_id == current_user.tenant_id)
+	if status_filter is not None:
+		count_conditions.append(PolicyModel.status == status_filter)
+	if effect_filter is not None:
+		count_conditions.append(PolicyModel.effect == effect_filter)
+	count_stmt = select(func.count()).select_from(PolicyModel)
+	if count_conditions:
+		count_stmt = count_stmt.where(and_(*count_conditions))
+	total = await session.scalar(count_stmt) or 0
+
 	policies = await db.get_policies(
 		tenant_id=current_user.tenant_id,
 		status=status_filter,
@@ -107,7 +124,7 @@ async def list_policies(
 	)
 	return PolicyListResponse(
 		items=[_model_to_response(p) for p in policies],
-		total=len(policies),
+		total=total,
 		limit=limit,
 		offset=offset,
 	)
@@ -159,7 +176,7 @@ async def update_policy(
 async def delete_policy(
 	policy_id: str,
 	session: Annotated[AsyncSession, Depends(get_session)],
-	current_user: Annotated[User, Depends(get_current_user)],
+	current_user: require_scopes(scopes.TENANT_ADMIN),
 ):
 	"""Delete a policy."""
 	db = PolicyDB(session)
@@ -308,7 +325,7 @@ async def approve_policy_change(
 	approval_id: str,
 	data: ApprovalAction,
 	session: Annotated[AsyncSession, Depends(get_session)],
-	current_user: Annotated[User, Depends(get_current_user)],
+	current_user: require_scopes(scopes.TENANT_ADMIN),
 ):
 	"""Approve a policy change."""
 	db = PolicyDB(session)
@@ -336,7 +353,7 @@ async def reject_policy_change(
 	approval_id: str,
 	data: ApprovalAction,
 	session: Annotated[AsyncSession, Depends(get_session)],
-	current_user: Annotated[User, Depends(get_current_user)],
+	current_user: require_scopes(scopes.TENANT_ADMIN),
 ):
 	"""Reject a policy change."""
 	db = PolicyDB(session)
@@ -396,7 +413,7 @@ async def get_evaluation_logs(
 async def grant_department_access(
 	data: DepartmentAccessGrant,
 	session: Annotated[AsyncSession, Depends(get_session)],
-	current_user: Annotated[User, Depends(get_current_user)],
+	current_user: require_scopes(scopes.TENANT_ADMIN),
 ):
 	"""Grant cross-department access to a user."""
 	db = PolicyDB(session)
@@ -540,9 +557,9 @@ async def get_policy_analytics(
 
 @router.post("/convert-to-dsl", response_model=dict)
 async def convert_policy_to_dsl(
-	policy_id: str,
 	session: Annotated[AsyncSession, Depends(get_session)],
 	current_user: Annotated[User, Depends(get_current_user)],
+	policy_id: str = Query(..., description="ID of the policy to convert to DSL"),
 ):
 	"""Convert a policy to DSL text."""
 	db = PolicyDB(session)

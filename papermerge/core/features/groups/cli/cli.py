@@ -14,16 +14,16 @@ app = typer.Typer(help="Groups basic management")
 @app.command()
 async def create_admin(exists_ok: bool = True):
     """Creates group named 'admin'"""
-    with AsyncSessionLocal() as db_session:
+    async with AsyncSessionLocal() as db_session:
         await dbapi.create_group(db_session, name="admin", exists_ok=exists_ok)
 
 
 @app.command("ls")
 async def list_groups():
     """List existing groups and their scopes"""
-    with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:
         stmt = select(orm.Group)
-        db_items = session.scalars(stmt).unique()
+        db_items = (await session.scalars(stmt)).unique()
         result = []
         for item in db_items:
             group = dict(name=item.name, id=item.id)

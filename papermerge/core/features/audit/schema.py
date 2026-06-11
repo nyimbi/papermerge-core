@@ -139,6 +139,20 @@ class AuditLogParams(BaseModel):
                 "operator": "free_text"
             }
 
+        if self.filter_user_id:
+            filters["user_id"] = {
+                "field": "user_id",
+                "operator": "eq",
+                "value": str(self.filter_user_id),
+            }
+
+        if self.filter_record_id:
+            filters["record_id"] = {
+                "field": "record_id",
+                "operator": "eq",
+                "value": str(self.filter_record_id),
+            }
+
         # Handle timestamp range filtering
         if self.filter_timestamp_from or self.filter_timestamp_to:
             timestamp_filter = {

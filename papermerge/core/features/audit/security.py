@@ -42,22 +42,30 @@ async def verify_audit_chain(session: AsyncSession) -> tuple[bool, Optional[str]
     entries = result.scalars().all()
     
     expected_previous_hash = None
-    
+
     for i, entry in enumerate(entries):
-        # 1. Verify previous_hash link
+        # 1. Verify previous_hash chain link
         if entry.previous_hash != expected_previous_hash:
-            msg = f"Audit chain broken at entry {entry.id}: expected previous_hash {expected_previous_hash}, got {entry.previous_hash}"
+            msg = (
+                f"Audit chain broken at entry {entry.id} (index {i}): "
+                f"expected previous_hash={expected_previous_hash!r}, "
+                f"got {entry.previous_hash!r}"
+            )
             logger.error(msg)
             return False, msg
-            
-        # 2. Verify current hash
-        # Note: The trigger uses PostgreSQL's internal text representation which might differ slightly
-        # from Python's str(dict). For a production system, we'd ensure a canonical JSON representation.
-        # For now, we assume the trigger's calculation is the source of truth and we verify the chain link.
-        
-        # In a real implementation, we would re-calculate the hash here to ensure the record itself wasn't tampered with.
-        # However, since the trigger does the calculation, we are primarily verifying the CHAIN integrity.
-        
+
+        # 2. Verify this entry's own hash hasn't been tampered with
+        if entry.hash is not None:
+            expected_hash = calculate_audit_hash(entry, entry.previous_hash)
+            if entry.hash != expected_hash:
+                msg = (
+                    f"Audit record tampered at entry {entry.id} (index {i}): "
+                    f"stored hash={entry.hash!r} does not match "
+                    f"recomputed hash={expected_hash!r}"
+                )
+                logger.error(msg)
+                return False, msg
+
         expected_previous_hash = entry.hash
-        
+
     return True, None

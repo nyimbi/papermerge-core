@@ -18,6 +18,7 @@ from sqlalchemy import select, func, and_, or_, case, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db.orm import AuditLog
+from .schema import TopUserItem
 from .types import AuditOperation
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ class AuditAnalytics:
 		limit: int = 10,
 		days: int = 30,
 		operation: str | None = None,
-	) -> list[dict]:
+	) -> list[TopUserItem]:
 		"""Get top active users."""
 		since = datetime.utcnow() - timedelta(days=days)
 
@@ -263,12 +264,12 @@ class AuditAnalytics:
 		if operation:
 			conditions.append(AuditLog.operation == operation)
 
-		query = (
+		# First query: get top users by total action count
+		users_query = (
 			select(
 				AuditLog.user_id,
 				AuditLog.username,
 				func.count().label('action_count'),
-				func.count(func.distinct(AuditLog.table_name)).label('tables_accessed'),
 			)
 			.where(and_(*conditions))
 			.group_by(AuditLog.user_id, AuditLog.username)
@@ -276,15 +277,46 @@ class AuditAnalytics:
 			.limit(limit)
 		)
 
-		result = await self.session.execute(query)
+		users_result = await self.session.execute(users_query)
+		top_users = users_result.all()
+
+		if not top_users:
+			return []
+
+		top_user_ids = [row.user_id for row in top_users]
+
+		# Second query: per-operation breakdown for those users
+		ops_conditions = [
+			AuditLog.timestamp >= since,
+			AuditLog.user_id.in_(top_user_ids),
+		]
+		if operation:
+			ops_conditions.append(AuditLog.operation == operation)
+
+		ops_query = (
+			select(
+				AuditLog.user_id,
+				AuditLog.operation,
+				func.count().label('count'),
+			)
+			.where(and_(*ops_conditions))
+			.group_by(AuditLog.user_id, AuditLog.operation)
+		)
+		ops_result = await self.session.execute(ops_query)
+
+		# Build {user_id: {operation: count}} map
+		ops_by_user: dict[Any, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+		for row in ops_result:
+			ops_by_user[row.user_id][row.operation] += row.count
+
 		return [
-			{
-				"user_id": str(row.user_id),
-				"username": row.username,
-				"action_count": row.action_count,
-				"tables_accessed": row.tables_accessed,
-			}
-			for row in result
+			TopUserItem(
+				user_id=str(row.user_id),
+				username=row.username or "",
+				action_count=row.action_count,
+				operations=dict(ops_by_user.get(row.user_id, {})),
+			)
+			for row in top_users
 		]
 
 	async def get_resource_activity(
@@ -490,6 +522,19 @@ class AuditAnalytics:
 			hours=int((end_date - start_date).total_seconds() / 3600)
 		)
 
+		# Query the actual oldest audit log entry (across all time, not just report period)
+		oldest_query = select(func.min(AuditLog.timestamp))
+		oldest_result = await self.session.execute(oldest_query)
+		oldest_ts = oldest_result.scalar()
+		oldest_record_iso = oldest_ts.isoformat() if oldest_ts else None
+
+		# Determine compliance: oldest record must be within retention window
+		retention_policy_days = 365
+		compliant = True
+		if oldest_ts is not None:
+			age_days = (datetime.utcnow() - oldest_ts.replace(tzinfo=None)).days
+			compliant = age_days <= retention_policy_days
+
 		return ComplianceReport(
 			report_period=(start_date, end_date),
 			total_events=total_events,
@@ -498,9 +543,9 @@ class AuditAnalytics:
 			users_active=users_active,
 			security_alerts=alerts,
 			data_retention_status={
-				"oldest_record": start_date.isoformat(),
-				"retention_policy_days": 365,
-				"compliant": True,
+				"oldest_record": oldest_record_iso,
+				"retention_policy_days": retention_policy_days,
+				"compliant": compliant,
 			},
 			access_reviews_required=[],
 		)

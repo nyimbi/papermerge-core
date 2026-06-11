@@ -89,6 +89,9 @@ class Settings(BaseSettings):
 
 	# Security
 	csrf_secret_key: str = Field(default="change-me-in-production")
+	jwt_secret_key: str = Field(default="change-me-in-production")
+	jwt_algorithm: str = "HS256"
+	jwt_expire_hours: int = 24
 	rate_limit_requests_per_minute: int = Field(gt=0, default=100)
 	rate_limit_enabled: bool = False
 

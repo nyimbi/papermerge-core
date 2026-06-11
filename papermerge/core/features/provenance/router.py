@@ -2,6 +2,7 @@
 """
 API router for document provenance.
 """
+import asyncio
 import hashlib
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 from papermerge.core.db.engine import get_db
 from papermerge.core.auth import get_current_user
@@ -56,7 +57,9 @@ async def list_provenance(
 	limit: int = 50,
 ):
 	"""List document provenance records with filtering."""
-	query = select(DocumentProvenance)
+	query = select(DocumentProvenance).where(
+		DocumentProvenance.tenant_id == user.tenant_id
+	)
 
 	if batch_id:
 		query = query.where(DocumentProvenance.batch_id == batch_id)
@@ -110,13 +113,19 @@ async def get_provenance_stats(
 	user: Annotated[User, Depends(get_current_user)],
 ):
 	"""Get provenance statistics."""
+	tid = user.tenant_id
+
 	# Total documents
-	total_result = await db.execute(select(func.count(DocumentProvenance.id)))
+	total_result = await db.execute(
+		select(func.count(DocumentProvenance.id))
+		.where(DocumentProvenance.tenant_id == tid)
+	)
 	total_documents = total_result.scalar() or 0
 
 	# By verification status
 	status_result = await db.execute(
 		select(DocumentProvenance.verification_status, func.count(DocumentProvenance.id))
+		.where(DocumentProvenance.tenant_id == tid)
 		.group_by(DocumentProvenance.verification_status)
 	)
 	status_counts = {str(row[0].value): row[1] for row in status_result}
@@ -124,6 +133,7 @@ async def get_provenance_stats(
 	# Duplicates
 	dup_result = await db.execute(
 		select(func.count(DocumentProvenance.id))
+		.where(DocumentProvenance.tenant_id == tid)
 		.where(DocumentProvenance.is_duplicate == True)
 	)
 	duplicate_count = dup_result.scalar() or 0
@@ -131,14 +141,17 @@ async def get_provenance_stats(
 	# By source
 	source_result = await db.execute(
 		select(DocumentProvenance.ingestion_source, func.count(DocumentProvenance.id))
+		.where(DocumentProvenance.tenant_id == tid)
 		.where(DocumentProvenance.ingestion_source.isnot(None))
 		.group_by(DocumentProvenance.ingestion_source)
 	)
 	documents_by_source = {row[0]: row[1] for row in source_result}
 
-	# Recent events
+	# Recent events (scoped via provenance join)
 	recent_events_result = await db.execute(
 		select(ProvenanceEvent)
+		.join(DocumentProvenance, ProvenanceEvent.provenance_id == DocumentProvenance.id)
+		.where(DocumentProvenance.tenant_id == tid)
 		.order_by(ProvenanceEvent.timestamp.desc())
 		.limit(10)
 	)
@@ -340,12 +353,16 @@ async def verify_document(
 		version = ver_result.scalar_one_or_none()
 
 		if version and version.file_path.exists():
-			# Compute SHA-512 hash
-			sha512 = hashlib.sha512()
-			with open(version.file_path, 'rb') as f:
-				for chunk in iter(lambda: f.read(8192), b''):
-					sha512.update(chunk)
-			current_hash = sha512.hexdigest()
+			# Compute SHA-512 hash (executor to avoid blocking event loop)
+			def _compute_hash(path: Path) -> str:
+				sha512 = hashlib.sha512()
+				with open(path, 'rb') as f:
+					for chunk in iter(lambda: f.read(8192), b''):
+						sha512.update(chunk)
+				return sha512.hexdigest()
+
+			loop = asyncio.get_event_loop()
+			current_hash = await loop.run_in_executor(None, _compute_hash, version.file_path)
 
 			# Update stored current hash
 			provenance.current_file_hash = current_hash
@@ -421,6 +438,15 @@ async def get_chain_of_custody(
 	)
 	events = events_result.scalars().all()
 
+	# Resolve actor names in bulk
+	actor_ids = list({e.actor_id for e in events if e.actor_id})
+	actor_names: dict = {}
+	if actor_ids:
+		user_rows = await db.execute(
+			select(User.id, User.username).where(User.id.in_(actor_ids))
+		)
+		actor_names = {str(row[0]): row[1] for row in user_rows}
+
 	# Build chain entries
 	entries = []
 	for event in events:
@@ -428,7 +454,7 @@ async def get_chain_of_custody(
 			timestamp=event.timestamp,
 			event_type=event.event_type,
 			actor_id=event.actor_id,
-			actor_name=None,  # Would need to join with users table
+			actor_name=actor_names.get(str(event.actor_id)),
 			description=event.description or f"{event.event_type.value} event",
 			verified=event.event_type == EventType.VERIFIED,
 		))
