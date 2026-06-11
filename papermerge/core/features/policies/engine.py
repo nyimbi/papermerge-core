@@ -177,6 +177,18 @@ class PolicyEngine:
 		)
 
 		if not applicable:
+			# Still check department-level permissions before hard DENY
+			if context.department_permissions:
+				perm_level = context.department_permissions.get("permission_level", "none")
+				permission_order = ["none", "view", "edit", "delete", "admin"]
+				action_map = {"view": "view", "read": "view", "edit": "edit", "update": "edit", "delete": "delete", "create": "admin"}
+				required_level = action_map.get(context.action.lower(), "view")
+				if context.action.lower() == "create" and context.department_permissions.get("can_create"):
+					elapsed = (datetime.utcnow() - start_time).total_seconds() * 1000
+					return PolicyDecision(allowed=True, effect=PolicyEffect.ALLOW, reason="Allowed by department creation permission", evaluation_time_ms=elapsed)
+				if permission_order.index(perm_level) >= permission_order.index(required_level):
+					elapsed = (datetime.utcnow() - start_time).total_seconds() * 1000
+					return PolicyDecision(allowed=True, effect=PolicyEffect.ALLOW, reason=f"Allowed by department permission level: {perm_level}", evaluation_time_ms=elapsed)
 			elapsed = (datetime.utcnow() - start_time).total_seconds() * 1000
 			return PolicyDecision(
 				allowed=False,

@@ -54,7 +54,7 @@ dependencies = [
     "prefect>=3.0,<4.0",
     "simpleeval>=1.0",
     "httpx>=0.27",
-    "uuid-extension",
+    "uuid6",
     "blake3",
     "prometheus-client",
 ]
@@ -139,5 +139,6 @@ build-backend = "hatchling.build"
 packages = ["papermerge"]
 
 [tool.pytest.ini_options]
-testpaths = ["papermerge"]
+testpaths = ["papermerge", "tests"]
 asyncio_mode = "auto"
+pythonpath = ["."]

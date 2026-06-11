@@ -10,7 +10,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid_extensions import uuid7str
+from uuid6 import uuid7
+def uuid7str(): return str(uuid7())
 
 from papermerge.core.db.engine import get_db
 from papermerge.core.auth import get_current_user

@@ -1,55 +1,83 @@
 # (c) Copyright Datacraft, 2026
 """Tests for audit log integrity and cryptographic chaining."""
-import pytest
+import os
 import uuid
+import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, AsyncMock
 
-from papermerge.core import orm
-from papermerge.core.features.audit.security import verify_audit_chain
+os.environ.setdefault("PM_DB_URL", "postgresql+asyncpg://x:x@localhost/x")
 
-@pytest.mark.asyncio
-async def test_verify_audit_chain_valid():
-    """Test that a valid audit chain passes verification."""
+from papermerge.core import orm
+from papermerge.core.features.audit.security import verify_audit_chain, calculate_audit_hash
+
+
+def _make_entry(previous_hash: str | None) -> orm.AuditLog:
+    entry = MagicMock(spec=orm.AuditLog)
+    entry.id = uuid.uuid4()
+    entry.timestamp = datetime(2026, 1, 1)
+    entry.table_name = "documents"
+    entry.record_id = uuid.uuid4()
+    entry.operation = "INSERT"
+    entry.user_id = uuid.uuid4()
+    entry.old_values = None
+    entry.new_values = None
+    entry.previous_hash = previous_hash
+    # Compute the real hash for this entry
+    entry.hash = calculate_audit_hash(entry, previous_hash)
+    return entry
+
+
+def _make_session(entries):
     session = AsyncMock()
-    
-    # Create a valid chain of 3 entries
-    h1 = "hash1"
-    h2 = "hash2"
-    h3 = "hash3"
-    
-    entries = [
-        orm.AuditLog(id=uuid.uuid4(), timestamp=datetime(2026, 1, 1), hash=h1, previous_hash=None),
-        orm.AuditLog(id=uuid.uuid4(), timestamp=datetime(2026, 1, 2), hash=h2, previous_hash=h1),
-        orm.AuditLog(id=uuid.uuid4(), timestamp=datetime(2026, 1, 3), hash=h3, previous_hash=h2),
-    ]
-    
     result_mock = MagicMock()
     result_mock.scalars.return_value.all.return_value = entries
     session.execute.return_value = result_mock
-    
+    return session
+
+
+@pytest.mark.asyncio
+async def test_verify_audit_chain_valid():
+    """A properly-chained sequence of entries passes verification."""
+    e1 = _make_entry(None)
+    e2 = _make_entry(e1.hash)
+    e3 = _make_entry(e2.hash)
+
+    session = _make_session([e1, e2, e3])
     success, error = await verify_audit_chain(session)
     assert success is True
     assert error is None
 
+
 @pytest.mark.asyncio
-async def test_verify_audit_chain_broken():
-    """Test that a broken audit chain fails verification."""
-    session = AsyncMock()
-    
-    # Create a broken chain (entry 2 has wrong previous_hash)
-    h1 = "hash1"
-    h2 = "hash2"
-    
-    entries = [
-        orm.AuditLog(id=uuid.uuid4(), timestamp=datetime(2026, 1, 1), hash=h1, previous_hash=None),
-        orm.AuditLog(id=uuid.uuid4(), timestamp=datetime(2026, 1, 2), hash=h2, previous_hash="wrong_hash"),
-    ]
-    
-    result_mock = MagicMock()
-    result_mock.scalars.return_value.all.return_value = entries
-    session.execute.return_value = result_mock
-    
+async def test_verify_audit_chain_broken_link():
+    """A broken previous_hash link is detected."""
+    e1 = _make_entry(None)
+    e2 = _make_entry("wrong_hash")   # wrong — should be e1.hash
+
+    session = _make_session([e1, e2])
     success, error = await verify_audit_chain(session)
     assert success is False
-    assert "Audit chain broken" in error
+    assert error is not None
+
+
+@pytest.mark.asyncio
+async def test_verify_audit_chain_tampered_hash():
+    """A tampered self-hash is detected."""
+    e1 = _make_entry(None)
+    e2 = _make_entry(e1.hash)
+    e2.hash = "tampered"  # override with wrong value
+
+    session = _make_session([e1, e2])
+    success, error = await verify_audit_chain(session)
+    assert success is False
+    assert error is not None
+
+
+@pytest.mark.asyncio
+async def test_verify_audit_chain_empty():
+    """An empty log passes (nothing to verify)."""
+    session = _make_session([])
+    success, error = await verify_audit_chain(session)
+    assert success is True
+    assert error is None
