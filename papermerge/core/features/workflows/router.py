@@ -82,25 +82,21 @@ async def list_executions(
 	)
 
 	# Apply filters
+	wf_uuid = None
 	if workflow_id:
 		try:
 			from uuid import UUID as UUIDType
 			wf_uuid = UUIDType(workflow_id)
-			base_query = base_query.where(WorkflowInstance.workflow_id == wf_uuid)
 		except ValueError:
-			pass
+			raise HTTPException(status_code=422, detail=f"Invalid workflow_id: {workflow_id!r} is not a valid UUID")
+		base_query = base_query.where(WorkflowInstance.workflow_id == wf_uuid)
 	if status:
 		base_query = base_query.where(WorkflowInstance.status == status)
 
 	# Get total count
 	count_query = select(func.count()).select_from(WorkflowInstance)
-	if workflow_id:
-		try:
-			from uuid import UUID as UUIDType
-			wf_uuid = UUIDType(workflow_id)
-			count_query = count_query.where(WorkflowInstance.workflow_id == wf_uuid)
-		except ValueError:
-			pass
+	if wf_uuid is not None:
+		count_query = count_query.where(WorkflowInstance.workflow_id == wf_uuid)
 	if status:
 		count_query = count_query.where(WorkflowInstance.status == status)
 
@@ -226,15 +222,38 @@ async def get_pending_tasks(
 @router.get("/tasks/assigned")
 async def get_assigned_tasks(
 	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
 	status: str | None = None,
-	limit: int | None = None,
+	limit: int = 50,
 ) -> list:
-	"""Get workflow tasks assigned to current user.
+	"""Get workflow tasks (approval requests) assigned to current user."""
+	from sqlalchemy import select
+	from .db.orm import WorkflowApprovalRequest, WorkflowInstance
 
-	Used by the home page to display pending tasks.
-	"""
-	# Return empty list for now - can be expanded to fetch actual assigned tasks
-	return []
+	stmt = (
+		select(WorkflowApprovalRequest)
+		.where(WorkflowApprovalRequest.assignee_id == user.id)
+		.order_by(WorkflowApprovalRequest.created_at.desc())
+		.limit(limit)
+	)
+	if status:
+		stmt = stmt.where(WorkflowApprovalRequest.status == status)
+
+	result = await db_session.execute(stmt)
+	rows = result.scalars().all()
+
+	return [
+		{
+			"id": str(r.id),
+			"instance_id": str(r.execution_id),
+			"title": r.title,
+			"description": r.description,
+			"status": r.status,
+			"due_date": r.due_date.isoformat() if r.due_date else None,
+			"created_at": r.created_at.isoformat() if r.created_at else None,
+		}
+		for r in rows
+	]
 
 
 @router.post("/instances/{instance_id}/actions")

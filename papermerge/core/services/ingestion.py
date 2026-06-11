@@ -336,7 +336,16 @@ class IngestionService:
 		if move_after_process:
 			processed_path.mkdir(exist_ok=True)
 
-		processed_files: set[str] = set()
+		# Seed from DB to survive restarts (only matters when move_after_process=False)
+		from sqlalchemy import select as _select
+		from papermerge.core.features.ingestion.db.orm import IngestionJob as _IngestionJob
+		_seeded = await self.db.execute(
+			_select(_IngestionJob.source_path).where(
+				_IngestionJob.source_id == source_id,
+				_IngestionJob.source_path.isnot(None),
+			)
+		)
+		processed_files: set[str] = {row[0] for row in _seeded.fetchall()}
 
 		while True:
 			try:

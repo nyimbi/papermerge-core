@@ -270,10 +270,56 @@ async def _notify_assignee(
 	document_id: str,
 ) -> None:
 	"""Send notification to assignee about pending approval."""
-	# TODO: Integrate with notification service
+	from sqlalchemy import select
+	from papermerge.core.db.engine import get_session
+	from papermerge.core import orm as core_orm
+	from .notification import _send_email_notification
+	import os
+
 	logger.info(
 		f"Notification: Approval '{title}' required for document {document_id}. "
 		f"Assignee: user={assignee_id}, role={assignee_role_id}, group={assignee_group_id}"
+	)
+
+	recipients: list[str] = []
+
+	try:
+		async with get_session() as db:
+			if assignee_id:
+				result = await db.execute(
+					select(core_orm.User.email).where(core_orm.User.id == UUID(assignee_id))
+				)
+				email = result.scalar_one_or_none()
+				if email:
+					recipients.append(email)
+
+			if not recipients and assignee_role_id:
+				# Notify all users who hold this role
+				result = await db.execute(
+					select(core_orm.User.email)
+					.join(core_orm.UserRole, core_orm.UserRole.user_id == core_orm.User.id)
+					.where(core_orm.UserRole.role_id == UUID(assignee_role_id))
+				)
+				recipients = [r for (r,) in result.fetchall() if r]
+	except Exception:
+		logger.exception("Failed to resolve assignee emails for approval notification")
+		return
+
+	if not recipients:
+		logger.warning(f"No email recipients found for approval notification: {title}")
+		return
+
+	base_url = os.environ.get("APP_BASE_URL", "http://localhost")
+	await _send_email_notification(
+		recipients=recipients,
+		subject=f"Approval Required: {title}",
+		message=(
+			f"You have a pending approval request: {title}\n\n"
+			f"Document: {base_url}/documents/{document_id}\n\n"
+			"Please review and approve or reject the request."
+		),
+		template=None,
+		context={"document_id": document_id, "title": title, "document_url": f"{base_url}/documents/{document_id}"},
 	)
 
 
