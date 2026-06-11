@@ -254,6 +254,11 @@ class ScanningSesssionModel(Base):
 		String(36),
 		ForeignKey("scanning_batches.id", ondelete="SET NULL"),
 	)
+	location_id: Mapped[str | None] = mapped_column(
+		String(36),
+		ForeignKey("scanning_locations.id", ondelete="SET NULL"),
+		index=True,
+	)
 	operator_id: Mapped[str] = mapped_column(String(36), index=True)
 	operator_name: Mapped[str | None] = mapped_column(String(255))
 	scanner_id: Mapped[str | None] = mapped_column(String(36))

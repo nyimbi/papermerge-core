@@ -2803,12 +2803,37 @@ async def get_multi_location_dashboard(
 		sub_result = await session.execute(sub_stmt)
 		sub_ids = [r for r in sub_result.scalars().all()]
 
-		pages_today = 0
-		total_pages = 0
-		active_ops = 0
+		# Pages scanned today at this location (requires location_id on sessions)
+		pages_today_stmt = select(func.coalesce(func.sum(ScanningSesssionModel.pages_scanned), 0)).where(
+			and_(
+				ScanningSesssionModel.location_id == location.id,
+				ScanningSesssionModel.started_at >= today_start,
+			)
+		)
+		pages_today = (await session.scalar(pages_today_stmt)) or 0
 
-		# For now, simplified - would need to track sessions by location
-		# This would require adding location_id to scanning sessions
+		total_pages_stmt = select(func.coalesce(func.sum(ScanningSesssionModel.pages_scanned), 0)).where(
+			ScanningSesssionModel.location_id == location.id,
+		)
+		total_pages = (await session.scalar(total_pages_stmt)) or 0
+
+		# Count operators with open sessions at this location
+		active_ops_stmt = select(func.count(ScanningSesssionModel.operator_id.distinct())).where(
+			and_(
+				ScanningSesssionModel.location_id == location.id,
+				ScanningSesssionModel.ended_at.is_(None),
+			)
+		)
+		active_ops = (await session.scalar(active_ops_stmt)) or 0
+
+		# Average pages/hour from completed sessions at this location
+		avg_pph_stmt = select(func.coalesce(func.avg(ScanningSesssionModel.average_pages_per_hour), 0.0)).where(
+			and_(
+				ScanningSesssionModel.location_id == location.id,
+				ScanningSesssionModel.average_pages_per_hour > 0,
+			)
+		)
+		avg_pph = float((await session.scalar(avg_pph_stmt)) or 0.0)
 
 		utilization = 0.0
 		if location.daily_page_capacity > 0:
@@ -2824,7 +2849,7 @@ async def get_multi_location_dashboard(
 			active_scanners=0,
 			capacity_utilization=round(utilization, 1),
 			avg_quality_score=0.0,
-			avg_pages_per_hour=0.0,
+			avg_pages_per_hour=round(avg_pph, 1),
 		))
 
 	overall_utilization = (utilized_capacity / total_capacity * 100) if total_capacity > 0 else 0.0
