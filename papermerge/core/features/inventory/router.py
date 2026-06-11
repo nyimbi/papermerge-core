@@ -38,6 +38,7 @@ from .db.orm import (
 	InventoryScan,
 	ContainerType,
 	InventoryStatus,
+	ReconciliationResolution,
 )
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -290,9 +291,35 @@ async def check_for_duplicates(
 	)
 	existing_records = existing_result.scalars().all()
 
-	# For now, return empty matches if no proper hash comparison possible
-	# Full implementation would store and compare perceptual hashes
+	# Compare target hash against all existing provenance records
 	matches = []
+	for record in existing_records:
+		# Exact match via BLAKE3
+		if doc_hash.blake3_hash and record.blake3_hash:
+			if doc_hash.blake3_hash == record.blake3_hash:
+				matches.append(DuplicateMatch(
+					document_id=str(record.document_id),
+					similarity_score=1.0,
+					hash_type="blake3",
+					original_hash=doc_hash.blake3_hash,
+					match_hash=record.blake3_hash,
+				))
+				continue
+
+		# Near-duplicate via perceptual hash
+		if doc_hash.phash and record.similarity_hash:
+			try:
+				score = detector.compare_hashes(doc_hash.phash, record.similarity_hash, "phash")
+				if score >= data.similarity_threshold:
+					matches.append(DuplicateMatch(
+						document_id=str(record.document_id),
+						similarity_score=score,
+						hash_type="phash",
+						original_hash=doc_hash.phash,
+						match_hash=record.similarity_hash,
+					))
+			except Exception:
+				pass
 
 	return DuplicateCheckResponse(
 		document_id=data.document_id,
@@ -438,13 +465,23 @@ async def resolve_discrepancy(
 	db: Annotated[AsyncSession, Depends(get_db)],
 	user: Annotated[User, Depends(get_current_user)],
 ):
-	"""Mark a discrepancy as resolved."""
-	# In production, would load from database
-	# For now, just acknowledge the resolution
+	"""Mark a discrepancy as resolved; persists the resolution in reconciliation_resolutions."""
+	from datetime import timezone as _tz
+	resolved_at = datetime.now(_tz.utc)
+	resolution = ReconciliationResolution(
+		discrepancy_id=data.discrepancy_id,
+		resolution_notes=data.resolution_notes,
+		resolved_by_id=user.id,
+		tenant_id=user.tenant_id,
+		resolved_at=resolved_at,
+	)
+	db.add(resolution)
+	await db.commit()
+	await db.refresh(resolution)
 	return {
 		"discrepancy_id": data.discrepancy_id,
 		"resolved": True,
-		"resolved_at": datetime.utcnow().isoformat(),
+		"resolved_at": (resolution.resolved_at or resolved_at).isoformat(),
 		"resolved_by": str(user.id),
 		"resolution_notes": data.resolution_notes,
 	}

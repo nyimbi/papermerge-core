@@ -1,6 +1,5 @@
 # User Home Page Feature
-from .router import router
-from .service import UserHomeService, get_user_home_service
+from .service import UserHomeService
 from .views import (
 	UserHomeDataOut, UserInfo, UserStats, WorkflowTaskOut, TaskAction,
 	RecentDocumentOut, FavoriteItemOut, ActivityEventOut, NotificationOut,
@@ -8,9 +7,7 @@ from .views import (
 )
 
 __all__ = [
-	'router',
 	'UserHomeService',
-	'get_user_home_service',
 	'UserHomeDataOut',
 	'UserInfo',
 	'UserStats',

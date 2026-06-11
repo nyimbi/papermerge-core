@@ -372,3 +372,28 @@ class PhysicalManifest(Base):
 
     def __repr__(self):
         return f"PhysicalManifest(id={self.id}, barcode={self.barcode})"
+
+
+class ReconciliationResolution(Base):
+	"""Persists the resolution of an inventory reconciliation discrepancy."""
+	__tablename__ = "reconciliation_resolutions"
+
+	id: Mapped[UUID] = mapped_column(
+		PG_UUID(as_uuid=True),
+		primary_key=True,
+		default=uuid.uuid4,
+	)
+	discrepancy_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+	resolution_notes: Mapped[str | None] = mapped_column(Text)
+	resolved_by_id: Mapped[UUID] = mapped_column(
+		PG_UUID(as_uuid=True),
+		ForeignKey("users.id", ondelete="SET NULL"),
+		nullable=False,
+	)
+	resolved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+	tenant_id: Mapped[UUID] = mapped_column(
+		PG_UUID(as_uuid=True),
+		ForeignKey("tenants.id", ondelete="CASCADE"),
+		index=True,
+		nullable=False,
+	)

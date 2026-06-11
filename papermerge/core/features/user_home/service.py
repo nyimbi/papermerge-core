@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from papermerge.core.utils.uuid_compat import uuid7str
 
-from sqlalchemy import select, func, delete, update, desc, and_
+from sqlalchemy import select, func, delete, update, desc, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.models import User, Document
@@ -14,7 +14,19 @@ from .views import (
 	UserHomeDataOut, UserInfo, UserStats, WorkflowTaskOut,
 	RecentDocumentOut, FavoriteItemOut, ActivityEventOut, NotificationOut,
 	CalendarEventOut, RecentSearchOut, FavoriteItemCreate,
+	ActivityActorOut,
 )
+
+# Lazy imports to avoid circular dependencies — imported inside methods
+def _workflow_orm():
+	from papermerge.core.features.workflows.db.orm import (
+		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow,
+	)
+	return WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow
+
+def _audit_orm():
+	from papermerge.core.features.audit.db.orm import AuditLog
+	return AuditLog
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +133,54 @@ class UserHomeService:
 		tenant_id: str | None = None,
 		limit: int = 10,
 	) -> list[WorkflowTaskOut]:
-		"""Get pending workflow tasks for user."""
-		return []
+		"""Get pending workflow tasks assigned to user from workflow_step_executions."""
+		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow = _workflow_orm()
+		uid = uuid.UUID(str(user_id))
+		now = datetime.now(timezone.utc)
+
+		stmt = (
+			select(
+				WorkflowStepExecution,
+				WorkflowStep.name.label("step_name"),
+				WorkflowInstance.document_id,
+				Workflow.name.label("workflow_name"),
+				Workflow.id.label("workflow_id"),
+			)
+			.join(WorkflowStep, WorkflowStepExecution.step_id == WorkflowStep.id)
+			.join(WorkflowInstance, WorkflowStepExecution.instance_id == WorkflowInstance.id)
+			.join(Workflow, WorkflowInstance.workflow_id == Workflow.id)
+			.where(
+				WorkflowStepExecution.assigned_to == uid,
+				WorkflowStepExecution.status.in_(["pending", "in_progress"]),
+			)
+			.order_by(WorkflowStepExecution.deadline_at.asc().nulls_last())
+			.limit(limit)
+		)
+		result = await self.session.execute(stmt)
+		rows = result.all()
+
+		tasks = []
+		for row in rows:
+			exe, step_name, document_id, workflow_name, workflow_id = row
+			if exe.status == "in_progress":
+				task_status = "in_progress"
+			elif exe.deadline_at and exe.deadline_at < now:
+				task_status = "overdue"
+			else:
+				task_status = "pending"
+
+			tasks.append(WorkflowTaskOut(
+				id=str(exe.id),
+				title=step_name,
+				workflow_name=workflow_name,
+				workflow_id=str(workflow_id),
+				document_id=str(document_id) if document_id else None,
+				priority="medium",
+				status=task_status,
+				due_date=exe.deadline_at,
+				assigned_at=exe.started_at or now,
+			))
+		return tasks
 
 	async def _get_recent_documents(
 		self,
@@ -205,8 +263,41 @@ class UserHomeService:
 		tenant_id: str | None = None,
 		limit: int = 10,
 	) -> list[ActivityEventOut]:
-		"""Get activity feed for user."""
-		return []
+		"""Get activity feed from audit_log for this user, most recent first."""
+		AuditLog = _audit_orm()
+		uid = uuid.UUID(str(user_id))
+		_op_to_type = {
+			"insert": "upload",
+			"update": "edit",
+			"delete": "view",
+		}
+
+		stmt = (
+			select(AuditLog)
+			.where(AuditLog.user_id == uid)
+			.order_by(AuditLog.timestamp.desc())
+			.limit(limit)
+		)
+		result = await self.session.execute(stmt)
+		rows = result.scalars().all()
+
+		events = []
+		for row in rows:
+			op = str(row.operation).lower()
+			event_type = _op_to_type.get(op, "edit")
+			events.append(ActivityEventOut(
+				id=str(row.id),
+				type=event_type,
+				title=f"{event_type.capitalize()} on {row.table_name}",
+				description=row.audit_message,
+				document_id=str(row.record_id) if row.table_name in ("nodes", "documents") else None,
+				actor=ActivityActorOut(
+					id=str(row.user_id),
+					name=row.username or "unknown",
+				) if row.user_id else None,
+				timestamp=row.timestamp,
+			))
+		return events
 
 	async def _get_notifications(
 		self,
@@ -247,8 +338,40 @@ class UserHomeService:
 		user_id: str,
 		tenant_id: str | None = None,
 	) -> list[CalendarEventOut]:
-		"""Get calendar events for current month."""
-		return []
+		"""Get workflow step deadlines assigned to user that fall in the current month."""
+		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow = _workflow_orm()
+		uid = uuid.UUID(str(user_id))
+		now = datetime.now(timezone.utc)
+		month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+		if month_start.month == 12:
+			month_end = month_start.replace(year=month_start.year + 1, month=1)
+		else:
+			month_end = month_start.replace(month=month_start.month + 1)
+
+		stmt = (
+			select(WorkflowStepExecution, WorkflowStep.name, WorkflowInstance.workflow_id)
+			.join(WorkflowStep, WorkflowStepExecution.step_id == WorkflowStep.id)
+			.join(WorkflowInstance, WorkflowStepExecution.instance_id == WorkflowInstance.id)
+			.where(
+				WorkflowStepExecution.assigned_to == uid,
+				WorkflowStepExecution.deadline_at >= month_start,
+				WorkflowStepExecution.deadline_at < month_end,
+			)
+			.order_by(WorkflowStepExecution.deadline_at.asc())
+		)
+		result = await self.session.execute(stmt)
+		rows = result.all()
+
+		return [
+			CalendarEventOut(
+				id=str(row[0].id),
+				title=f"Deadline: {row[1]}",
+				type="deadline",
+				date=row[0].deadline_at,
+				workflow_id=str(row[2]),
+			)
+			for row in rows
+		]
 
 	async def _get_recent_searches(
 		self,

@@ -39,4 +39,5 @@ from papermerge.core.features.special_folders.db.orm import *  # noqa: F401, F40
 from papermerge.core.features.tags.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.tenants.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.users.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.user_home.models import *  # noqa: F401, F403
 from papermerge.core.features.workflows.db.orm import *  # noqa: F401, F403
