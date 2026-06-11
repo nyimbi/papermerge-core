@@ -400,3 +400,93 @@ def process_form_extraction(document_id: str, template_id: str | None, tenant_id
 				raise
 
 	asyncio.run(_run())
+
+
+@shared_task(name="darchiva.ingestion.process_email")
+def process_email_ingestion(tenant_id: str, email_data: dict):
+	"""Ingest attachments from an emailed document submission."""
+	logger.info(_log_task(f"process_email_ingestion:tenant={tenant_id[:8]}"))
+
+	import base64
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.document.db import api as doc_dbapi
+		from papermerge.core.features.document import schema as doc_schema
+		from papermerge.core.lib.mime import detect_and_validate_mime_type
+		from papermerge.core.utils.uuid_compat import uuid7
+		from sqlalchemy import select
+
+		async_session = get_async_session_maker()
+
+		async with async_session() as session:
+			attachments = email_data.get("attachments", [])
+			subject = email_data.get("subject", "Email document")
+			from_address = email_data.get("from_address", "")
+
+			if not attachments:
+				logger.info(f"No attachments in email from {from_address!r}, skipping")
+				return
+
+			# Find the inbox special folder for this tenant
+			from papermerge.core.features.special_folders.db.orm import SpecialFolder
+			from papermerge.core.types import FolderType, OwnerType
+			inbox_stmt = select(SpecialFolder).where(
+				SpecialFolder.folder_type == FolderType.INBOX,
+			).limit(1)
+			result = await session.execute(inbox_stmt)
+			inbox = result.scalar_one_or_none()
+			parent_id = inbox.folder_id if inbox else None
+
+			for attachment in attachments:
+				filename = attachment.get("filename", "attachment")
+				content_b64 = attachment.get("content_base64", "")
+
+				if not content_b64:
+					logger.warning(f"Empty attachment {filename!r} in email from {from_address!r}")
+					continue
+
+				try:
+					content = base64.b64decode(content_b64)
+					mime_type = detect_and_validate_mime_type(
+						content[:8192], filename, validate_structure=False
+					)
+
+					from papermerge.storage.base import get_storage_backend
+					from papermerge.core import pathlib as plib
+
+					doc_id = uuid7()
+					ver_id = uuid7()
+
+					storage = get_storage_backend()
+					object_key = str(plib.docver_path(ver_id, file_name=filename))
+					await storage.upload_bytes(content, object_key, str(mime_type))
+
+					title = f"{subject} — {filename}" if subject else filename
+					new_doc = doc_schema.NewDocument(
+						id=doc_id,
+						title=title[:500],
+						lang="eng",
+						parent_id=parent_id,
+						size=len(content),
+						page_count=0,
+						ocr=True,
+						file_name=filename,
+						ctype="document",
+					)
+					await doc_dbapi.create_document(
+						session, new_doc, mime_type=mime_type, document_version_id=ver_id
+					)
+
+					send_task("process_upload", kwargs={
+						"document_id": str(doc_id),
+						"document_version_id": str(ver_id),
+						"lang": "eng",
+					})
+
+					logger.info(f"Ingested email attachment {filename!r} as document {doc_id}")
+
+				except Exception as e:
+					logger.error(f"Failed to ingest attachment {filename!r}: {e}")
+
+	asyncio.run(_run())
