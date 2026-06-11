@@ -3,7 +3,7 @@
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 from .models import PolicyEffect, PolicyStatus, ConditionOperator, AttributeCategory
 

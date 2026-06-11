@@ -122,3 +122,11 @@ class TestRuleResponse(BaseModel):
 	"""Response from test routing request."""
 	matched: bool
 	matching_rule: RuleInfo | None = None
+
+
+class RoutingStats(BaseModel):
+	"""Routing statistics."""
+	total: int
+	active: int
+	operational: int
+	archival: int

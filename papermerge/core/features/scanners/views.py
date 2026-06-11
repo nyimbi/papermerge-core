@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 
 class ScannerProtocol(str, Enum):

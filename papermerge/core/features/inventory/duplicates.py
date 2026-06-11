@@ -10,9 +10,9 @@ from typing import Literal
 import imagehash
 from PIL import Image
 
-from papermerge.core.logging import get_logger
+import logging
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass

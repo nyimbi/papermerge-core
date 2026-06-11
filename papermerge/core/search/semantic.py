@@ -284,7 +284,7 @@ class SemanticSearch:
 
 		# Store in database
 		async with self.session_factory() as session:
-			from uuid_extensions import uuid7
+			from uuid_extension import uuid7
 			
 			for i, (chunk, embedding_result) in enumerate(zip(chunks, embeddings)):
 				embedding_obj = DocumentEmbeddingModel(

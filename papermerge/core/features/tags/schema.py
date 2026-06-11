@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Literal
 
 from fastapi import Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from papermerge.core.constants import DEFAULT_TAG_BG_COLOR, DEFAULT_TAG_FG_COLOR
 from papermerge.core.schemas.common import ByUser, OwnedBy
@@ -68,28 +68,30 @@ class TagDetails(BaseModel):
 
 class CreateTag(BaseModel):
     name: str
-    bg_color: str = DEFAULT_TAG_BG_COLOR
+    bg_color: str = Field(default=DEFAULT_TAG_BG_COLOR, validation_alias="color")
     fg_color: str = DEFAULT_TAG_FG_COLOR
     description: str | None = None
     pinned: bool = False
-    owner_type: OwnerType
-    owner_id: UUID
-
-    # Config
-    model_config = ConfigDict(from_attributes=True)
-
-
-class UpdateTag(BaseModel):
-    name: Optional[str] = None
-    bg_color: Optional[str] = None
-    fg_color: Optional[str] = None
-    description: Optional[str] = None
-    pinned: Optional[bool] = False
+    parent_id: UUID | None = Field(default=None, validation_alias="parentId")
     owner_type: OwnerType | None = None
     owner_id: UUID | None = None
 
     # Config
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class UpdateTag(BaseModel):
+    name: Optional[str] = None
+    bg_color: Optional[str] = Field(default=None, validation_alias="color")
+    fg_color: Optional[str] = None
+    description: Optional[str] = None
+    pinned: Optional[bool] = False
+    parent_id: UUID | None = Field(default=None, validation_alias="parentId")
+    owner_type: OwnerType | None = None
+    owner_id: UUID | None = None
+
+    # Config
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class ColoredTag(BaseModel):

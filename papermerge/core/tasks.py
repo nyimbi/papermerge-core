@@ -147,7 +147,7 @@ def process_email_attachments(email_import_id: str, owner_id: str):
 					from papermerge.core.lib.mime import detect_and_validate_mime_type
 					from papermerge.storage.base import get_storage_backend
 					from papermerge.core import pathlib as plib
-					from uuid_extensions import uuid7
+					from uuid_extension import uuid7
 
 					# Get attachment content from storage
 					storage = get_storage_backend()

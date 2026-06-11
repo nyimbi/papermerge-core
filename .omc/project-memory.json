@@ -1,0 +1,194 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1781154852493,
+  "projectRoot": "/Users/nyimbiodero/src/pjs/dArchiva/papermerge-core",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "fastapi",
+        "version": null,
+        "category": "backend"
+      },
+      {
+        "name": "pytest",
+        "version": null,
+        "category": "testing"
+      }
+    ],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "tests"
+    ],
+    "gitBranches": {
+      "defaultBranch": "master",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "artwork": {
+      "path": "artwork",
+      "purpose": null,
+      "fileCount": 8,
+      "lastAccessed": 1781154852484,
+      "keyFiles": [
+        "logo-w160px.png",
+        "logo.png",
+        "logo.svg",
+        "logo2.png",
+        "logo2.svg"
+      ]
+    },
+    "docker": {
+      "path": "docker",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1781154852484,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "frontend": {
+      "path": "frontend",
+      "purpose": null,
+      "fileCount": 14,
+      "lastAccessed": 1781154852485,
+      "keyFiles": [
+        "README.md",
+        "eslint.config.mjs",
+        "package.json",
+        "tsconfig.4eslint.json",
+        "tsconfig.base.json"
+      ]
+    },
+    "media": {
+      "path": "media",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1781154852485,
+      "keyFiles": []
+    },
+    "papermerge": {
+      "path": "papermerge",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1781154852486,
+      "keyFiles": [
+        "app.py",
+        "celery_app.py",
+        "cli.py",
+        "conftest.py"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 0,
+      "lastAccessed": 1781154852486,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "papermerge/core/features/provenance/router.py",
+      "accessCount": 8,
+      "lastAccessed": 1781157230547,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/config/settings.py",
+      "accessCount": 4,
+      "lastAccessed": 1781156783657,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/types.py",
+      "accessCount": 3,
+      "lastAccessed": 1781154928617,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/features/page_mngm/db/api.py",
+      "accessCount": 2,
+      "lastAccessed": 1781155530338,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/features/monitoring/service.py",
+      "accessCount": 2,
+      "lastAccessed": 1781155535564,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/features/serial_numbers/router.py",
+      "accessCount": 2,
+      "lastAccessed": 1781155538863,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/features/document/mime_detection.py",
+      "accessCount": 2,
+      "lastAccessed": 1781155548502,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/utils/image.py",
+      "accessCount": 2,
+      "lastAccessed": 1781155680675,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/features/auth/dependencies.py",
+      "accessCount": 2,
+      "lastAccessed": 1781155732827,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/features/auth/router.py",
+      "accessCount": 2,
+      "lastAccessed": 1781156796574,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/features/auth/__init__.py",
+      "accessCount": 2,
+      "lastAccessed": 1781157174964,
+      "type": "file"
+    },
+    {
+      "path": "papermerge/core/features/workflows/tasks/notification.py",
+      "accessCount": 1,
+      "lastAccessed": 1781154954355,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

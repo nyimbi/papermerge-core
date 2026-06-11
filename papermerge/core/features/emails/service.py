@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 from .models import (
 	EmailImportModel,

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import String, Text, Boolean, Integer, ForeignKey, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 from papermerge.core.db.base import Base
 

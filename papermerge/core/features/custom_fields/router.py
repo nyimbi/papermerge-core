@@ -151,6 +151,12 @@ async def create_custom_field(
     db_session: db.DBRouterAsyncSession,
 ) -> cf_schema.CustomField:
     """Create a new custom field"""
+    # Default owner to current user if not provided
+    if data.owner_type is None:
+        data.owner_type = OwnerType.USER
+    if data.owner_id is None:
+        data.owner_id = user.id
+
     try:
         async with AsyncAuditContext(
             db_session,

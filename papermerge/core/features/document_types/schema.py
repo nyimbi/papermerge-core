@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Literal
 
 from fastapi import Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from papermerge.core.schemas.common import ByUser, OwnedBy
 from papermerge.core.types import OwnerType
@@ -52,9 +52,9 @@ class DocumentTypeDetails(BaseModel):
 class CreateDocumentType(BaseModel):
     name: str
     path_template: str | None = None
-    custom_field_ids: list[UUID]
-    owner_type: OwnerType
-    owner_id: UUID
+    custom_field_ids: list[UUID] = Field(default_factory=list)
+    owner_type: OwnerType | None = None
+    owner_id: UUID | None = None
 
     # Config
     model_config = ConfigDict(from_attributes=True)

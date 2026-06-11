@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Sequence
 from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 from .orm import PolicyModel, PolicyApprovalModel, PolicyEvaluationLogModel, DepartmentAccessModel
 from ..models import Policy, PolicyRule, PolicyCondition, PolicyApproval, PolicyEffect, PolicyStatus

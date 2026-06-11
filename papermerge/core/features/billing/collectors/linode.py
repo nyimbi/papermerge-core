@@ -5,13 +5,13 @@ Linode Object Storage cost collector.
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-import httpx
+import logging
 
-from papermerge.core.logging import get_logger
+import httpx
 
 from .base import CostCollector, UsageMetrics, CostBreakdown
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class LinodeCostCollector(CostCollector):

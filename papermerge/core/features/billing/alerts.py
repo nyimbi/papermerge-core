@@ -7,12 +7,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+import logging
+
 import httpx
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
-from papermerge.core.logging import get_logger
 from papermerge.core.config import get_settings
 
 from .db.orm import UsageAlert, AlertType, AlertStatus, UsageDaily
@@ -20,7 +21,7 @@ from .db.orm import UsageAlert, AlertType, AlertStatus, UsageDaily
 if TYPE_CHECKING:
 	from uuid import UUID
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 

@@ -10,14 +10,14 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from papermerge.core.logging import get_logger
+import logging
 
 from .db.orm import PricingTier, ServiceType, UsageDaily
 
 if TYPE_CHECKING:
 	from uuid import UUID
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass

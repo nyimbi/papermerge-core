@@ -8,9 +8,9 @@ from enum import Enum
 from typing import Literal
 from uuid import UUID
 
-from papermerge.core.logging import get_logger
+import logging
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class DiscrepancyType(str, Enum):
@@ -154,7 +154,7 @@ class InventoryReconciler:
 		Returns:
 			ReconciliationReport with discrepancies
 		"""
-		from uuid_extensions import uuid7str
+		from papermerge.core.utils.uuid_compat import uuid7str
 
 		report = ReconciliationReport(
 			id=report_id or uuid7str(),
@@ -264,7 +264,7 @@ class InventoryReconciler:
 		digital: DigitalRecord,
 	) -> list[Discrepancy]:
 		"""Check matched records for other discrepancies."""
-		from uuid_extensions import uuid7str
+		from papermerge.core.utils.uuid_compat import uuid7str
 
 		issues = []
 

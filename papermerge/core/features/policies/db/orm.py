@@ -5,7 +5,7 @@ from sqlalchemy import (
 	Column, String, Integer, Boolean, DateTime, Text, ForeignKey, Enum, JSON, Index
 )
 from sqlalchemy.orm import relationship
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 from papermerge.core.db.base import Base
 from ..models import PolicyEffect, PolicyStatus

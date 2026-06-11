@@ -5,11 +5,11 @@ AWS S3 cost collector.
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from papermerge.core.logging import get_logger
+import logging
 
 from .base import CostCollector, UsageMetrics, CostBreakdown
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 try:
 	import boto3

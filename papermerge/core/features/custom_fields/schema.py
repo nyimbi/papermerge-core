@@ -117,23 +117,23 @@ class CustomFieldWithValue(BaseModel):
 class CreateCustomField(BaseModel):
     """Schema for creating a custom field"""
     name: str = Field(min_length=1)
-    type_handler: str
+    type_handler: str = Field(default="text", validation_alias="type")
     config: dict[str, Any] = Field(default_factory=dict)
     owner_type: OwnerType | None = None
     owner_id: UUID | None = None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class UpdateCustomField(BaseModel):
     """Schema for updating a custom field"""
     name: Optional[str] = None
-    type_handler: Optional[str] = None
+    type_handler: Optional[str] = Field(default=None, validation_alias="type")
     config: Optional[dict[str, Any]] = None
     owner_type: OwnerType | None = None
     owner_id: UUID | None = None
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class SetCustomFieldValue(BaseModel):

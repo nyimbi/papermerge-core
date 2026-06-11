@@ -18,7 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from uuid_extensions import uuid7str
+from papermerge.core.utils.uuid_compat import uuid7str
 
 from papermerge.core.db.base import Base
 
@@ -118,7 +118,7 @@ class DocumentProvenance(Base):
 	)
 	# Link to the document
 	document_id: Mapped[UUID] = mapped_column(
-		ForeignKey("core_document.id", ondelete="CASCADE"),
+		ForeignKey("documents.node_id", ondelete="CASCADE"),
 		unique=True,
 	)
 	# Batch this document was scanned in
@@ -153,7 +153,7 @@ class DocumentProvenance(Base):
 	# scanner, email, upload, api, import
 	ingestion_timestamp: Mapped[datetime | None] = mapped_column(DateTime)
 	ingestion_user_id: Mapped[UUID | None] = mapped_column(
-		ForeignKey("core_user.id", ondelete="SET NULL"),
+		ForeignKey("users.id", ondelete="SET NULL"),
 	)
 
 	# Scan-specific metadata
@@ -173,7 +173,7 @@ class DocumentProvenance(Base):
 	)
 	verified_at: Mapped[datetime | None] = mapped_column(DateTime)
 	verified_by_id: Mapped[UUID | None] = mapped_column(
-		ForeignKey("core_user.id", ondelete="SET NULL"),
+		ForeignKey("users.id", ondelete="SET NULL"),
 	)
 	verification_notes: Mapped[str | None] = mapped_column(Text)
 
@@ -266,7 +266,7 @@ class ProvenanceEvent(Base):
 
 	# Actor
 	actor_id: Mapped[UUID | None] = mapped_column(
-		ForeignKey("core_user.id", ondelete="SET NULL"),
+		ForeignKey("users.id", ondelete="SET NULL"),
 	)
 	actor_type: Mapped[str | None] = mapped_column(String(50))
 	# user, system, api, automation
