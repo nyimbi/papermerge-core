@@ -1,9 +1,12 @@
 import logging
 import uuid
-from typing import Annotated, Union
+import secrets
+from datetime import datetime
+from typing import Annotated, Any, Union
 
 from fastapi import APIRouter, Security, Depends, Response, status, \
     HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.engine import get_db
@@ -11,6 +14,7 @@ from papermerge.core import utils, schema, dbapi
 from papermerge.core.features.auth import scopes, get_current_user
 from papermerge.core.types import PaginatedResponse
 from papermerge.core.features.shared_nodes.schema import SharedNodeParams
+from papermerge.core.features.shared_nodes.db.orm import NodeShareLink
 from papermerge.core.auth import require_scopes
 
 router = APIRouter(
@@ -121,3 +125,90 @@ async def update_shared_node_access(
     await dbapi.update_shared_node_access(
         db_session, node_id=node_id, access_update=access_update, owner_id=user.id
     )
+
+
+# ---------------------------------------------------------------------------
+# Share Links (public/expiring links to a node)
+# ---------------------------------------------------------------------------
+
+def _serialize_link(link: NodeShareLink, request_base_url: str = "") -> dict[str, Any]:
+	return {
+		"id": str(link.id),
+		"node_id": str(link.node_id),
+		"token": link.token,
+		"url": f"{request_base_url}/shared/{link.token}",
+		"permissions": link.permissions or [],
+		"password_protected": link.password_hash is not None,
+		"expires_at": link.expires_at.isoformat() if link.expires_at else None,
+		"max_access_count": link.max_access_count,
+		"access_count": link.access_count,
+		"created_at": link.created_at.isoformat(),
+		"created_by_name": "",
+	}
+
+
+@router.get("/links/{node_id}")
+async def list_share_links(
+	node_id: uuid.UUID,
+	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.SHARED_NODE_VIEW])],
+	db_session: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+	"""List all share links for a node."""
+	links = (await db_session.execute(
+		select(NodeShareLink)
+		.where(NodeShareLink.node_id == node_id)
+		.order_by(NodeShareLink.created_at.desc())
+	)).scalars().all()
+	return [_serialize_link(link) for link in links]
+
+
+@router.post("/links", status_code=status.HTTP_201_CREATED)
+async def create_share_link(
+	data: dict[str, Any],
+	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.SHARED_NODE_CREATE])],
+	db_session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+	"""Create a public share link for a node."""
+	node_id_str = data.get("node_id")
+	if not node_id_str:
+		raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="node_id required")
+
+	expires_at = None
+	if data.get("expires_at"):
+		try:
+			expires_at = datetime.fromisoformat(str(data["expires_at"]).rstrip("Z"))
+		except ValueError:
+			raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid expires_at format")
+
+	link = NodeShareLink(
+		node_id=uuid.UUID(str(node_id_str)),
+		created_by_id=user.id,
+		token=secrets.token_urlsafe(24),
+		permissions=data.get("permissions", []),
+		expires_at=expires_at,
+		max_access_count=data.get("max_access_count"),
+		access_count=0,
+		created_at=datetime.utcnow(),
+	)
+	db_session.add(link)
+	await db_session.commit()
+	await db_session.refresh(link)
+	return _serialize_link(link)
+
+
+@router.delete("/links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_share_link(
+	link_id: uuid.UUID,
+	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.SHARED_NODE_DELETE])],
+	db_session: AsyncSession = Depends(get_db),
+) -> None:
+	"""Delete a share link."""
+	link = (await db_session.execute(
+		select(NodeShareLink).where(NodeShareLink.id == link_id)
+	)).scalar_one_or_none()
+	if not link:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share link not found")
+	if link.created_by_id != user.id and not user.is_superuser:
+		raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+	await db_session.delete(link)
+	await db_session.commit()

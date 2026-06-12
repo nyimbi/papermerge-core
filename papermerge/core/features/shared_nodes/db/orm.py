@@ -1,8 +1,10 @@
 import uuid
+import secrets
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, func, CheckConstraint, Index, text
+from sqlalchemy import ForeignKey, func, CheckConstraint, Index, text, String
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from papermerge.core.db.audit_cols import AuditColumns
 from papermerge.core.db.base import Base
@@ -105,3 +107,32 @@ class SharedNode(Base, AuditColumns):
 
     def __repr__(self):
         return f"SharedNode(id={self.id}, node_id={self.node_id})"
+
+
+class NodeShareLink(Base):
+	__tablename__ = "node_share_links"
+
+	id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+	node_id: Mapped[uuid.UUID] = mapped_column(
+		ForeignKey("nodes.id", ondelete="CASCADE"),
+		nullable=False,
+	)
+	created_by_id: Mapped[uuid.UUID] = mapped_column(
+		ForeignKey("users.id", ondelete="CASCADE"),
+		nullable=False,
+	)
+	token: Mapped[str] = mapped_column(
+		String,
+		unique=True,
+		nullable=False,
+		default=lambda: secrets.token_urlsafe(24),
+	)
+	permissions: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+	password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+	expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
+	max_access_count: Mapped[int | None] = mapped_column(nullable=True)
+	access_count: Mapped[int] = mapped_column(nullable=False, default=0)
+	created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+
+	def __repr__(self) -> str:
+		return f"NodeShareLink(id={self.id}, node_id={self.node_id})"
