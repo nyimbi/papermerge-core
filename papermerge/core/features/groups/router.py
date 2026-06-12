@@ -247,3 +247,93 @@ async def update_group(
         raise HTTPException(status_code=404, detail="Group not found")
 
     return group
+
+
+# ---------------------------------------------------------------------------
+# Group member management
+# ---------------------------------------------------------------------------
+
+@router.get("/{group_id}/members")
+async def list_group_members(
+    group_id: uuid.UUID,
+    cur_user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.GROUP_VIEW])],
+    db_session: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """List all users in a group."""
+    from sqlalchemy import select
+    from papermerge.core.features.groups.db.orm import UserGroup, Group
+    from papermerge.core.features.users.db.orm import User as UserORM
+
+    group = await db_session.get(Group, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    stmt = (
+        select(UserORM)
+        .join(UserGroup, UserGroup.user_id == UserORM.id)
+        .where(UserGroup.group_id == group_id, UserGroup.deleted_at.is_(None))
+    )
+    users = (await db_session.execute(stmt)).scalars().all()
+    return [{"id": str(u.id), "username": u.username, "email": u.email} for u in users]
+
+
+@router.post("/{group_id}/members", status_code=200)
+async def add_group_members(
+    group_id: uuid.UUID,
+    body: dict,
+    cur_user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.GROUP_UPDATE])],
+    db_session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Add users to a group."""
+    import uuid as _uuid
+    from sqlalchemy import select
+    from papermerge.core.features.groups.db.orm import UserGroup, Group
+
+    group = await db_session.get(Group, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    user_ids = [_uuid.UUID(str(uid)) for uid in body.get("user_ids", [])]
+    if not user_ids:
+        return {"added": 0}
+
+    from sqlalchemy import select as _sel
+    existing_stmt = _sel(UserGroup.user_id).where(
+        UserGroup.group_id == group_id,
+        UserGroup.user_id.in_(user_ids),
+        UserGroup.deleted_at.is_(None),
+    )
+    existing = set((await db_session.execute(existing_stmt)).scalars().all())
+
+    added = 0
+    for uid in user_ids:
+        if uid not in existing:
+            db_session.add(UserGroup(group_id=group_id, user_id=uid))
+            added += 1
+
+    await db_session.commit()
+    return {"added": added}
+
+
+@router.delete("/{group_id}/members/{user_id}", status_code=200)
+async def remove_group_member(
+    group_id: uuid.UUID,
+    user_id: uuid.UUID,
+    cur_user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.GROUP_UPDATE])],
+    db_session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Remove a user from a group."""
+    from sqlalchemy import select, delete as sa_delete
+    from papermerge.core.features.groups.db.orm import UserGroup
+
+    result = await db_session.execute(
+        sa_delete(UserGroup).where(
+            UserGroup.group_id == group_id,
+            UserGroup.user_id == user_id,
+        ).returning(UserGroup.id)
+    )
+    await db_session.commit()
+    removed = len(result.fetchall())
+    if removed == 0:
+        raise HTTPException(status_code=404, detail="Member not found in group")
+    return {"removed": removed}

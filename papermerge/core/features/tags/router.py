@@ -265,3 +265,67 @@ async def update_tag(
         raise HTTPException(status_code=400, detail=error.model_dump())
 
     return tag
+
+
+# ---------------------------------------------------------------------------
+# Tag ↔ document (node) association
+# ---------------------------------------------------------------------------
+
+@router.post("/{tag_id}/documents", status_code=200)
+async def tag_documents(
+    tag_id: UUID,
+    body: dict,
+    user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.NODE_UPDATE])],
+    db_session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Associate a tag with one or more nodes by node ID."""
+    from sqlalchemy import select
+    from papermerge.core.features.tags.db.orm import Tag, NodeTagsAssociation
+
+    tag = await db_session.get(Tag, tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    node_ids = [UUID(str(nid)) for nid in body.get("node_ids", [])]
+    if not node_ids:
+        return {"tagged": 0}
+
+    existing_stmt = select(NodeTagsAssociation.node_id).where(
+        NodeTagsAssociation.tag_id == tag_id,
+        NodeTagsAssociation.node_id.in_(node_ids),
+    )
+    existing = set((await db_session.execute(existing_stmt)).scalars().all())
+
+    tagged = 0
+    for nid in node_ids:
+        if nid not in existing:
+            db_session.add(NodeTagsAssociation(tag_id=tag_id, node_id=nid))
+            tagged += 1
+
+    await db_session.commit()
+    return {"tagged": tagged}
+
+
+@router.delete("/{tag_id}/documents", status_code=200)
+async def untag_documents(
+    tag_id: UUID,
+    body: dict,
+    user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.NODE_UPDATE])],
+    db_session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Remove a tag from one or more nodes."""
+    from sqlalchemy import delete as sa_delete
+    from papermerge.core.features.tags.db.orm import NodeTagsAssociation
+
+    node_ids = [UUID(str(nid)) for nid in body.get("node_ids", [])]
+    if not node_ids:
+        return {"untagged": 0}
+
+    result = await db_session.execute(
+        sa_delete(NodeTagsAssociation).where(
+            NodeTagsAssociation.tag_id == tag_id,
+            NodeTagsAssociation.node_id.in_(node_ids),
+        ).returning(NodeTagsAssociation.id)
+    )
+    await db_session.commit()
+    return {"untagged": len(result.fetchall())}

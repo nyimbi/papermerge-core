@@ -619,3 +619,124 @@ async def list_sla_alerts(
 		page=page,
 		page_size=page_size,
 	)
+
+
+# ---------------------------------------------------------------------------
+# Missing endpoints required by frontend
+# ---------------------------------------------------------------------------
+
+@router.get("/instances/{instance_id}")
+async def get_instance(
+	instance_id: UUID,
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.WorkflowInstanceInfo:
+	"""Get a workflow instance by ID."""
+	from .db.orm import WorkflowInstance
+	instance = await db_session.get(WorkflowInstance, instance_id)
+	if not instance:
+		raise HTTPException(status_code=404, detail="Instance not found")
+	return schema.WorkflowInstanceInfo.model_validate(instance)
+
+
+@router.post("/instances/{instance_id}/retry")
+async def retry_instance(
+	instance_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+	engine: PrefectWorkflowEngine = Depends(get_workflow_engine),
+) -> schema.WorkflowInstanceInfo:
+	"""Retry a failed workflow instance by starting a new one with the same parameters."""
+	from .db.orm import WorkflowInstance
+	instance = await db_session.get(WorkflowInstance, instance_id)
+	if not instance:
+		raise HTTPException(status_code=404, detail="Instance not found")
+
+	try:
+		new_instance = await engine.start_workflow(
+			workflow_id=instance.workflow_id,
+			document_id=instance.document_id,
+			initiated_by=user.id,
+			context={**(instance.context or {}), "retried_from": str(instance_id)},
+		)
+		return schema.WorkflowInstanceInfo.model_validate(new_instance)
+	except ValueError as e:
+		raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{workflow_id}/activate")
+async def activate_workflow(
+	workflow_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.WorkflowDetail:
+	"""Activate a workflow (set is_active=True)."""
+	from .db.orm import Workflow
+	workflow = await db_session.get(Workflow, workflow_id)
+	if not workflow:
+		raise HTTPException(status_code=404, detail="Workflow not found")
+	workflow.is_active = True
+	await db_session.commit()
+	return schema.WorkflowDetail.model_validate(workflow)
+
+
+@router.post("/{workflow_id}/deactivate")
+async def deactivate_workflow(
+	workflow_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.WorkflowDetail:
+	"""Deactivate a workflow (set is_active=False)."""
+	from .db.orm import Workflow
+	workflow = await db_session.get(Workflow, workflow_id)
+	if not workflow:
+		raise HTTPException(status_code=404, detail="Workflow not found")
+	workflow.is_active = False
+	await db_session.commit()
+	return schema.WorkflowDetail.model_validate(workflow)
+
+
+@router.get("/templates/")
+async def list_templates(
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> list[schema.WorkflowDetail]:
+	"""List workflows usable as templates."""
+	from .db.orm import Workflow
+	from sqlalchemy import select as _sel
+	rows = (await db_session.execute(_sel(Workflow).where(Workflow.tenant_id == user.tenant_id))).scalars().all()
+	return [schema.WorkflowDetail.model_validate(w) for w in rows]
+
+
+@router.get("/templates/{template_id}")
+async def get_template(
+	template_id: UUID,
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.WorkflowDetail:
+	"""Get a workflow template by ID."""
+	from .db.orm import Workflow
+	workflow = await db_session.get(Workflow, template_id)
+	if not workflow:
+		raise HTTPException(status_code=404, detail="Template not found")
+	return schema.WorkflowDetail.model_validate(workflow)
+
+
+@router.post("/templates/{template_id}/instantiate")
+async def instantiate_template(
+	template_id: UUID,
+	request: schema.WorkflowStartRequest,
+	user: require_scopes(scopes.NODE_UPDATE),
+	engine: PrefectWorkflowEngine = Depends(get_workflow_engine),
+) -> schema.WorkflowInstanceInfo:
+	"""Start a workflow instance from a template."""
+	try:
+		instance = await engine.start_workflow(
+			workflow_id=template_id,
+			document_id=request.document_id,
+			initiated_by=user.id,
+			context=request.context,
+		)
+		return schema.WorkflowInstanceInfo.model_validate(instance)
+	except ValueError as e:
+		raise HTTPException(status_code=400, detail=str(e))
