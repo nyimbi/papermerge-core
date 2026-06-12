@@ -542,3 +542,6 @@ async def delete_batch(
 
 	await db.delete(batch)
 	await db.commit()
+
+# Register location sub-router so /locations/* routes are discoverable
+router.include_router(location_router)

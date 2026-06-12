@@ -496,3 +496,57 @@ async def export_users(
 		media_type="application/json",
 		headers={"Content-Disposition": "attachment; filename=users.json"},
 	)
+
+
+@router.post("/{user_id}/mfa/enable")
+async def admin_enable_mfa(
+	user_id: UUID,
+	cur_user: require_scopes(scopes.USER_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Admin: generate new TOTP secret for a user and return QR code."""
+	import io, base64, pyotp, qrcode as _qrcode
+	from papermerge.core.features.users.db.orm import User as UserORM
+	from papermerge.core.features.mfa.db.orm import UserMFASettings
+	from sqlalchemy import select as _sel
+
+	target = (await db_session.execute(_sel(UserORM).where(UserORM.id == user_id))).scalar_one_or_none()
+	if not target:
+		raise HTTPException(status_code=404, detail="User not found")
+
+	secret = pyotp.random_base32()
+	mfa = (await db_session.execute(_sel(UserMFASettings).where(UserMFASettings.user_id == user_id))).scalar_one_or_none()
+	if mfa is None:
+		from datetime import datetime as _dt
+		mfa = UserMFASettings(user_id=user_id, created_at=_dt.utcnow(), updated_at=_dt.utcnow())
+		db_session.add(mfa)
+	mfa.totp_secret = secret
+	mfa.totp_enabled = False
+	await db_session.commit()
+
+	label = target.email or target.username
+	uri = pyotp.TOTP(secret).provisioning_uri(name=label, issuer_name="dArchiva")
+	img = _qrcode.make(uri)
+	buf = io.BytesIO()
+	img.save(buf, format="PNG")
+	qr_b64 = base64.b64encode(buf.getvalue()).decode()
+	return {"qr_code": f"data:image/png;base64,{qr_b64}", "secret": secret}
+
+
+@router.post("/{user_id}/mfa/disable", status_code=200)
+async def admin_disable_mfa(
+	user_id: UUID,
+	cur_user: require_scopes(scopes.USER_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Admin: disable MFA for a user."""
+	from papermerge.core.features.mfa.db.orm import UserMFASettings
+	from sqlalchemy import select as _sel
+
+	mfa = (await db_session.execute(_sel(UserMFASettings).where(UserMFASettings.user_id == user_id))).scalar_one_or_none()
+	if mfa:
+		mfa.totp_enabled = False
+		mfa.totp_secret = None
+		mfa.backup_codes = None
+		await db_session.commit()
+	return {"disabled": True}
