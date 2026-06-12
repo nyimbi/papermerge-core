@@ -227,3 +227,33 @@ async def list_routing_logs(
 		page=page,
 		page_size=page_size,
 	)
+
+
+@router.get("/stats")
+async def get_routing_stats(
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Get routing rule statistics for the current tenant."""
+	base = [RoutingRule.tenant_id == user.tenant_id]
+
+	total = (await db_session.scalar(
+		select(func.count()).select_from(RoutingRule).where(and_(*base))
+	)) or 0
+	active = (await db_session.scalar(
+		select(func.count()).select_from(RoutingRule).where(
+			and_(*base, RoutingRule.is_active == True)
+		)
+	)) or 0
+	operational = (await db_session.scalar(
+		select(func.count()).select_from(RoutingRule).where(
+			and_(*base, RoutingRule.mode.in_(["operational", "both"]))
+		)
+	)) or 0
+	archival = (await db_session.scalar(
+		select(func.count()).select_from(RoutingRule).where(
+			and_(*base, RoutingRule.mode.in_(["archival", "both"]))
+		)
+	)) or 0
+
+	return {"total": total, "active": active, "operational": operational, "archival": archival}
