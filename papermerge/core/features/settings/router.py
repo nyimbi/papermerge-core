@@ -238,11 +238,46 @@ async def test_email_settings(
 	user: require_scopes(scopes.NODE_CREATE),
 	db: AsyncSession = Depends(get_db),
 ) -> EmailTestResult:
+	import asyncio
+	import smtplib
+	import ssl
+
 	stored = await settings_api.get_settings(db, "email")
-	if not stored.get("smtp_host"):
+	smtp_host = stored.get("smtp_host", "")
+	if not smtp_host:
 		return EmailTestResult(success=False, error="SMTP not configured")
-	# Real send would go here; return success stub when host is set.
-	return EmailTestResult(success=True, error=None)
+
+	smtp_port = int(stored.get("smtp_port", 587))
+	smtp_user = stored.get("smtp_user") or stored.get("smtp_username", "")
+	smtp_password = stored.get("smtp_password", "")
+	use_tls = stored.get("smtp_tls", False)
+	use_ssl = stored.get("smtp_ssl", False) or smtp_port == 465
+
+	def _connect() -> tuple[bool, str | None]:
+		try:
+			if use_ssl:
+				ctx = ssl.create_default_context()
+				server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10, context=ctx)
+			else:
+				server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
+				if use_tls:
+					server.starttls(context=ssl.create_default_context())
+			if smtp_user and smtp_password:
+				server.login(smtp_user, smtp_password)
+			server.quit()
+			return True, None
+		except smtplib.SMTPAuthenticationError as e:
+			return False, f"Authentication failed: {e.smtp_error.decode(errors='replace')}"
+		except smtplib.SMTPConnectError as e:
+			return False, f"Connection refused: {e}"
+		except TimeoutError:
+			return False, f"Connection timed out connecting to {smtp_host}:{smtp_port}"
+		except Exception as e:
+			return False, str(e)
+
+	loop = asyncio.get_event_loop()
+	ok, error = await loop.run_in_executor(None, _connect)
+	return EmailTestResult(success=ok, error=error)
 
 
 # ---------------------------------------------------------------------------
