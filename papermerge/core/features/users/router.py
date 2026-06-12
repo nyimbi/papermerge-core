@@ -412,10 +412,45 @@ async def bulk_update_user_roles(
 	db_session: AsyncSession = Depends(get_db),
 ):
 	"""Bulk update roles for multiple users."""
-	user_ids = data.get("user_ids", [])
-	add_role_ids = data.get("add_role_ids", [])
-	remove_role_ids = data.get("remove_role_ids", [])
-	return {"updated": len(user_ids), "added_roles": add_role_ids, "removed_roles": remove_role_ids}
+	from uuid import UUID as _UUID
+	from sqlalchemy import delete as sa_delete
+	from papermerge.core.features.roles.db.orm import UserRole
+
+	user_ids = [_UUID(str(uid)) for uid in data.get("user_ids", [])]
+	add_role_ids = [_UUID(str(rid)) for rid in data.get("add_role_ids", [])]
+	remove_role_ids = [_UUID(str(rid)) for rid in data.get("remove_role_ids", [])]
+
+	added = removed = 0
+
+	for user_id in user_ids:
+		# Add roles — skip existing to avoid unique constraint violations
+		if add_role_ids:
+			existing_stmt = select(UserRole.role_id).where(
+				UserRole.user_id == user_id,
+				UserRole.role_id.in_(add_role_ids),
+			)
+			existing = set((await db_session.execute(existing_stmt)).scalars().all())
+			for role_id in add_role_ids:
+				if role_id not in existing:
+					db_session.add(UserRole(user_id=user_id, role_id=role_id))
+					added += 1
+
+		# Remove roles
+		if remove_role_ids:
+			del_result = await db_session.execute(
+				sa_delete(UserRole).where(
+					UserRole.user_id == user_id,
+					UserRole.role_id.in_(remove_role_ids),
+				)
+			)
+			removed += del_result.rowcount
+
+	await db_session.commit()
+	return {
+		"updated": len(user_ids),
+		"roles_added": added,
+		"roles_removed": removed,
+	}
 
 
 @router.post("/bulk-status", status_code=200)
