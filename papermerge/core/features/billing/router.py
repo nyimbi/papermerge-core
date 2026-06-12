@@ -166,7 +166,7 @@ async def get_billing_dashboard(
 	)
 
 
-@router.post("/estimate", response_model=CostEstimate)
+@router.get("/estimate", response_model=CostEstimate)
 async def estimate_costs(
 	storage_gb: Decimal = Query(..., gt=0),
 	transfer_gb: Decimal = Query(..., ge=0),

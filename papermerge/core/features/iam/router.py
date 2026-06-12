@@ -261,17 +261,40 @@ async def delete_iam_role(
 		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
-@router.post("/roles/{role_id}/clone", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+@router.post("/roles/{role_id}/clone", status_code=status.HTTP_201_CREATED)
 async def clone_role(
 	role_id: uuid.UUID,
 	data: dict[str, Any],
 	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.ROLE_CREATE])],
-) -> dict[str, str]:
-	"""Not implemented."""
-	raise HTTPException(
-		status_code=status.HTTP_501_NOT_IMPLEMENTED,
-		detail="Role cloning not yet implemented",
+	db_session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+	"""Clone an existing role with a new name, copying all permissions."""
+	from sqlalchemy.orm import selectinload as _sel
+	existing = (await db_session.execute(
+		select(RoleORM).options(_sel(RoleORM.permissions)).where(RoleORM.id == role_id)
+	)).scalar_one_or_none()
+	if not existing:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+
+	new_name = str(data.get("name", "")).strip()
+	if not new_name:
+		raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="name is required")
+
+	cloned_role, error = await roles_dbapi.create_role(
+		db_session,
+		name=new_name,
+		scopes=[p.codename for p in existing.permissions],
+		created_by=user.id,
 	)
+	if error:
+		raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=error)
+
+	return {
+		"id": str(cloned_role.id),
+		"name": cloned_role.name,
+		"permissions": [p.codename for p in (existing.permissions or [])],
+		"cloned_from": str(role_id),
+	}
 
 
 # ---------------------------------------------------------------------------
