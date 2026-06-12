@@ -28,7 +28,7 @@ async def get_dashboard_stats(
 	"""Get dashboard statistics for current user."""
 	from papermerge.core.features.ownership.db.orm import Ownership
 	from papermerge.core.features.nodes.db.orm import Node
-	from papermerge.core.features.workflows.db.orm import WorkflowApprovalRequest, WorkflowInstance
+	from papermerge.core.features.workflows.db.orm import WorkflowApprovalRequest, WorkflowInstance, Workflow
 
 	now = datetime.now(timezone.utc)
 	month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -77,7 +77,11 @@ async def get_dashboard_stats(
 		stmt = (
 			select(func.count())
 			.select_from(WorkflowInstance)
-			.where(WorkflowInstance.status == "running")
+			.join(Workflow, WorkflowInstance.workflow_id == Workflow.id)
+			.where(
+				WorkflowInstance.status == "running",
+				Workflow.tenant_id == user.tenant_id,
+			)
 		)
 		return (await db_session.scalar(stmt)) or 0
 

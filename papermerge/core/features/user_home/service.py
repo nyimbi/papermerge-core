@@ -8,7 +8,8 @@ from papermerge.core.utils.uuid_compat import uuid7str
 from sqlalchemy import select, func, delete, update, desc, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from papermerge.core.db.models import User, Document
+from papermerge.core.db.models import User, Document, DocumentVersion
+from papermerge.core.features.ownership.db.orm import Ownership
 from .models import UserNotification, UserFavorite, UserSearchHistory
 from .views import (
 	UserHomeDataOut, UserInfo, UserStats, WorkflowTaskOut,
@@ -21,8 +22,9 @@ from .views import (
 def _workflow_orm():
 	from papermerge.core.features.workflows.db.orm import (
 		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow,
+		WorkflowApprovalRequest,
 	)
-	return WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow
+	return WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow, WorkflowApprovalRequest
 
 def _audit_orm():
 	from papermerge.core.features.audit.db.orm import AuditLog
@@ -101,30 +103,61 @@ class UserHomeService:
 		"""Get user statistics."""
 		now = _utcnow()
 		week_ago = now - timedelta(days=7)
+		next_week = now + timedelta(days=7)
+		uid = uuid.UUID(user_id)
 
-		doc_stmt = select(func.count(Document.id)).where(
-			Document.created_at >= week_ago
+		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow, WorkflowApprovalRequest = _workflow_orm()
+
+		# Documents this week owned by this user
+		doc_stmt = (
+			select(func.count(Document.id))
+			.join(Ownership, and_(
+				Ownership.resource_id == Document.id,
+				Ownership.resource_type == "node",
+				Ownership.owner_type == "user",
+				Ownership.owner_id == uid,
+			))
+			.where(Document.created_at >= week_ago)
 		)
-		if tenant_id:
-			doc_stmt = doc_stmt.where(Document.tenant_id == tenant_id)
-		result = await self.session.execute(doc_stmt)
-		docs_this_week = result.scalar() or 0
+		docs_this_week = (await self.session.scalar(doc_stmt)) or 0
 
-		# Count unread notifications as a proxy for pending tasks
-		unread_stmt = select(func.count(UserNotification.id)).where(
-			and_(
-				UserNotification.user_id == uuid.UUID(user_id),
-				UserNotification.is_read == False,  # noqa: E712
+		# Pending workflow tasks assigned to user
+		pending_stmt = (
+			select(func.count(WorkflowStepExecution.id))
+			.where(
+				WorkflowStepExecution.assigned_to == uid,
+				WorkflowStepExecution.status.in_(["pending", "in_progress"]),
 			)
 		)
-		unread_result = await self.session.execute(unread_stmt)
-		unread_count = unread_result.scalar() or 0
+		pending_tasks = (await self.session.scalar(pending_stmt)) or 0
+
+		# Pending approvals assigned to user
+		approvals_stmt = (
+			select(func.count(WorkflowApprovalRequest.id))
+			.where(
+				WorkflowApprovalRequest.assignee_id == uid,
+				WorkflowApprovalRequest.status == "pending",
+			)
+		)
+		approvals_pending = (await self.session.scalar(approvals_stmt)) or 0
+
+		# Upcoming deadlines: step executions assigned to user with deadline in next 7 days
+		deadlines_stmt = (
+			select(func.count(WorkflowStepExecution.id))
+			.where(
+				WorkflowStepExecution.assigned_to == uid,
+				WorkflowStepExecution.deadline_at >= now,
+				WorkflowStepExecution.deadline_at <= next_week,
+				WorkflowStepExecution.status.in_(["pending", "in_progress"]),
+			)
+		)
+		deadlines_upcoming = (await self.session.scalar(deadlines_stmt)) or 0
 
 		return UserStats(
-			pending_tasks=0,
+			pending_tasks=pending_tasks,
 			documents_this_week=docs_this_week,
-			approvals_pending=0,
-			deadlines_upcoming=unread_count,
+			approvals_pending=approvals_pending,
+			deadlines_upcoming=deadlines_upcoming,
 		)
 
 	async def _get_workflow_tasks(
@@ -134,7 +167,7 @@ class UserHomeService:
 		limit: int = 10,
 	) -> list[WorkflowTaskOut]:
 		"""Get pending workflow tasks assigned to user from workflow_step_executions."""
-		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow = _workflow_orm()
+		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow, WorkflowApprovalRequest = _workflow_orm()
 		uid = uuid.UUID(str(user_id))
 		now = datetime.now(timezone.utc)
 
@@ -188,31 +221,55 @@ class UserHomeService:
 		tenant_id: str | None = None,
 		limit: int = 10,
 	) -> list[RecentDocumentOut]:
-		"""Get recently accessed documents."""
-		stmt = select(Document).where(
-			Document.user_id == user_id
-		).order_by(desc(Document.updated_at)).limit(limit)
+		"""Get recently accessed documents for user via Ownership join."""
+		uid = uuid.UUID(user_id)
 
-		if tenant_id:
-			stmt = stmt.where(Document.tenant_id == tenant_id)
+		# Subquery: latest DocumentVersion size per document
+		latest_ver = (
+			select(
+				DocumentVersion.document_id,
+				func.max(DocumentVersion.created_at).label("max_created"),
+			)
+			.group_by(DocumentVersion.document_id)
+			.subquery()
+		)
+		ver_size = (
+			select(DocumentVersion.document_id, DocumentVersion.size)
+			.join(latest_ver, and_(
+				DocumentVersion.document_id == latest_ver.c.document_id,
+				DocumentVersion.created_at == latest_ver.c.max_created,
+			))
+			.subquery()
+		)
+
+		stmt = (
+			select(Document, ver_size.c.size)
+			.join(Ownership, and_(
+				Ownership.resource_id == Document.id,
+				Ownership.resource_type == "node",
+				Ownership.owner_type == "user",
+				Ownership.owner_id == uid,
+			))
+			.outerjoin(ver_size, ver_size.c.document_id == Document.id)
+			.where(Document.deleted_at.is_(None))
+			.order_by(desc(Document.updated_at))
+			.limit(limit)
+		)
 
 		result = await self.session.execute(stmt)
-		documents = result.scalars().all()
+		rows = result.all()
+
+		_EXT_TYPE = {
+			'.pdf': 'pdf', '.doc': 'doc', '.docx': 'doc',
+			'.xls': 'xls', '.xlsx': 'xls',
+			'.jpg': 'img', '.jpeg': 'img', '.png': 'img', '.gif': 'img',
+		}
 
 		recent_docs = []
-		for doc in documents:
+		for doc, size_bytes in rows:
 			title = doc.title or 'Untitled'
-			doc_type = 'other'
-			lower = title.lower()
-			if lower.endswith('.pdf'):
-				doc_type = 'pdf'
-			elif lower.endswith(('.doc', '.docx')):
-				doc_type = 'doc'
-			elif lower.endswith(('.xls', '.xlsx')):
-				doc_type = 'xls'
-			elif lower.endswith(('.jpg', '.jpeg', '.png', '.gif')):
-				doc_type = 'img'
-
+			ext = '.' + title.rsplit('.', 1)[-1].lower() if '.' in title else ''
+			doc_type = _EXT_TYPE.get(ext, 'other')
 			recent_docs.append(RecentDocumentOut(
 				id=str(doc.id),
 				title=title,
@@ -221,8 +278,8 @@ class UserHomeService:
 				thumbnail_url=None,
 				accessed_at=doc.updated_at or doc.created_at,
 				access_type='viewed',
-				size_bytes=0,
-				page_count=getattr(doc, 'page_count', None),
+				size_bytes=size_bytes or 0,
+				page_count=None,
 				tags=[],
 			))
 
@@ -339,7 +396,7 @@ class UserHomeService:
 		tenant_id: str | None = None,
 	) -> list[CalendarEventOut]:
 		"""Get workflow step deadlines assigned to user that fall in the current month."""
-		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow = _workflow_orm()
+		WorkflowStepExecution, WorkflowStep, WorkflowInstance, Workflow, WorkflowApprovalRequest = _workflow_orm()
 		uid = uuid.UUID(str(user_id))
 		now = datetime.now(timezone.utc)
 		month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)

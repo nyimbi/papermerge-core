@@ -6,7 +6,7 @@ from pathlib import Path
 from logging.config import dictConfig
 
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from papermerge.core.middleware.security import CSRFMiddleware, RateLimitMiddleware
 
@@ -136,6 +136,46 @@ for router, feature_name in routers:
 
 app.include_router(version_router, prefix=prefix)
 app.include_router(scopes_router, prefix=prefix)
+
+
+@app.websocket("/ws/workflows/notifications")
+async def ws_workflow_notifications(
+    websocket: WebSocket,
+    token: str | None = Query(default=None),
+):
+    """Real-time WebSocket endpoint for workflow notifications.
+
+    Clients connect with: ws://host/ws/workflows/notifications?token=<bearer_token>
+    """
+    from fastapi.security import SecurityScopes
+    from papermerge.core.db.engine import AsyncSessionLocal
+    from papermerge.core.features.api_tokens.db.api import is_pat_token
+    from papermerge.core.features.auth import (
+        _authenticate_with_pat,
+        _authenticate_with_jwt,
+    )
+    from papermerge.core.features.workflows.websocket import workflow_notifications_handler
+
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    async with AsyncSessionLocal() as db_session:
+        security_scopes = SecurityScopes(scopes=[])
+        try:
+            if is_pat_token(token):
+                user = await _authenticate_with_pat(token, db_session, security_scopes)
+            else:
+                user = await _authenticate_with_jwt(token, db_session, security_scopes)
+        except Exception:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        if not user:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        await workflow_notifications_handler(websocket, user.id, user.tenant_id)
 
 
 logging_config_path = Path(
