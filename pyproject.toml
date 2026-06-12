@@ -58,6 +58,7 @@ dependencies = [
     "blake3",
     "prometheus-client",
     "qrcode[pil]",
+    "pyotp",
     "reportlab",
     "imagehash",
 ]
