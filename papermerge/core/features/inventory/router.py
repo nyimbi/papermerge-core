@@ -3,6 +3,7 @@
 API router for physical inventory management.
 """
 import io
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -42,6 +43,7 @@ from .db.orm import (
 )
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
+logger = logging.getLogger(__name__)
 
 
 # ============ Schemas ============
@@ -318,8 +320,8 @@ async def check_for_duplicates(
 						original_hash=doc_hash.phash,
 						match_hash=record.similarity_hash,
 					))
-			except Exception:
-				pass
+			except Exception as _phash_err:
+				logger.warning("phash comparison failed for document %s: %s", record.document_id, _phash_err)
 
 	return DuplicateCheckResponse(
 		document_id=data.document_id,
