@@ -342,6 +342,29 @@ async def start_batch_scan(
 	return ScanningBatch.model_validate(batch)
 
 
+async def record_page_scan(
+	session: AsyncSession,
+	batch_id: str,
+) -> ScanningBatch | None:
+	"""Increment scanned_pages by 1; auto-starts the batch if still PENDING."""
+	stmt = select(ScanningBatchModel).where(ScanningBatchModel.id == batch_id)
+	result = await session.execute(stmt)
+	batch = result.scalar_one_or_none()
+	if not batch:
+		return None
+
+	if batch.status == ScanningBatchStatus.PENDING:
+		batch.status = ScanningBatchStatus.SCANNING
+		batch.started_at = datetime.utcnow()
+
+	batch.scanned_pages = (batch.scanned_pages or 0) + 1
+	batch.updated_at = datetime.utcnow()
+
+	await session.commit()
+	await session.refresh(batch)
+	return ScanningBatch.model_validate(batch)
+
+
 async def complete_batch_scan(
 	session: AsyncSession,
 	batch_id: str,
@@ -1426,6 +1449,9 @@ async def get_shift_assignments(
 	shift_id: str | None = None,
 	operator_id: str | None = None,
 	assignment_date: date | None = None,
+	project_id: str | None = None,
+	date_from: date | None = None,
+	date_to: date | None = None,
 ) -> Sequence[ShiftAssignment]:
 	"""Get shift assignments with optional filters."""
 	stmt = select(ShiftAssignmentModel)
@@ -1433,15 +1459,34 @@ async def get_shift_assignments(
 		stmt = stmt.where(ShiftAssignmentModel.shift_id == shift_id)
 	if operator_id:
 		stmt = stmt.where(ShiftAssignmentModel.operator_id == operator_id)
+	if project_id:
+		stmt = stmt.where(ShiftAssignmentModel.project_id == project_id)
 	if assignment_date:
 		stmt = stmt.where(
 			ShiftAssignmentModel.assignment_date >= datetime.combine(assignment_date, datetime.min.time())
 		).where(
 			ShiftAssignmentModel.assignment_date <= datetime.combine(assignment_date, datetime.max.time())
 		)
+	if date_from:
+		stmt = stmt.where(ShiftAssignmentModel.assignment_date >= datetime.combine(date_from, datetime.min.time()))
+	if date_to:
+		stmt = stmt.where(ShiftAssignmentModel.assignment_date <= datetime.combine(date_to, datetime.max.time()))
 	stmt = stmt.order_by(ShiftAssignmentModel.assignment_date.desc())
 	result = await session.execute(stmt)
 	return [ShiftAssignment.model_validate(row) for row in result.scalars().all()]
+
+
+async def delete_shift_assignment(
+	session: AsyncSession,
+	assignment_id: str,
+) -> bool:
+	"""Delete a shift assignment. Returns True if deleted, False if not found."""
+	assignment = await session.get(ShiftAssignmentModel, assignment_id)
+	if not assignment:
+		return False
+	await session.delete(assignment)
+	await session.commit()
+	return True
 
 
 async def bulk_create_shift_assignments(

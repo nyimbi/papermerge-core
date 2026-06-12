@@ -251,6 +251,20 @@ async def start_batch_scan(
 	return batch
 
 
+@router.post("/{project_id}/batches/{batch_id}/record-page", response_model=ScanningBatch)
+async def record_page_scan(
+	project_id: str,
+	batch_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> ScanningBatch:
+	"""Record one scanned page against a batch (increments scanned_pages counter)."""
+	batch = await service.record_page_scan(session, batch_id)
+	if not batch:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found")
+	return batch
+
+
 @router.post("/{project_id}/batches/{batch_id}/complete-scan", response_model=ScanningBatch)
 async def complete_batch_scan(
 	project_id: str,
@@ -928,13 +942,28 @@ async def list_shift_assignments(
 	session: Annotated[AsyncSession, Depends(get_db)],
 	shift_id: str | None = None,
 	operator_id: str | None = None,
+	project_id: str | None = None,
 	assignment_date: date | None = None,
+	date_from: date | None = None,
+	date_to: date | None = None,
 ) -> list[ShiftAssignment]:
 	"""List shift assignments with optional filters."""
 	assignments = await service.get_shift_assignments(
-		session, shift_id, operator_id, assignment_date
+		session, shift_id, operator_id, assignment_date, project_id, date_from, date_to
 	)
 	return list(assignments)
+
+
+@router.delete("/shift-assignments/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_shift_assignment(
+	assignment_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+	"""Delete a shift assignment."""
+	deleted = await service.delete_shift_assignment(session, assignment_id)
+	if not deleted:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
 
 
 @router.post(
