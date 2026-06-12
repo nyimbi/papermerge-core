@@ -130,46 +130,6 @@ async def remove_favorite(
 		raise HTTPException(status_code=404, detail="Favorite not found")
 
 
-# --- Notifications ---
-
-@router.get("/notifications", response_model=list[NotificationOut])
-async def get_notifications(
-	service: Annotated[UserHomeService, Depends(get_service)],
-	user: Annotated[User, Depends(get_current_user)],
-	unread_only: bool = Query(False),
-	limit: int = Query(50, ge=1, le=100),
-):
-	"""Get user notifications."""
-	return await service._get_notifications(
-		user_id=user.id,
-		limit=limit,
-	)
-
-
-@router.post("/notifications/{notification_id}/read", status_code=204)
-async def mark_notification_read(
-	notification_id: str,
-	service: Annotated[UserHomeService, Depends(get_service)],
-	user: Annotated[User, Depends(get_current_user)],
-):
-	"""Mark a notification as read."""
-	found = await service.mark_notification_read(
-		user_id=user.id,
-		notification_id=notification_id,
-	)
-	if not found:
-		raise HTTPException(status_code=404, detail="Notification not found")
-
-
-@router.post("/notifications/read-all", status_code=204)
-async def mark_all_notifications_read(
-	service: Annotated[UserHomeService, Depends(get_service)],
-	user: Annotated[User, Depends(get_current_user)],
-):
-	"""Mark all notifications as read."""
-	await service.mark_all_notifications_read(user_id=user.id)
-
-
 # --- Calendar ---
 
 @router.get("/calendar/events", response_model=list[CalendarEventOut])

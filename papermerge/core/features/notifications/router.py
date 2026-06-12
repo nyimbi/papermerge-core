@@ -28,21 +28,28 @@ def _serialize(n) -> NotificationOut:
 	)
 
 
-@router.get("", response_model=list[NotificationOut])
+@router.get("")
 async def list_notifications(
 	current_user: Annotated[schema.User, Depends(get_current_user)],
 	db_session: AsyncSession = Depends(get_db),
 	unread_only: bool = False,
 	limit: int = 50,
-) -> list[NotificationOut]:
-	"""List notifications for the current user."""
+) -> dict:
+	"""List notifications and unread count for the current user."""
 	notifications = await dbapi.get_notifications(
 		session=db_session,
 		user_id=current_user.id,
 		unread_only=unread_only,
 		limit=limit,
 	)
-	return [_serialize(n) for n in notifications]
+	unread_count = await dbapi.get_unread_count(
+		session=db_session,
+		user_id=current_user.id,
+	)
+	return {
+		"items": [_serialize(n) for n in notifications],
+		"unread_count": unread_count,
+	}
 
 
 @router.get("/count")
