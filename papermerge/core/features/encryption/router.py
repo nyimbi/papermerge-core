@@ -245,3 +245,107 @@ async def validate_single_view_access(
 		)
 
 	return schema.ValidateAccessResponse(valid=False)
+
+
+@router.get("/stats")
+async def get_encryption_stats(
+	user: require_scopes(scopes.TENANT_ADMIN),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Get encryption statistics for the tenant."""
+	from .db.orm import DocumentEncryptionKey
+
+	# Active key version
+	active_key = await db_session.scalar(
+		select(KeyEncryptionKey.key_version)
+		.where(KeyEncryptionKey.tenant_id == user.tenant_id, KeyEncryptionKey.is_active == True)
+		.order_by(KeyEncryptionKey.key_version.desc())
+		.limit(1)
+	)
+
+	# Total encrypted documents
+	total_encrypted = await db_session.scalar(
+		select(func.count(func.distinct(DocumentEncryptionKey.document_id)))
+	) or 0
+
+	# Pending access requests
+	pending_requests = await db_session.scalar(
+		select(func.count()).select_from(HiddenDocumentAccess)
+		.where(HiddenDocumentAccess.status == AccessRequestStatus.PENDING.value)
+	) or 0
+
+	return {
+		"active_key_version": active_key or 0,
+		"total_encrypted_docs": total_encrypted,
+		"pending_requests": pending_requests,
+	}
+
+
+@router.get("/documents")
+async def list_encrypted_documents(
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+	page: int = 1,
+	page_size: int = 20,
+) -> dict:
+	"""List encrypted documents."""
+	from .db.orm import DocumentEncryptionKey
+	from papermerge.core.features.document.db.orm import Document
+
+	offset = (page - 1) * page_size
+
+	count_stmt = select(func.count(func.distinct(DocumentEncryptionKey.document_id)))
+	total = await db_session.scalar(count_stmt) or 0
+
+	stmt = (
+		select(DocumentEncryptionKey, Document.id, Document.title)
+		.join(Document, Document.id == DocumentEncryptionKey.document_id, isouter=True)
+		.order_by(DocumentEncryptionKey.created_at.desc())
+		.offset(offset)
+		.limit(page_size)
+	)
+	result = await db_session.execute(stmt)
+	rows = result.all()
+
+	items = [
+		{
+			"id": str(dek.document_id),
+			"title": title or "Untitled",
+			"key_version": dek.key_version,
+			"encrypted_at": dek.created_at.isoformat() if dek.created_at else None,
+			"access_count": 0,
+		}
+		for dek, _doc_id, title in rows
+	]
+
+	return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/documents/{document_id}/encrypt")
+async def encrypt_document(
+	document_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Encrypt a document."""
+	service = EncryptionService()
+	try:
+		await service.encrypt_document(db=db_session, document_id=document_id, tenant_id=user.tenant_id)
+		return {"id": str(document_id), "encrypted": True}
+	except ValueError as e:
+		raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/documents/{document_id}/decrypt")
+async def decrypt_document(
+	document_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Decrypt a document."""
+	service = EncryptionService()
+	try:
+		await service.decrypt_document(db=db_session, document_id=document_id)
+		return {"id": str(document_id), "encrypted": False}
+	except ValueError as e:
+		raise HTTPException(status_code=400, detail=str(e))
