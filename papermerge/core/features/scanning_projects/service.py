@@ -2814,7 +2814,7 @@ async def get_velocity_chart(
 
 async def get_multi_location_dashboard(
 	session: AsyncSession,
-	project_id: str,
+	project_id: str | None,
 	tenant_id: str,
 ) -> MultiLocationDashboard:
 	"""Get multi-location dashboard for a project."""

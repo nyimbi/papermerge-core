@@ -55,6 +55,15 @@ async def update_my_preferences(
     return ret
 
 
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_my_preferences(
+    current_user: Annotated[schema.User, Depends(get_current_user)],
+    db_session: AsyncSession = Depends(get_db),
+) -> None:
+    """Reset current user's preferences to system defaults."""
+    await pref_dbapi.reset_user_preferences(db_session=db_session, user_id=current_user.id)
+
+
 @router.get("/system", response_model=SystemPreferencesResponse)
 async def get_system_preferences(
     current_admin: require_scopes(scopes.SYSTEM_PREFERENCE_VIEW),

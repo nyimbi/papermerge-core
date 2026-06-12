@@ -1622,6 +1622,48 @@ async def get_operator_performance(
 	return await service.get_hourly_performance(session, user.id)
 
 
+# =====================================================
+# Project-ID-free aliases (frontend doesn't always have project_id)
+# =====================================================
+
+@router.post("/sla-alerts/{alert_id}/acknowledge", response_model=SLAAlert)
+async def acknowledge_sla_alert_no_project(
+	alert_id: str,
+	body: dict,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> SLAAlert:
+	"""Acknowledge an SLA alert by alert ID alone."""
+	resolution_notes = body.get("notes")
+	alert = await service.acknowledge_sla_alert(session, alert_id, user.id, resolution_notes)
+	if not alert:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+	return alert
+
+
+@router.patch("/checkpoints/{checkpoint_id}", response_model=ProjectCheckpoint)
+async def update_checkpoint_no_project(
+	checkpoint_id: str,
+	data: ProjectCheckpointUpdate,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> ProjectCheckpoint:
+	"""Update a checkpoint by checkpoint ID alone."""
+	checkpoint = await service.update_checkpoint(session, checkpoint_id, data, user.id, user.username)
+	if not checkpoint:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Checkpoint not found")
+	return checkpoint
+
+
+@router.get("/location-dashboard", response_model=MultiLocationDashboard)
+async def get_global_location_dashboard(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> MultiLocationDashboard:
+	"""Get aggregated multi-location dashboard across all projects."""
+	return await service.get_multi_location_dashboard(session, project_id=None, tenant_id=user.tenant_id)
+
+
 # Route ordering fix: static collection paths (/resources, /locations, /shifts,
 # /shift-assignments, /gamification, /batch-priority) must precede /{project_id}
 # so FastAPI doesn't match them as project ID values.
@@ -1632,6 +1674,11 @@ _STATIC_PREFIXES = (
 	"/scanning-projects/shift-assignments",
 	"/scanning-projects/gamification",
 	"/scanning-projects/batch-priority",
+	"/scanning-projects/sla-alerts",
+	"/scanning-projects/checkpoints",
+	"/scanning-projects/location-dashboard",
+	"/scanning-projects/maintenance",
+	"/scanning-projects/certifications",
 )
 _static_routes = [
 	r for r in router.routes
