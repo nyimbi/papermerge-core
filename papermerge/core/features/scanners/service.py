@@ -597,12 +597,16 @@ async def create_scan_job(
 			resource_type=ResourceType.NODE
 		)
 		
-		# For now, simple check: must be owner or in same group
-		# In a full RBAC system, we'd check specific 'write' permissions
 		user_id_uuid = UUID(user_id)
-		if owner_type == OwnerType.USER and owner_id != user_id_uuid:
-			raise HTTPException(status_code=403, detail="Access denied to destination folder")
-		# Group check would require fetching user groups, skipping for brevity but noting as TODO
+		if owner_type == OwnerType.USER:
+			if owner_id != user_id_uuid:
+				raise HTTPException(status_code=403, detail="Access denied to destination folder")
+		elif owner_type == OwnerType.GROUP:
+			from papermerge.core.features.users.db.api import get_user_groups
+			user_groups = await get_user_groups(session, user_id=user_id_uuid)
+			user_group_ids = {g.id for g in user_groups}
+			if owner_id not in user_group_ids:
+				raise HTTPException(status_code=403, detail="Access denied to destination folder")
 
 	job = ScanJobModel(
 		tenant_id=tenant_id,
