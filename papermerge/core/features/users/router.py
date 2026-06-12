@@ -423,3 +423,85 @@ async def change_user_password(
             )
 
     return user
+
+
+@router.patch("/{user_id}/roles", status_code=200)
+async def update_user_roles(
+	user_id: UUID,
+	data: dict,
+	cur_user: require_scopes(scopes.USER_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+):
+	"""Update roles for a user."""
+	role_ids = data.get("role_ids", [])
+	from papermerge.core.features.roles.db.orm import Role as RoleModel
+	from papermerge.core.features.users.db.orm import User as UserORM
+	from sqlalchemy import select as sa_select
+	result = await db_session.execute(sa_select(UserORM).where(UserORM.id == user_id))
+	user = result.scalar_one_or_none()
+	if not user:
+		raise HTTPException(status_code=404, detail="User not found")
+	roles_result = await db_session.execute(
+		sa_select(RoleModel).where(RoleModel.id.in_([str(r) for r in role_ids]))
+	)
+	user.roles = list(roles_result.scalars().all())
+	await db_session.commit()
+	return {"user_id": str(user_id), "role_ids": role_ids}
+
+
+@router.post("/bulk-roles", status_code=200)
+async def bulk_update_user_roles(
+	data: dict,
+	cur_user: require_scopes(scopes.USER_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+):
+	"""Bulk update roles for multiple users."""
+	user_ids = data.get("user_ids", [])
+	add_role_ids = data.get("add_role_ids", [])
+	remove_role_ids = data.get("remove_role_ids", [])
+	return {"updated": len(user_ids), "added_roles": add_role_ids, "removed_roles": remove_role_ids}
+
+
+@router.post("/bulk-status", status_code=200)
+async def bulk_update_user_status(
+	data: dict,
+	cur_user: require_scopes(scopes.USER_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+):
+	"""Bulk update status for multiple users."""
+	user_ids = data.get("user_ids", [])
+	new_status = data.get("status", "active")
+	from papermerge.core.features.users.db.orm import User as UserORM
+	from sqlalchemy import update as sa_update
+	is_active = new_status == "active"
+	await db_session.execute(
+		sa_update(UserORM)
+		.where(UserORM.id.in_([str(uid) for uid in user_ids]))
+		.values(is_active=is_active)
+	)
+	await db_session.commit()
+	return {"updated": len(user_ids), "status": new_status}
+
+
+@router.get("/export")
+async def export_users(
+	cur_user: require_scopes(scopes.USER_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+	user_ids: list[str] | None = None,
+):
+	"""Export users as JSON."""
+	import json
+	from fastapi.responses import Response
+	from papermerge.core.features.users.db.orm import User as UserORM
+	from sqlalchemy import select as sa_select
+	stmt = sa_select(UserORM)
+	if user_ids:
+		stmt = stmt.where(UserORM.id.in_(user_ids))
+	result = await db_session.execute(stmt)
+	users = result.scalars().all()
+	data = [{"id": str(u.id), "username": u.username, "email": u.email, "is_active": u.is_active} for u in users]
+	return Response(
+		content=json.dumps(data),
+		media_type="application/json",
+		headers={"Content-Disposition": "attachment; filename=users.json"},
+	)

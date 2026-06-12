@@ -366,3 +366,38 @@ async def get_user_effective_permissions(
 		user_id=user_id,
 		document_type_id=document_type_id,
 	)
+
+
+@router.post("/bulk-assign", status_code=200)
+async def bulk_assign_users_to_department(
+	data: dict,
+	current_user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+	session: Annotated[AsyncSession, Depends(get_async_session)],
+):
+	"""Assign multiple users to a department."""
+	user_ids = data.get("user_ids", [])
+	department_id = data.get("department_id")
+	if not department_id:
+		from fastapi import HTTPException
+		raise HTTPException(status_code=400, detail="department_id is required")
+
+	from .db.orm import UserDepartment
+	from sqlalchemy import select as sa_select, delete as sa_delete
+
+	dept_uuid = uuid.UUID(str(department_id))
+	for uid in user_ids:
+		user_uuid = uuid.UUID(str(uid))
+		existing = await session.execute(
+			sa_select(UserDepartment).where(
+				UserDepartment.user_id == user_uuid,
+				UserDepartment.department_id == dept_uuid,
+			)
+		)
+		if not existing.scalar_one_or_none():
+			session.add(UserDepartment(
+				user_id=user_uuid,
+				department_id=dept_uuid,
+				created_by=current_user_id,
+			))
+	await session.commit()
+	return {"assigned": len(user_ids), "department_id": str(department_id)}

@@ -258,3 +258,45 @@ async def get_compliance_report(
     except Exception as e:
         logger.error(f"Error generating compliance report: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/export")
+async def export_audit_logs(
+    user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.NODE_VIEW])],
+    db_session: AsyncSession = Depends(get_db),
+    user_id: uuid.UUID | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+):
+    """Export audit logs as JSON."""
+    import json
+    from sqlalchemy import select as sa_select
+    from fastapi.responses import Response
+    from papermerge.core.features.audit.db.orm import AuditLog
+
+    stmt = sa_select(AuditLog).order_by(AuditLog.created_at.desc()).limit(10000)
+    if user_id:
+        stmt = stmt.where(AuditLog.user_id == user_id)
+    if start_date:
+        stmt = stmt.where(AuditLog.created_at >= start_date)
+    if end_date:
+        stmt = stmt.where(AuditLog.created_at <= end_date)
+
+    result = await db_session.execute(stmt)
+    logs = result.scalars().all()
+    data = [
+        {
+            "id": str(log.id),
+            "user_id": str(log.user_id) if log.user_id else None,
+            "operation": log.operation,
+            "object_type": log.object_type,
+            "object_id": str(log.object_id) if log.object_id else None,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+        }
+        for log in logs
+    ]
+    return Response(
+        content=json.dumps(data),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=audit-logs.json"},
+    )

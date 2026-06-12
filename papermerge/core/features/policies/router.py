@@ -595,6 +595,35 @@ async def validate_dsl(
 
 # --- Helpers ---
 
+@router.get("/access-graph")
+async def get_access_graph(
+	user: Annotated[User, Depends(require_scopes(scopes.NODE_VIEW))],
+	db_session: AsyncSession = Depends(get_session),
+	user_id: str | None = None,
+	resource_id: str | None = None,
+	depth: int = 2,
+):
+	"""Get access graph nodes and edges for visualization."""
+	from .db.orm import PolicyModel
+
+	nodes: list[dict] = []
+	edges: list[dict] = []
+
+	stmt = select(PolicyModel).where(PolicyModel.status == "active").limit(50)
+	result = await db_session.execute(stmt)
+	policies = result.scalars().all()
+
+	for p in policies:
+		nodes.append({"id": f"policy:{p.id}", "type": "policy", "label": p.name, "data": {"effect": p.effect}})
+		for rt in (p.resource_types or []):
+			rt_node_id = f"resource_type:{rt}"
+			if not any(n["id"] == rt_node_id for n in nodes):
+				nodes.append({"id": rt_node_id, "type": "resource_type", "label": rt, "data": {}})
+			edges.append({"id": f"e:{p.id}:{rt}", "source": f"policy:{p.id}", "target": rt_node_id, "label": "governs"})
+
+	return {"nodes": nodes, "edges": edges}
+
+
 def _model_to_response(model) -> PolicyResponse:
 	"""Convert ORM model to response schema."""
 	rules = []

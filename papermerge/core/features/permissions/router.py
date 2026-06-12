@@ -75,3 +75,15 @@ async def get_permissions_by_category(
 		categories.setdefault(p.category, []).append(p)
 
 	return [PermissionCategory(name=name, permissions=ps) for name, ps in sorted(categories.items())]
+
+
+@router.get("/resource-types")
+async def get_resource_types(
+	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.ROLE_VIEW])],
+) -> list[str]:
+	"""Get all resource types used in policies."""
+	return [
+		"document", "folder", "tag", "workflow", "batch",
+		"scanner", "user", "group", "role", "report",
+		"invoice", "case", "portfolio", "template",
+	]
