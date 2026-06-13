@@ -14,7 +14,7 @@ from papermerge.core import utils, schema, dbapi
 from papermerge.core.features.auth import scopes, get_current_user
 from papermerge.core.types import PaginatedResponse
 from papermerge.core.features.shared_nodes.schema import SharedNodeParams
-from papermerge.core.features.shared_nodes.db.orm import NodeShareLink
+from papermerge.core.features.shared_nodes.db.orm import NodeShareLink, SharedNode as SharedNodeORM
 from papermerge.core.auth import require_scopes
 
 router = APIRouter(
@@ -211,4 +211,62 @@ async def delete_share_link(
 	if link.created_by_id != user.id and not user.is_superuser:
 		raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 	await db_session.delete(link)
+	await db_session.commit()
+
+
+@router.patch("/{share_id}")
+async def update_share(
+	share_id: uuid.UUID,
+	body: dict,
+	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.SHARED_NODE_UPDATE])],
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Update a share entry (permissions/expiry)."""
+	share = (await db_session.execute(
+		select(SharedNodeORM).where(SharedNodeORM.id == share_id)
+	)).scalar_one_or_none()
+	if not share:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+	if share.owner_id != user.id and not user.is_superuser:
+		raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+	# Update role if new permissions map to a known role name
+	if "permissions" in body and body["permissions"]:
+		from sqlalchemy import text as sa_text
+		perm_list = body["permissions"]
+		role_name = "viewer" if perm_list == ["view"] else "editor" if "edit" in perm_list else None
+		if role_name:
+			role_row = (await db_session.execute(
+				sa_text("SELECT id FROM roles WHERE name = :name LIMIT 1"),
+				{"name": role_name},
+			)).first()
+			if role_row:
+				share.role_id = role_row[0]
+
+	await db_session.commit()
+	await db_session.refresh(share)
+	return {
+		"id": str(share.id),
+		"node_id": str(share.node_id),
+		"shared_with_id": str(share.user_id or share.group_id),
+		"shared_with_type": "user" if share.user_id else "group",
+		"created_at": share.created_at.isoformat(),
+	}
+
+
+@router.delete("/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_share(
+	share_id: uuid.UUID,
+	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.SHARED_NODE_DELETE])],
+	db_session: AsyncSession = Depends(get_db),
+) -> None:
+	"""Delete a share entry by id."""
+	share = (await db_session.execute(
+		select(SharedNodeORM).where(SharedNodeORM.id == share_id)
+	)).scalar_one_or_none()
+	if not share:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found")
+	if share.owner_id != user.id and not user.is_superuser:
+		raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+	await db_session.delete(share)
 	await db_session.commit()

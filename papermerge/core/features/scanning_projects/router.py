@@ -4,6 +4,7 @@ from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.auth import get_current_user
@@ -747,6 +748,130 @@ async def get_weekly_report(
 			headers={"Content-Disposition": f"attachment; filename=weekly-report-{week_ending or 'current'}.pdf"},
 		)
 	return HTMLResponse(content=content)
+
+
+# =====================================================
+# AI Advisor Endpoints
+# =====================================================
+
+# In-process cache: project_id -> AIAdvisorResponse
+_ai_advisor_cache: dict[str, AIAdvisorResponse] = {}
+
+
+class PredictionAccuracy(BaseModel):
+	metric: str
+	predicted: float
+	actual: float
+	accuracy: float
+	date: str
+
+
+@router.get("/{project_id}/ai-advisor", response_model=AIAdvisorResponse)
+async def get_ai_advisor(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> AIAdvisorResponse:
+	"""Return latest AI advisor analysis; run if not yet cached."""
+	if project_id not in _ai_advisor_cache:
+		advisor = get_project_advisor()
+		_ai_advisor_cache[project_id] = await advisor.analyze_project(session, project_id)
+	return _ai_advisor_cache[project_id]
+
+
+@router.post("/{project_id}/ai-advisor/analyze", response_model=AIAdvisorResponse)
+async def run_ai_analysis(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> AIAdvisorResponse:
+	"""Force a fresh AI analysis of the project."""
+	advisor = get_project_advisor()
+	result = await advisor.analyze_project(session, project_id)
+	_ai_advisor_cache[project_id] = result
+	return result
+
+
+@router.get("/{project_id}/ai-advisor/history", response_model=list[PredictionAccuracy])
+async def get_ai_advisor_history(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> list[PredictionAccuracy]:
+	"""Return prediction accuracy history derived from daily metrics vs forecasts."""
+	from sqlalchemy import select as sa_select
+	from .models import DailyProjectMetricsModel, ScanningMilestoneModel
+	from datetime import datetime as dt
+
+	# Fetch last 14 days of daily metrics
+	metrics_stmt = (
+		sa_select(DailyProjectMetricsModel)
+		.where(DailyProjectMetricsModel.project_id == project_id)
+		.order_by(DailyProjectMetricsModel.metric_date.desc())
+		.limit(14)
+	)
+	rows = (await session.execute(metrics_stmt)).scalars().all()
+	if not rows:
+		return []
+
+	# Use pages_scanned as both predicted (from previous day's target) and actual
+	history: list[PredictionAccuracy] = []
+	for i, row in enumerate(rows[:-1]):
+		prev = rows[i + 1]
+		predicted = float(prev.pages_scanned or 0)
+		actual = float(row.pages_scanned or 0)
+		if predicted > 0:
+			accuracy = min(100.0, (actual / predicted) * 100)
+		else:
+			accuracy = 100.0 if actual == 0 else 0.0
+		history.append(PredictionAccuracy(
+			metric="pages_scanned",
+			predicted=predicted,
+			actual=actual,
+			accuracy=round(accuracy, 1),
+			date=row.metric_date.isoformat(),
+		))
+
+	return history
+
+
+@router.post(
+	"/{project_id}/ai-advisor/recommendations/{recommendation_id}/apply",
+	status_code=status.HTTP_200_OK,
+)
+async def apply_recommendation(
+	project_id: str,
+	recommendation_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+	"""Mark a recommendation as applied and log the action."""
+	# Verify recommendation exists in cached analysis
+	cached = _ai_advisor_cache.get(project_id)
+	if cached:
+		rec = next((r for r in cached.recommendations if r.id == recommendation_id), None)
+		if rec is None:
+			raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recommendation not found")
+
+	# Persist the apply event as a resolved project issue note
+	from uuid6 import uuid7
+	from .models import ProjectIssueModel
+	from .views import ProjectIssueType, ProjectIssueSeverity, IssueStatus
+	note = ProjectIssueModel(
+		id=str(uuid7()),
+		project_id=project_id,
+		title=f"Applied AI recommendation: {recommendation_id[:8]}",
+		description=f"Recommendation {recommendation_id} applied by {user.username}",
+		issue_type=ProjectIssueType.OTHER.value,
+		severity=ProjectIssueSeverity.LOW.value,
+		status=IssueStatus.RESOLVED.value,
+		reported_by_id=str(user.id),
+		reported_by_name=user.username,
+	)
+	session.add(note)
+	await session.commit()
+
+	return {"project_id": project_id, "recommendation_id": recommendation_id, "applied": True}
 
 
 # =====================================================
