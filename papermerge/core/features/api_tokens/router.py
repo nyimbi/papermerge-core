@@ -163,3 +163,27 @@ async def delete_token(
         )
 
     return schema.APITokenDeleted(id=token_id, name=token_name)
+
+
+@router.post(
+    "/{token_id}/revoke",
+    response_model=schema.APITokenDeleted,
+    summary="Revoke an API token",
+    status_code=status.HTTP_200_OK,
+)
+async def revoke_token(
+    token_id: UUID,
+    user: scopes.DeleteAPIToken,
+    db_session: db.DBRouterAsyncSession,
+) -> schema.APITokenDeleted:
+    """Revoke an API token (frontend-friendly alias for DELETE /{token_id})."""
+    api_token = await dbapi.get_token_by_id(db_session, token_id, user.id)
+    if api_token is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Token not found")
+
+    token_name = api_token.name
+    deleted = await dbapi.delete_token(db_session, token_id, user.id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Token not found")
+
+    return schema.APITokenDeleted(id=token_id, name=token_name)
