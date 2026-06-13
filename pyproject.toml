@@ -61,6 +61,7 @@ dependencies = [
     "pyotp",
     "reportlab",
     "imagehash",
+    "webauthn",
 ]
 
 [project.urls]
