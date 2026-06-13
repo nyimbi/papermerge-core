@@ -1,11 +1,18 @@
 import logging
+import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
+from typing import Annotated
 
 from papermerge.core import scopes, db
+from papermerge.core.features.auth import get_current_user
+from papermerge.core.db.engine import get_db
+from papermerge.core import schema as core_schema
 from .schema import SearchQueryParams, SearchDocumentsResponse
+from .db.orm import SavedSearch, DocumentSearchIndex
 
 router = APIRouter(
     prefix="/search",
@@ -108,3 +115,82 @@ async def documents_search(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Search operation failed. Please try again later."
         )
+
+
+@router.get("/suggestions")
+async def get_search_suggestions(
+	user: Annotated[core_schema.User, Depends(get_current_user)],
+	q: str = Query(default="", min_length=0),
+	limit: int = Query(default=10, ge=1, le=50),
+	db_session: AsyncSession = Depends(get_db),
+) -> list[dict]:
+	"""Return document title suggestions matching the query prefix."""
+	if not q:
+		return []
+	stmt = (
+		select(DocumentSearchIndex.title, DocumentSearchIndex.document_id)
+		.where(
+			DocumentSearchIndex.owner_id == user.id,
+			DocumentSearchIndex.title.ilike(f"%{q}%"),
+		)
+		.order_by(DocumentSearchIndex.last_updated.desc())
+		.limit(limit)
+	)
+	rows = (await db_session.execute(stmt)).all()
+	return [{"text": r.title, "documentId": str(r.document_id)} for r in rows if r.title]
+
+
+@router.get("/saved")
+async def list_saved_searches(
+	user: Annotated[core_schema.User, Depends(get_current_user)],
+	db_session: AsyncSession = Depends(get_db),
+) -> list[dict]:
+	"""List saved searches for the current user."""
+	rows = (await db_session.execute(
+		select(SavedSearch)
+		.where(SavedSearch.user_id == user.id)
+		.order_by(SavedSearch.created_at.desc())
+	)).scalars().all()
+	return [{"id": str(s.id), "name": s.name, "query": s.query, "createdAt": s.created_at.isoformat()} for s in rows]
+
+
+@router.post("/saved", status_code=201)
+async def create_saved_search(
+	body: dict,
+	user: Annotated[core_schema.User, Depends(get_current_user)],
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Save a search query."""
+	from datetime import datetime
+	name = (body.get("name") or "").strip()
+	query = (body.get("query") or "").strip()
+	if not name or not query:
+		raise HTTPException(status_code=422, detail="name and query are required.")
+	saved = SavedSearch(
+		id=uuid.uuid4(),
+		user_id=user.id,
+		name=name,
+		query=query,
+		created_at=datetime.utcnow(),
+	)
+	db_session.add(saved)
+	await db_session.commit()
+	return {"id": str(saved.id), "name": saved.name, "query": saved.query, "createdAt": saved.created_at.isoformat()}
+
+
+@router.delete("/saved/{search_id}", status_code=204)
+async def delete_saved_search(
+	search_id: uuid.UUID,
+	user: Annotated[core_schema.User, Depends(get_current_user)],
+	db_session: AsyncSession = Depends(get_db),
+) -> None:
+	"""Delete a saved search."""
+	result = await db_session.execute(
+		sa_delete(SavedSearch).where(
+			SavedSearch.id == search_id,
+			SavedSearch.user_id == user.id,
+		).returning(SavedSearch.id)
+	)
+	await db_session.commit()
+	if not result.fetchall():
+		raise HTTPException(status_code=404, detail="Saved search not found.")

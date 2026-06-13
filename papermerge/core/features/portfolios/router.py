@@ -233,3 +233,28 @@ async def list_portfolio_cases(
 		page=page,
 		page_size=page_size,
 	)
+
+
+@router.get("/stats")
+async def get_portfolio_stats(
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Aggregate counts for portfolios in the user's tenant."""
+	from sqlalchemy import func
+	total = (await db_session.execute(
+		select(func.count()).select_from(Portfolio).where(
+			Portfolio.tenant_id == user.tenant_id
+		)
+	)).scalar_one()
+	active = (await db_session.execute(
+		select(func.count()).select_from(Portfolio).where(
+			Portfolio.tenant_id == user.tenant_id,
+			Portfolio.status == "active",
+		)
+	)).scalar_one()
+	return {
+		"total": total,
+		"active": active,
+		"archived": total - active,
+	}

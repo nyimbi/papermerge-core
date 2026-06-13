@@ -12,6 +12,22 @@ except ImportError:
 from papermerge.core.db.base import Base
 
 
+class SavedSearch(Base):
+    """User-saved search queries."""
+    __tablename__ = "saved_searches"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    query: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class DocumentSearchIndex(Base):
     """
     Search index for documents with pre-computed tsvector.

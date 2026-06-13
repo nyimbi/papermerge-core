@@ -461,3 +461,20 @@ async def refresh_scanner_capabilities(
 	if not capabilities:
 		raise HTTPException(status_code=404, detail="Scanner not found or unreachable")
 	return capabilities
+
+
+@router.get("/jobs/recent", response_model=list[ScanJobResponse])
+async def get_recent_scan_jobs(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+	limit: int = Query(default=10, ge=1, le=50),
+) -> list[ScanJobResponse]:
+	"""Get most recent scan jobs across all scanners."""
+	return await service.get_scan_jobs(
+		session=session,
+		tenant_id=str(user.tenant_id),
+		user_id=str(user.id),
+		scanner_id=None,
+		status=None,
+		limit=limit,
+	)

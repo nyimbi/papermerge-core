@@ -237,3 +237,55 @@ async def get_document_signatures(
 	return schema.SignatureListResponse(
 		signatures=[schema.SignatureInfo.from_orm_signature(s) for s in signatures]
 	)
+
+
+@router.get("/queue")
+async def get_extraction_queue(
+	user: require_scopes(scopes.NODE_VIEW),
+	page: int = 1,
+	page_size: int = 20,
+	status_filter: str | None = None,
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""List pending/queued form extractions."""
+	from sqlalchemy import func
+	from .db.orm import ExtractionStatus
+
+	allowed_statuses = {s.value for s in ExtractionStatus}
+	if status_filter and status_filter not in allowed_statuses:
+		raise HTTPException(status_code=422, detail=f"Invalid status. Allowed: {allowed_statuses}")
+
+	filters = []
+	if status_filter:
+		filters.append(FormExtraction.status == status_filter)
+	else:
+		# Default: pending + processing
+		filters.append(FormExtraction.status.in_(["pending", "processing"]))
+
+	total = (await db_session.execute(
+		select(func.count()).select_from(FormExtraction).where(*filters)
+	)).scalar_one()
+
+	rows = (await db_session.execute(
+		select(FormExtraction)
+		.where(*filters)
+		.order_by(FormExtraction.created_at.asc())
+		.offset((page - 1) * page_size)
+		.limit(page_size)
+	)).scalars().all()
+
+	return {
+		"items": [
+			{
+				"id": str(e.id),
+				"documentId": str(e.document_id),
+				"templateId": str(e.template_id) if e.template_id else None,
+				"status": e.status,
+				"createdAt": e.created_at.isoformat() if e.created_at else None,
+			}
+			for e in rows
+		],
+		"total": total,
+		"page": page,
+		"pageSize": page_size,
+	}
