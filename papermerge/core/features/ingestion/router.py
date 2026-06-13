@@ -6,7 +6,7 @@ import logging
 import uuid
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends, Header, Request, status
+from fastapi import APIRouter, File, HTTPException, Depends, Header, Request, UploadFile, status
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -638,6 +638,23 @@ async def webhook_ingest(
 	else:
 		source_path = f"webhook:{content_type or 'application/octet-stream'}"
 
+	# Dedup check — block exact duplicates, flag near-duplicates
+	from .dedup import check_duplicate, record_fingerprint, DedupVerdict
+	dedup = await check_duplicate(db_session, body, str(source.tenant_id))
+	dedup_meta: dict = {"dedup_verdict": dedup.verdict, "sha256": dedup.sha256}
+	if dedup.verdict == DedupVerdict.EXACT_DUPLICATE:
+		return {
+			"job_id": None,
+			"status": "duplicate",
+			"dedup": {
+				"verdict": dedup.verdict,
+				"existing_document_id": dedup.existing_document_id,
+			},
+		}
+	if dedup.verdict == DedupVerdict.NEAR_DUPLICATE:
+		dedup_meta["existing_document_id"] = dedup.existing_document_id
+		dedup_meta["hamming_distance"] = dedup.hamming_distance
+
 	job_id = uuid.uuid4()
 	job = IngestionJob(
 		id=job_id,
@@ -647,6 +664,7 @@ async def webhook_ingest(
 			"content_type": content_type,
 			"content_length": len(body),
 			"source_type": "webhook",
+			**dedup_meta,
 		},
 		status="pending",
 	)
@@ -654,7 +672,32 @@ async def webhook_ingest(
 	await db_session.commit()
 
 	logger.info("Webhook ingestion job %s created for source %s", job_id, source_id)
-	return {"job_id": str(job_id), "status": "pending"}
+	return {
+		"job_id": str(job_id),
+		"status": "pending",
+		"dedup": {"verdict": dedup.verdict} if dedup.verdict != DedupVerdict.UNIQUE else None,
+	}
+
+
+@router.post("/detect-barcodes")
+async def detect_barcodes_in_upload(
+	file: UploadFile = File(...),
+	db_session: AsyncSession = Depends(get_db),
+) -> list[dict]:
+	"""Detect barcodes and QR codes in an uploaded image.
+
+	Returns a list of detected codes with value, type, and confidence.
+	Used for scan-time dedup (re-scan prevention) and document identity assignment.
+	"""
+	from .barcode import detect_barcodes, _CV2_AVAILABLE
+	if not _CV2_AVAILABLE:
+		raise HTTPException(status_code=503, detail="opencv-python not installed")
+	data = await file.read()
+	results = detect_barcodes(data)
+	return [
+		{"value": r.value, "type": r.barcode_type, "confidence": r.confidence, "bbox": r.bbox}
+		for r in results
+	]
 
 
 @router.post("/validation-rules")

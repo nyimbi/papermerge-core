@@ -2088,6 +2088,204 @@ async def stitch_images_from_uploads(
 	)
 
 
+# ── Batch Manipulation (path-level, no project_id) ───────────────────────────
+# VirtualRebundler calls /scanning-projects/batches/{id}/...
+
+class _BatchReorderRequest(BaseModel):
+	document_ids: list[str]
+
+class _BatchMoveDocRequest(BaseModel):
+	document_id: str
+	target_batch_id: str
+
+class _BatchSplitRequest(BaseModel):
+	split_at_index: int
+
+class _BatchMergeRequest(BaseModel):
+	source_batch_id: str
+
+
+@router.get("/batches/{batch_id}")
+async def get_batch_by_id(
+	batch_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+	"""Return a batch with its ordered document list."""
+	from .models import ScanningBatchModel, ScanningBatchDocumentModel
+
+	row = await db.execute(select(ScanningBatchModel).where(ScanningBatchModel.id == batch_id))
+	batch = row.scalar_one_or_none()
+	if not batch:
+		raise HTTPException(status_code=404, detail="Batch not found")
+
+	docs_row = await db.execute(
+		select(ScanningBatchDocumentModel)
+		.where(ScanningBatchDocumentModel.batch_id == batch_id)
+		.order_by(ScanningBatchDocumentModel.page_number)
+	)
+	docs = docs_row.scalars().all()
+
+	return {
+		"id": str(batch.id),
+		"name": batch.batch_number,
+		"status": batch.status,
+		"documents": [
+			{
+				"id": str(d.id),
+				"documentId": str(d.document_id),
+				"order": d.page_number,
+				"pageCount": 1,
+				"fileName": None,
+			}
+			for d in docs
+		],
+	}
+
+
+@router.post("/batches/{batch_id}/reorder", status_code=204)
+async def reorder_batch_documents(
+	batch_id: str,
+	body: _BatchReorderRequest,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+	"""Reorder documents within a batch by providing the new ordered list of IDs."""
+	from .models import ScanningBatchDocumentModel
+	from sqlalchemy import update as sa_update
+
+	for new_order, doc_id in enumerate(body.document_ids):
+		await db.execute(
+			sa_update(ScanningBatchDocumentModel)
+			.where(
+				ScanningBatchDocumentModel.id == doc_id,
+				ScanningBatchDocumentModel.batch_id == batch_id,
+			)
+			.values(page_number=new_order)
+		)
+	await db.commit()
+
+
+@router.post("/batches/{batch_id}/move-document", status_code=204)
+async def move_batch_document(
+	batch_id: str,
+	body: _BatchMoveDocRequest,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+	"""Move a document from this batch to another batch."""
+	from .models import ScanningBatchDocumentModel
+	from sqlalchemy import update as sa_update
+
+	await db.execute(
+		sa_update(ScanningBatchDocumentModel)
+		.where(
+			ScanningBatchDocumentModel.id == body.document_id,
+			ScanningBatchDocumentModel.batch_id == batch_id,
+		)
+		.values(batch_id=body.target_batch_id)
+	)
+	await db.commit()
+
+
+@router.post("/batches/{batch_id}/split")
+async def split_batch(
+	batch_id: str,
+	body: _BatchSplitRequest,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+	"""Split a batch at a document index, creating a new batch for documents from that index on."""
+	from .models import ScanningBatchModel, ScanningBatchDocumentModel
+	from sqlalchemy import update as sa_update
+	import uuid as _uuid
+
+	row = await db.execute(select(ScanningBatchModel).where(ScanningBatchModel.id == batch_id))
+	batch = row.scalar_one_or_none()
+	if not batch:
+		raise HTTPException(status_code=404, detail="Batch not found")
+
+	docs_row = await db.execute(
+		select(ScanningBatchDocumentModel)
+		.where(ScanningBatchDocumentModel.batch_id == batch_id)
+		.order_by(ScanningBatchDocumentModel.page_number)
+	)
+	docs = docs_row.scalars().all()
+
+	split_at = body.split_at_index
+	if split_at <= 0 or split_at >= len(docs):
+		raise HTTPException(status_code=422, detail=f"split_at_index must be between 1 and {len(docs) - 1}")
+
+	# Create new batch
+	new_batch = ScanningBatchModel(
+		id=_uuid.uuid4(),
+		project_id=batch.project_id,
+		batch_number=f"{batch.batch_number}-B",
+		type=batch.type,
+		physical_location=batch.physical_location,
+		estimated_pages=len(docs) - split_at,
+		status="pending",
+		created_at=batch.created_at,
+	)
+	db.add(new_batch)
+	await db.flush()
+
+	# Move tail documents to new batch
+	tail_ids = [str(d.id) for d in docs[split_at:]]
+	if tail_ids:
+		await db.execute(
+			sa_update(ScanningBatchDocumentModel)
+			.where(ScanningBatchDocumentModel.id.in_(tail_ids))
+			.values(batch_id=new_batch.id)
+		)
+	await db.commit()
+
+	return {"new_batch_id": str(new_batch.id), "new_batch_name": new_batch.batch_number}
+
+
+@router.post("/batches/{batch_id}/merge", status_code=204)
+async def merge_batches(
+	batch_id: str,
+	body: _BatchMergeRequest,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+	"""Merge a source batch into this batch (source batch is deleted after merge)."""
+	from .models import ScanningBatchDocumentModel
+	from sqlalchemy import update as sa_update, delete as sa_delete
+
+	# Find max page_number in target batch
+	from sqlalchemy import func as sa_func
+	max_row = await db.execute(
+		select(sa_func.max(ScanningBatchDocumentModel.page_number))
+		.where(ScanningBatchDocumentModel.batch_id == batch_id)
+	)
+	max_order = max_row.scalar() or -1
+
+	# Fetch source docs ordered
+	src_docs_row = await db.execute(
+		select(ScanningBatchDocumentModel)
+		.where(ScanningBatchDocumentModel.batch_id == body.source_batch_id)
+		.order_by(ScanningBatchDocumentModel.page_number)
+	)
+	src_docs = src_docs_row.scalars().all()
+
+	for i, doc in enumerate(src_docs):
+		await db.execute(
+			sa_update(ScanningBatchDocumentModel)
+			.where(ScanningBatchDocumentModel.id == str(doc.id))
+			.values(batch_id=batch_id, page_number=max_order + 1 + i)
+		)
+
+	# Delete now-empty source batch
+	from .models import ScanningBatchModel
+	await db.execute(
+		sa_delete(ScanningBatchModel)
+		.where(ScanningBatchModel.id == body.source_batch_id)
+	)
+	await db.commit()
+
+
 # ── Quality Config ────────────────────────────────────────────────────────────
 
 @router.get("/{project_id}/quality-config", response_model=QualityConfig)
@@ -2143,6 +2341,7 @@ _STATIC_PREFIXES = (
 	"/scanning-projects/maintenance",
 	"/scanning-projects/certifications",
 	"/scanning-projects/stitch-images",
+	"/scanning-projects/batches",
 )
 _static_routes = [
 	r for r in router.routes
