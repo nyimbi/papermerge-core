@@ -128,6 +128,21 @@ async def login(
 
 	logger.info(f"Login successful for user '{form_data.username}'")
 
+	# Record session (best-effort — don't fail login if this errors)
+	try:
+		import uuid as _uuid
+		from datetime import timedelta
+		from papermerge.core.features.iam.db.orm import UserSession
+		db_session.add(UserSession(
+			id=_uuid.uuid4(),
+			user_id=user.id,
+			created_at=datetime.utcnow(),
+			expires_at=datetime.utcnow() + timedelta(hours=24),
+		))
+		await db_session.commit()
+	except Exception:
+		pass
+
 	return Token(access_token=token, expires_in=86400)
 
 

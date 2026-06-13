@@ -128,23 +128,72 @@ async def get_iam_user(
 		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
 
+@router.get("/users/{user_id}/sessions")
+async def list_user_sessions(
+	user_id: uuid.UUID,
+	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.USER_VIEW])],
+	db_session: AsyncSession = Depends(get_db),
+) -> list[dict]:
+	"""List active login sessions for a user."""
+	from papermerge.core.features.iam.db.orm import UserSession
+	now = datetime.utcnow()
+	rows = (await db_session.execute(
+		select(UserSession).where(
+			UserSession.user_id == user_id,
+			UserSession.revoked.is_(False),
+			UserSession.expires_at > now,
+		).order_by(UserSession.created_at.desc())
+	)).scalars().all()
+	return [
+		{
+			"id": str(s.id),
+			"userId": str(s.user_id),
+			"userAgent": s.user_agent,
+			"ipAddress": s.ip_address,
+			"createdAt": s.created_at.isoformat() if s.created_at else None,
+			"expiresAt": s.expires_at.isoformat() if s.expires_at else None,
+			"revoked": s.revoked,
+		}
+		for s in rows
+	]
+
+
 @router.delete("/users/{user_id}/sessions", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_all_user_sessions(
 	user_id: uuid.UUID,
 	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.USER_UPDATE])],
+	db_session: AsyncSession = Depends(get_db),
 ) -> None:
-	"""Stub: session management not yet implemented."""
-	return None
+	"""Revoke all active sessions for a user."""
+	from papermerge.core.features.iam.db.orm import UserSession
+	from sqlalchemy import update as _update
+	await db_session.execute(
+		_update(UserSession)
+		.where(UserSession.user_id == user_id, UserSession.revoked.is_(False))
+		.values(revoked=True)
+	)
+	await db_session.commit()
 
 
 @router.delete("/users/{user_id}/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_user_session(
 	user_id: uuid.UUID,
-	session_id: str,
+	session_id: uuid.UUID,
 	user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.USER_UPDATE])],
+	db_session: AsyncSession = Depends(get_db),
 ) -> None:
-	"""Stub: session management not yet implemented."""
-	return None
+	"""Revoke a specific user session."""
+	from papermerge.core.features.iam.db.orm import UserSession
+	from sqlalchemy import update as _update
+	result = await db_session.execute(
+		_update(UserSession)
+		.where(UserSession.id == session_id, UserSession.user_id == user_id)
+		.values(revoked=True)
+		.returning(UserSession.id)
+	)
+	await db_session.commit()
+	if not result.fetchall():
+		raise HTTPException(status_code=404, detail="Session not found")
 
 
 @router.post("/users/bulk", status_code=status.HTTP_200_OK)
