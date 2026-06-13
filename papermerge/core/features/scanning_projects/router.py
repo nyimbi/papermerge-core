@@ -2393,6 +2393,8 @@ _STATIC_PREFIXES = (
 	"/scanning-projects/certifications",
 	"/scanning-projects/stitch-images",
 	"/scanning-projects/batches",
+	"/scanning-projects/supervisor",
+	"/scanning-projects/camera",
 )
 _static_routes = [
 	r for r in router.routes

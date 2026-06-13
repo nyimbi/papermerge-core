@@ -66,12 +66,15 @@ class PageEventOut(BaseModel):
 
 class ActiveOperator(BaseModel):
 	operator_id: str
-	pages_today: int
-	last_event_at: datetime | None
+	operator_name: str = ""
+	status: str = "scanning"   # scanning | idle | break | offline
+	current_batch: str | None = None
+	pages_this_session: int = 0
+	last_activity_at: str = ""
 
 
 class LiveOpsResponse(BaseModel):
-	active_operators: list[ActiveOperator]
+	operators: list[ActiveOperator]
 	pages_scanned_today: int
 	active_batches: int
 	queue_depth: int  # batches pending/unassigned
@@ -79,13 +82,17 @@ class LiveOpsResponse(BaseModel):
 
 class OperatorKPI(BaseModel):
 	operator_id: str
-	total_pages: int
-	total_rescans: int
+	operator_name: str = ""
+	project_name: str = ""
+	shift_hours: float
+	pages_scanned: int
+	pages_accepted: int
+	pages_rescanned: int
 	pages_per_hour: float
-	rescan_rate: float        # rescans / total_pages
-	first_pass_yield: float   # accepted / (accepted + rejected)
-	session_hours: float
-	avg_quality_score: float | None
+	rescan_rate: float
+	first_pass_yield: float
+	idle_time_min: int = 0
+	sla_compliance_rate: float = 100.0
 
 
 class TeamSummaryResponse(BaseModel):
@@ -130,39 +137,41 @@ def _compute_operator_kpi(
 	operator_id: str,
 	rows: list[tuple],  # (event_type, count, sum_duration_ms, avg_quality)
 	session_hours: float,
+	operator_name: str = "",
 ) -> OperatorKPI:
 	counts: dict[str, int] = {}
 	total_duration_ms = 0
-	quality_scores: list[float] = []
 
 	for event_type, cnt, dur_sum, avg_q in rows:
 		counts[event_type] = int(cnt)
 		if dur_sum:
 			total_duration_ms += int(dur_sum)
-		if avg_q is not None:
-			quality_scores.append(float(avg_q))
 
-	total_pages = sum(counts.get(t, 0) for t in ("scanned", "accepted", "rejected", "rescanned"))
-	total_rescans = counts.get("rescanned", 0)
-	accepted = counts.get("accepted", 0)
-	rejected = counts.get("rejected", 0)
+	pages_scanned = counts.get("scanned", 0)
+	pages_accepted = counts.get("accepted", 0)
+	pages_rescanned = counts.get("rescanned", 0)
+	pages_rejected = counts.get("rejected", 0)
+	total_pages = pages_scanned + pages_accepted + pages_rejected + pages_rescanned
 
 	hours = session_hours if session_hours > 0 else (total_duration_ms / 3_600_000 if total_duration_ms else 1)
 	pages_per_hour = total_pages / hours if hours > 0 else 0.0
-	rescan_rate = total_rescans / total_pages if total_pages > 0 else 0.0
-	denominator = accepted + rejected
-	first_pass_yield = accepted / denominator if denominator > 0 else 1.0
-	avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else None
+	rescan_rate = pages_rescanned / total_pages if total_pages > 0 else 0.0
+	denominator = pages_accepted + pages_rejected
+	first_pass_yield = pages_accepted / denominator if denominator > 0 else 1.0
 
 	return OperatorKPI(
 		operator_id=operator_id,
-		total_pages=total_pages,
-		total_rescans=total_rescans,
+		operator_name=operator_name,
+		project_name="",
+		shift_hours=round(hours, 2),
+		pages_scanned=pages_scanned,
+		pages_accepted=pages_accepted,
+		pages_rescanned=pages_rescanned,
 		pages_per_hour=round(pages_per_hour, 2),
 		rescan_rate=round(rescan_rate, 4),
 		first_pass_yield=round(first_pass_yield, 4),
-		session_hours=round(session_hours, 2),
-		avg_quality_score=round(avg_quality, 2) if avg_quality is not None else None,
+		idle_time_min=0,
+		sla_compliance_rate=100.0,
 	)
 
 
@@ -202,21 +211,24 @@ async def get_live_ops(
 	result = await session.execute(active_stmt)
 	rows = result.all()
 
-	active_operators = []
+	operators = []
 	pages_scanned_today = 0
 	for row in rows:
 		pages_scanned_today += row.pages_today
 		last = row.last_event_at
 		if last and last.tzinfo is None:
 			last = last.replace(tzinfo=timezone.utc)
-		if last and last >= sixty_min_ago:
-			active_operators.append(
-				ActiveOperator(
-					operator_id=str(row.operator_id),
-					pages_today=row.pages_today,
-					last_event_at=last,
-				)
+		is_active = last and last >= sixty_min_ago
+		operators.append(
+			ActiveOperator(
+				operator_id=str(row.operator_id),
+				operator_name="",
+				status="scanning" if is_active else "idle",
+				current_batch=None,
+				pages_this_session=row.pages_today,
+				last_activity_at=last.isoformat() if last else "",
 			)
+		)
 
 	# Active batches (in_progress / scanning status)
 	active_batches_stmt = select(func.count(ScanningBatchModel.id)).where(
@@ -233,7 +245,7 @@ async def get_live_ops(
 	queue_depth = queue_result.scalar() or 0
 
 	return LiveOpsResponse(
-		active_operators=active_operators,
+		operators=operators,
 		pages_scanned_today=pages_scanned_today,
 		active_batches=active_batches,
 		queue_depth=queue_depth,
@@ -245,10 +257,20 @@ async def get_operator_kpis(
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_db)],
 	project_id: str | None = Query(None),
+	period: str | None = Query(None),  # today | week | month (overrides date_from/date_to)
 	date_from: date | None = Query(None),
 	date_to: date | None = Query(None),
 	operator_id: str | None = Query(None),
 ) -> list[OperatorKPI]:
+	# Resolve period shorthand to date range
+	if period:
+		now = datetime.now(timezone.utc)
+		if period == "today":
+			date_from = now.date()
+		elif period == "week":
+			date_from = (now - timedelta(days=7)).date()
+		elif period == "month":
+			date_from = (now - timedelta(days=30)).date()
 	"""Per-operator KPIs: pages/hour, rescan rate, first-pass yield, session hours."""
 	tenant_id = str(user.tenant_id)
 
@@ -325,6 +347,9 @@ async def get_operator_kpis(
 	return kpis
 
 
+
+
+
 @router.get("/team-summary", response_model=TeamSummaryResponse)
 async def get_team_summary(
 	user: Annotated[User, Depends(get_current_user)],
@@ -371,20 +396,17 @@ async def get_team_summary(
 		for op_id, op_rows in by_operator.items()
 	]
 
-	total_pages = sum(k.total_pages for k in operator_kpis)
+	total_pages = sum(k.pages_scanned for k in operator_kpis)
 	total_operators = len(operator_kpis)
 	avg_pph = (
 		sum(k.pages_per_hour for k in operator_kpis) / total_operators
 		if total_operators > 0 else 0.0
 	)
 	team_rescan_rate = (
-		sum(k.total_rescans for k in operator_kpis) / total_pages
+		sum(k.pages_rescanned for k in operator_kpis) / total_pages
 		if total_pages > 0 else 0.0
 	)
-	total_accepted = sum(
-		int(k.first_pass_yield * (k.total_pages - k.total_rescans))
-		for k in operator_kpis
-	)
+	total_accepted = sum(k.pages_accepted for k in operator_kpis)
 	team_fpy = total_accepted / total_pages if total_pages > 0 else 1.0
 
 	return TeamSummaryResponse(
