@@ -4,6 +4,7 @@ from typing import Iterable, Union
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.exc import NoResultFound, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -397,6 +398,49 @@ async def move_nodes(
         raise HTTPException(status_code=420, detail=error.model_dump())
 
     return params.source_ids
+
+
+class _MoveTarget(BaseModel):
+    target_id: UUID
+
+
+@router.patch("/{node_id}/move")
+async def move_single_node(
+    node_id: UUID,
+    body: _MoveTarget,
+    user: require_scopes(scopes.NODE_MOVE),
+    db_session: AsyncSession = Depends(get_db),
+) -> list[UUID]:
+    """Move a single node into the target folder (frontend single-item move)."""
+    try:
+        if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=node_id,
+            codename=scopes.NODE_MOVE,
+            user_id=user.id,
+        ):
+            raise exc.HTTP403Forbidden()
+
+        if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=body.target_id,
+            codename=scopes.NODE_UPDATE,
+            user_id=user.id,
+        ):
+            raise exc.HTTP403Forbidden()
+
+        async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+            await nodes_dbapi.move_nodes(
+                db_session,
+                source_ids=[node_id],
+                target_id=body.target_id,
+            )
+    except exc.HTTP403Forbidden:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    except NoResultFound:
+        raise HTTPException(status_code=400, detail="Node not found")
+
+    return [node_id]
 
 
 @router.post(
