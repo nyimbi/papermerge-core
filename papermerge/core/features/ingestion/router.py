@@ -1,9 +1,12 @@
 # (c) Copyright Datacraft, 2026
 """Document ingestion API endpoints."""
+import hashlib
+import hmac
 import logging
+import uuid
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, Header, Request, status
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -581,6 +584,77 @@ async def list_validation_rules(
 	result = await db_session.execute(stmt)
 	rules = result.scalars().all()
 	return [schema.ValidationRuleInfo.model_validate(r) for r in rules]
+
+
+@router.post("/webhook/{source_id}", status_code=status.HTTP_202_ACCEPTED)
+async def webhook_ingest(
+	source_id: UUID,
+	request: Request,
+	db_session: AsyncSession = Depends(get_db),
+	x_hub_signature_256: str | None = Header(default=None),
+) -> dict:
+	"""Receive a document via webhook from an external source.
+
+	Accepts either multipart/form-data with a 'file' field or a raw body.
+	Verifies the HMAC-SHA256 signature in X-Hub-Signature-256 against the
+	webhook_secret stored in IngestionSource.config['webhook_secret'].
+	Returns 202 Accepted with {job_id, status} on success.
+	"""
+	source = await db_session.get(IngestionSource, source_id)
+	if not source:
+		raise HTTPException(status_code=404, detail="Source not found")
+
+	webhook_secret: str | None = source.config.get("webhook_secret") if source.config else None
+	if not webhook_secret:
+		raise HTTPException(
+			status_code=401,
+			detail="Webhook secret not configured for this source",
+		)
+
+	# Read the raw body for signature verification regardless of content-type
+	body = await request.body()
+
+	if not x_hub_signature_256:
+		raise HTTPException(
+			status_code=401,
+			detail="Missing X-Hub-Signature-256 header",
+		)
+
+	expected_sig = "sha256=" + hmac.new(
+		webhook_secret.encode("utf-8"), body, hashlib.sha256
+	).hexdigest()
+	if not hmac.compare_digest(expected_sig, x_hub_signature_256):
+		raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+	# Determine source_path from file upload or raw body Content-Type
+	content_type = request.headers.get("content-type", "")
+	source_path: str | None = None
+
+	if content_type.startswith("multipart/form-data"):
+		form = await request.form()
+		file_field = form.get("file")
+		if file_field is not None and hasattr(file_field, "filename"):
+			source_path = file_field.filename or "webhook-upload"
+	else:
+		source_path = f"webhook:{content_type or 'application/octet-stream'}"
+
+	job_id = uuid.uuid4()
+	job = IngestionJob(
+		id=job_id,
+		source_id=source_id,
+		source_path=source_path,
+		source_metadata={
+			"content_type": content_type,
+			"content_length": len(body),
+			"source_type": "webhook",
+		},
+		status="pending",
+	)
+	db_session.add(job)
+	await db_session.commit()
+
+	logger.info("Webhook ingestion job %s created for source %s", job_id, source_id)
+	return {"job_id": str(job_id), "status": "pending"}
 
 
 @router.post("/validation-rules")

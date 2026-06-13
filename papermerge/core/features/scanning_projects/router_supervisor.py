@@ -1,0 +1,520 @@
+# (c) Copyright Datacraft, 2026
+"""Supervisor dashboard router for Scanning Projects feature.
+
+Provides real-time KPI endpoints computed directly from page_scan_events.
+These endpoints are separate from the gamification/leaderboard endpoints in
+router.py which use pre-aggregated OperatorDailyMetricsModel tables.
+"""
+from datetime import datetime, date, timedelta, timezone
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select, and_, case, literal_column
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from papermerge.core.auth import get_current_user
+from papermerge.core.db.engine import get_db
+from papermerge.core.features.users.schema import User
+from papermerge.core.utils.uuid_compat import uuid7str
+
+from .models import (
+	PageScanEventModel,
+	ScanningBatchModel,
+	ScanningProjectModel,
+	ShiftAssignmentModel,
+)
+
+router = APIRouter(prefix="/scanning-projects/supervisor", tags=["supervisor-dashboard"])
+
+
+# =====================================================
+# Request / Response schemas
+# =====================================================
+
+
+class PageEventCreate(BaseModel):
+	scan_job_id: str | None = None
+	batch_id: str | None = None
+	operator_id: str | None = None
+	project_id: str | None = None
+	session_id: str | None = None
+	event_type: str  # scanned, accepted, rejected, rescanned, blank_detected
+	page_number: int | None = None
+	quality_score: float | None = None
+	defects: list[str] | None = None
+	duration_ms: int | None = None
+
+
+class PageEventOut(BaseModel):
+	id: str
+	scan_job_id: str | None
+	batch_id: str | None
+	operator_id: str | None
+	project_id: str | None
+	session_id: str | None
+	event_type: str
+	page_number: int | None
+	quality_score: float | None
+	defects: list[str] | None
+	duration_ms: int | None
+	occurred_at: datetime
+	tenant_id: str | None
+
+	model_config = {"from_attributes": True}
+
+
+class ActiveOperator(BaseModel):
+	operator_id: str
+	pages_today: int
+	last_event_at: datetime | None
+
+
+class LiveOpsResponse(BaseModel):
+	active_operators: list[ActiveOperator]
+	pages_scanned_today: int
+	active_batches: int
+	queue_depth: int  # batches pending/unassigned
+
+
+class OperatorKPI(BaseModel):
+	operator_id: str
+	total_pages: int
+	total_rescans: int
+	pages_per_hour: float
+	rescan_rate: float        # rescans / total_pages
+	first_pass_yield: float   # accepted / (accepted + rejected)
+	session_hours: float
+	avg_quality_score: float | None
+
+
+class TeamSummaryResponse(BaseModel):
+	project_id: str | None
+	location_id: str | None
+	total_pages: int
+	total_operators: int
+	avg_pages_per_hour: float
+	team_rescan_rate: float
+	team_first_pass_yield: float
+	operator_kpis: list[OperatorKPI]
+
+
+class BatchKanbanItem(BaseModel):
+	batch_id: str
+	batch_number: str
+	status: str
+	scanned_pages: int
+	estimated_pages: int
+	assigned_operator_id: str | None
+	assigned_operator_name: str | None
+
+
+class BatchPipelineResponse(BaseModel):
+	project_id: str
+	unassigned: list[BatchKanbanItem]
+	in_progress: list[BatchKanbanItem]
+	qc_review: list[BatchKanbanItem]
+	complete: list[BatchKanbanItem]
+
+
+# =====================================================
+# Helpers
+# =====================================================
+
+def _today_utc_start() -> datetime:
+	now = datetime.now(timezone.utc)
+	return datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+
+
+def _compute_operator_kpi(
+	operator_id: str,
+	rows: list[tuple],  # (event_type, count, sum_duration_ms, avg_quality)
+	session_hours: float,
+) -> OperatorKPI:
+	counts: dict[str, int] = {}
+	total_duration_ms = 0
+	quality_scores: list[float] = []
+
+	for event_type, cnt, dur_sum, avg_q in rows:
+		counts[event_type] = int(cnt)
+		if dur_sum:
+			total_duration_ms += int(dur_sum)
+		if avg_q is not None:
+			quality_scores.append(float(avg_q))
+
+	total_pages = sum(counts.get(t, 0) for t in ("scanned", "accepted", "rejected", "rescanned"))
+	total_rescans = counts.get("rescanned", 0)
+	accepted = counts.get("accepted", 0)
+	rejected = counts.get("rejected", 0)
+
+	hours = session_hours if session_hours > 0 else (total_duration_ms / 3_600_000 if total_duration_ms else 1)
+	pages_per_hour = total_pages / hours if hours > 0 else 0.0
+	rescan_rate = total_rescans / total_pages if total_pages > 0 else 0.0
+	denominator = accepted + rejected
+	first_pass_yield = accepted / denominator if denominator > 0 else 1.0
+	avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else None
+
+	return OperatorKPI(
+		operator_id=operator_id,
+		total_pages=total_pages,
+		total_rescans=total_rescans,
+		pages_per_hour=round(pages_per_hour, 2),
+		rescan_rate=round(rescan_rate, 4),
+		first_pass_yield=round(first_pass_yield, 4),
+		session_hours=round(session_hours, 2),
+		avg_quality_score=round(avg_quality, 2) if avg_quality is not None else None,
+	)
+
+
+# =====================================================
+# Endpoints
+# =====================================================
+
+
+@router.get("/live-ops", response_model=LiveOpsResponse)
+async def get_live_ops(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> LiveOpsResponse:
+	"""Real-time operations overview: active operators, pages today, active/queued batches."""
+	today_start = _today_utc_start()
+	tenant_id = str(user.tenant_id)
+
+	# Pages scanned today + active operators (last event in last 60 min)
+	sixty_min_ago = datetime.now(timezone.utc) - timedelta(minutes=60)
+
+	active_stmt = (
+		select(
+			PageScanEventModel.operator_id,
+			func.count(PageScanEventModel.id).label("pages_today"),
+			func.max(PageScanEventModel.occurred_at).label("last_event_at"),
+		)
+		.where(
+			and_(
+				PageScanEventModel.tenant_id == tenant_id,
+				PageScanEventModel.occurred_at >= today_start,
+				PageScanEventModel.event_type == "scanned",
+				PageScanEventModel.operator_id.isnot(None),
+			)
+		)
+		.group_by(PageScanEventModel.operator_id)
+	)
+	result = await session.execute(active_stmt)
+	rows = result.all()
+
+	active_operators = []
+	pages_scanned_today = 0
+	for row in rows:
+		pages_scanned_today += row.pages_today
+		last = row.last_event_at
+		if last and last.tzinfo is None:
+			last = last.replace(tzinfo=timezone.utc)
+		if last and last >= sixty_min_ago:
+			active_operators.append(
+				ActiveOperator(
+					operator_id=str(row.operator_id),
+					pages_today=row.pages_today,
+					last_event_at=last,
+				)
+			)
+
+	# Active batches (in_progress / scanning status)
+	active_batches_stmt = select(func.count(ScanningBatchModel.id)).where(
+		ScanningBatchModel.status.in_(["in_progress", "scanning"])
+	)
+	active_batches_result = await session.execute(active_batches_stmt)
+	active_batches = active_batches_result.scalar() or 0
+
+	# Queue depth: pending/unassigned batches
+	queue_stmt = select(func.count(ScanningBatchModel.id)).where(
+		ScanningBatchModel.status.in_(["pending", "unassigned"])
+	)
+	queue_result = await session.execute(queue_stmt)
+	queue_depth = queue_result.scalar() or 0
+
+	return LiveOpsResponse(
+		active_operators=active_operators,
+		pages_scanned_today=pages_scanned_today,
+		active_batches=active_batches,
+		queue_depth=queue_depth,
+	)
+
+
+@router.get("/operator-kpis", response_model=list[OperatorKPI])
+async def get_operator_kpis(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+	project_id: str | None = Query(None),
+	date_from: date | None = Query(None),
+	date_to: date | None = Query(None),
+	operator_id: str | None = Query(None),
+) -> list[OperatorKPI]:
+	"""Per-operator KPIs: pages/hour, rescan rate, first-pass yield, session hours."""
+	tenant_id = str(user.tenant_id)
+
+	filters = [PageScanEventModel.tenant_id == tenant_id]
+	if project_id:
+		filters.append(PageScanEventModel.project_id == project_id)
+	if operator_id:
+		filters.append(PageScanEventModel.operator_id == operator_id)
+	if date_from:
+		filters.append(PageScanEventModel.occurred_at >= datetime(date_from.year, date_from.month, date_from.day))
+	if date_to:
+		dt_to = datetime(date_to.year, date_to.month, date_to.day) + timedelta(days=1)
+		filters.append(PageScanEventModel.occurred_at < dt_to)
+
+	# Aggregate event counts per operator per event_type
+	event_stmt = (
+		select(
+			PageScanEventModel.operator_id,
+			PageScanEventModel.event_type,
+			func.count(PageScanEventModel.id).label("cnt"),
+			func.sum(PageScanEventModel.duration_ms).label("dur_sum"),
+			func.avg(PageScanEventModel.quality_score).label("avg_quality"),
+		)
+		.where(and_(*filters))
+		.where(PageScanEventModel.operator_id.isnot(None))
+		.group_by(PageScanEventModel.operator_id, PageScanEventModel.event_type)
+	)
+	result = await session.execute(event_stmt)
+	rows = result.all()
+
+	# Group by operator
+	by_operator: dict[str, list] = {}
+	for row in rows:
+		op_id = str(row.operator_id)
+		by_operator.setdefault(op_id, []).append(
+			(row.event_type, row.cnt, row.dur_sum, row.avg_quality)
+		)
+
+	# Get session hours from shift_assignments
+	shift_filters = []
+	if date_from:
+		shift_filters.append(ShiftAssignmentModel.assignment_date >= datetime(date_from.year, date_from.month, date_from.day))
+	if date_to:
+		dt_to = datetime(date_to.year, date_to.month, date_to.day) + timedelta(days=1)
+		shift_filters.append(ShiftAssignmentModel.assignment_date < dt_to)
+	if operator_id:
+		shift_filters.append(ShiftAssignmentModel.operator_id == operator_id)
+
+	shift_stmt = select(
+		ShiftAssignmentModel.operator_id,
+		func.sum(
+			func.extract("epoch", ShiftAssignmentModel.actual_end) -
+			func.extract("epoch", ShiftAssignmentModel.actual_start)
+		).label("total_seconds"),
+	).where(
+		and_(
+			ShiftAssignmentModel.actual_start.isnot(None),
+			ShiftAssignmentModel.actual_end.isnot(None),
+			*shift_filters,
+		)
+	).group_by(ShiftAssignmentModel.operator_id)
+
+	shift_result = await session.execute(shift_stmt)
+	session_hours_map: dict[str, float] = {
+		str(r.operator_id): (r.total_seconds or 0) / 3600
+		for r in shift_result.all()
+	}
+
+	kpis = []
+	for op_id, op_rows in by_operator.items():
+		sh = session_hours_map.get(op_id, 0.0)
+		kpis.append(_compute_operator_kpi(op_id, op_rows, sh))
+
+	return kpis
+
+
+@router.get("/team-summary", response_model=TeamSummaryResponse)
+async def get_team_summary(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+	project_id: str | None = Query(None),
+	location_id: str | None = Query(None),
+) -> TeamSummaryResponse:
+	"""Aggregated team KPIs by project/location for today."""
+	tenant_id = str(user.tenant_id)
+	today_start = _today_utc_start()
+
+	filters = [
+		PageScanEventModel.tenant_id == tenant_id,
+		PageScanEventModel.occurred_at >= today_start,
+	]
+	if project_id:
+		filters.append(PageScanEventModel.project_id == project_id)
+
+	# Reuse operator-kpi logic with today filter
+	event_stmt = (
+		select(
+			PageScanEventModel.operator_id,
+			PageScanEventModel.event_type,
+			func.count(PageScanEventModel.id).label("cnt"),
+			func.sum(PageScanEventModel.duration_ms).label("dur_sum"),
+			func.avg(PageScanEventModel.quality_score).label("avg_quality"),
+		)
+		.where(and_(*filters))
+		.where(PageScanEventModel.operator_id.isnot(None))
+		.group_by(PageScanEventModel.operator_id, PageScanEventModel.event_type)
+	)
+	result = await session.execute(event_stmt)
+	rows = result.all()
+
+	by_operator: dict[str, list] = {}
+	for row in rows:
+		op_id = str(row.operator_id)
+		by_operator.setdefault(op_id, []).append(
+			(row.event_type, row.cnt, row.dur_sum, row.avg_quality)
+		)
+
+	operator_kpis = [
+		_compute_operator_kpi(op_id, op_rows, 0.0)
+		for op_id, op_rows in by_operator.items()
+	]
+
+	total_pages = sum(k.total_pages for k in operator_kpis)
+	total_operators = len(operator_kpis)
+	avg_pph = (
+		sum(k.pages_per_hour for k in operator_kpis) / total_operators
+		if total_operators > 0 else 0.0
+	)
+	team_rescan_rate = (
+		sum(k.total_rescans for k in operator_kpis) / total_pages
+		if total_pages > 0 else 0.0
+	)
+	total_accepted = sum(
+		int(k.first_pass_yield * (k.total_pages - k.total_rescans))
+		for k in operator_kpis
+	)
+	team_fpy = total_accepted / total_pages if total_pages > 0 else 1.0
+
+	return TeamSummaryResponse(
+		project_id=project_id,
+		location_id=location_id,
+		total_pages=total_pages,
+		total_operators=total_operators,
+		avg_pages_per_hour=round(avg_pph, 2),
+		team_rescan_rate=round(team_rescan_rate, 4),
+		team_first_pass_yield=round(team_fpy, 4),
+		operator_kpis=operator_kpis,
+	)
+
+
+@router.post("/page-event", response_model=PageEventOut, status_code=status.HTTP_201_CREATED)
+async def record_page_event(
+	body: PageEventCreate,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> PageEventOut:
+	"""Record a single page scan event. Called by the Scan Agent for each page action."""
+	valid_event_types = {"scanned", "accepted", "rejected", "rescanned", "blank_detected"}
+	if body.event_type not in valid_event_types:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail=f"event_type must be one of {sorted(valid_event_types)}",
+		)
+
+	event = PageScanEventModel(
+		id=uuid7str(),
+		scan_job_id=body.scan_job_id,
+		batch_id=body.batch_id,
+		operator_id=body.operator_id,
+		project_id=body.project_id,
+		session_id=body.session_id,
+		event_type=body.event_type,
+		page_number=body.page_number,
+		quality_score=body.quality_score,
+		defects={"defects": body.defects} if body.defects else None,
+		duration_ms=body.duration_ms,
+		occurred_at=datetime.now(timezone.utc).replace(tzinfo=None),
+		tenant_id=str(user.tenant_id),
+	)
+	session.add(event)
+	await session.commit()
+	await session.refresh(event)
+
+	defects_list: list[str] | None = None
+	if event.defects and isinstance(event.defects, dict):
+		defects_list = event.defects.get("defects")
+
+	return PageEventOut(
+		id=event.id,
+		scan_job_id=event.scan_job_id,
+		batch_id=event.batch_id,
+		operator_id=event.operator_id,
+		project_id=event.project_id,
+		session_id=event.session_id,
+		event_type=event.event_type,
+		page_number=event.page_number,
+		quality_score=event.quality_score,
+		defects=defects_list,
+		duration_ms=event.duration_ms,
+		occurred_at=event.occurred_at,
+		tenant_id=event.tenant_id,
+	)
+
+
+# =====================================================
+# Batch pipeline (Kanban) — lives under /{project_id}
+# so it goes on a separate router to avoid prefix conflicts
+# =====================================================
+
+project_router = APIRouter(prefix="/scanning-projects", tags=["supervisor-dashboard"])
+
+
+@project_router.get("/{project_id}/batch-pipeline", response_model=BatchPipelineResponse)
+async def get_batch_pipeline(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> BatchPipelineResponse:
+	"""Kanban view of batches for a project: unassigned / in_progress / qc_review / complete."""
+	stmt = select(ScanningBatchModel).where(
+		ScanningBatchModel.project_id == project_id
+	)
+	result = await session.execute(stmt)
+	batches = result.scalars().all()
+
+	kanban: dict[str, list[BatchKanbanItem]] = {
+		"unassigned": [],
+		"in_progress": [],
+		"qc_review": [],
+		"complete": [],
+	}
+
+	status_map = {
+		"pending": "unassigned",
+		"unassigned": "unassigned",
+		"assigned": "unassigned",
+		"in_progress": "in_progress",
+		"scanning": "in_progress",
+		"paused": "in_progress",
+		"qc_review": "qc_review",
+		"qc_in_progress": "qc_review",
+		"completed": "complete",
+		"complete": "complete",
+		"verified": "complete",
+	}
+
+	for batch in batches:
+		item = BatchKanbanItem(
+			batch_id=str(batch.id),
+			batch_number=batch.batch_number,
+			status=str(batch.status.value) if hasattr(batch.status, "value") else str(batch.status),
+			scanned_pages=batch.scanned_pages,
+			estimated_pages=batch.estimated_pages,
+			assigned_operator_id=str(batch.assigned_operator_id) if batch.assigned_operator_id else None,
+			assigned_operator_name=batch.assigned_operator_name,
+		)
+		lane = status_map.get(
+			str(batch.status.value if hasattr(batch.status, "value") else batch.status),
+			"unassigned",
+		)
+		kanban[lane].append(item)
+
+	return BatchPipelineResponse(
+		project_id=project_id,
+		unassigned=kanban["unassigned"],
+		in_progress=kanban["in_progress"],
+		qc_review=kanban["qc_review"],
+		complete=kanban["complete"],
+	)

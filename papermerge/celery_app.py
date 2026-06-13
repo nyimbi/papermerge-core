@@ -80,6 +80,13 @@ app.conf.task_routes = {
     "darchiva.ingestion.process_file": {"queue": prefixed("core")},
     "darchiva.ingestion.process_email": {"queue": prefixed("core")},
     "darchiva.form.process": {"queue": prefixed("core")},
+    # Email polling tasks run on the core worker
+    "darchiva.email.poll_account": {"queue": prefixed("core")},
+    "darchiva.email.poll_all_accounts": {"queue": prefixed("core")},
+    # Legacy names from papermerge.core.tasks (sync_email_account etc.)
+    "papermerge.core.tasks.sync_email_account": {"queue": prefixed("core")},
+    "papermerge.core.tasks.sync_all_email_accounts": {"queue": prefixed("core")},
+    "papermerge.core.tasks.process_email_attachments": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks
@@ -97,7 +104,7 @@ app.conf.beat_schedule = {
         "schedule": 3600.0,  # Every hour
     },
     "sync-all-email-accounts": {
-        "task": "papermerge.core.tasks.sync_all_email_accounts",
+        "task": "darchiva.email.poll_all_accounts",
         "schedule": 300.0,  # Every 5 minutes — respects per-account sync_interval_minutes
     },
 }

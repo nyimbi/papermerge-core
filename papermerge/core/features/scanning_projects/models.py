@@ -776,6 +776,55 @@ class WorkloadForecastModel(Base):
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PageScanEventModel(Base):
+	"""
+	Granular page-level scan event log.
+	Each page action (scanned, accepted, rejected, rescanned, blank_detected)
+	is recorded here for real-time supervisor KPI computation.
+	"""
+	__tablename__ = "page_scan_events"
+
+	id: Mapped[str] = mapped_column(String(36), primary_key=True)
+	scan_job_id: Mapped[str | None] = mapped_column(
+		String(36),
+		nullable=True,
+		index=True,
+	)  # Reference to scan job (no FK — scan_job_id has no unique PK target in schema)
+	batch_id: Mapped[str | None] = mapped_column(
+		String(36),
+		ForeignKey("scanning_batches.id", ondelete="SET NULL"),
+		nullable=True,
+		index=True,
+	)
+	operator_id: Mapped[str | None] = mapped_column(
+		String(36),
+		ForeignKey("users.id", ondelete="SET NULL"),
+		nullable=True,
+		index=True,
+	)
+	project_id: Mapped[str | None] = mapped_column(
+		String(36),
+		ForeignKey("scanning_projects.id", ondelete="SET NULL"),
+		nullable=True,
+		index=True,
+	)
+	session_id: Mapped[str | None] = mapped_column(
+		String(36),
+		ForeignKey("shift_assignments.id", ondelete="SET NULL"),
+		nullable=True,
+	)
+	event_type: Mapped[str] = mapped_column(
+		String(50),
+		nullable=False,
+	)  # scanned, accepted, rejected, rescanned, blank_detected
+	page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	defects: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # list of defect types
+	duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)  # time to scan this page
+	occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+	tenant_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
+
 class ProjectCheckpointModel(Base):
 	"""
 	Project checkpoints/gates for large-scale projects.

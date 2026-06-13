@@ -1789,6 +1789,102 @@ async def get_global_location_dashboard(
 	return await service.get_multi_location_dashboard(session, project_id=None, tenant_id=user.tenant_id)
 
 
+# =====================================================
+# Barcode Label Generation Endpoints
+# =====================================================
+
+
+class BarcodeLabelRequest(BaseModel):
+	count: int
+	batch_id: str | None = None
+	format: str = "pdf"          # "pdf" | "png"
+	label_size: str = "letter"   # "a4" | "letter"
+
+
+@router.post("/{project_id}/barcode-labels")
+async def generate_barcode_labels(
+	project_id: str,
+	body: BarcodeLabelRequest,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+):
+	"""Generate sequential barcode labels for a scanning project.
+
+	Returns a streaming PDF (format=pdf) or a ZIP archive of PNGs (format=png).
+	Each label encodes a fresh document_id so physical documents can be tracked
+	before they are scanned into the system.
+	"""
+	import io
+	import zipfile
+	from uuid6 import uuid7
+	from fastapi.responses import StreamingResponse
+	from reportlab.lib.pagesizes import A4, LETTER
+
+	from papermerge.core.features.inventory.qr import LabelData, LabelSheetGenerator, QRCodeGenerator
+
+	# Verify project exists
+	project = await service.get_scanning_project(session, project_id, user.tenant_id)
+	if not project:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+	page_size = A4 if body.label_size == "a4" else LETTER
+	batch_id = body.batch_id or str(uuid7())
+
+	labels = [
+		LabelData(
+			document_id=str(uuid7()),
+			batch_id=batch_id,
+			sequence_number=i + 1,
+		)
+		for i in range(body.count)
+	]
+
+	if body.format == "png":
+		qr_gen = QRCodeGenerator(box_size=10, border=4)
+		buf = io.BytesIO()
+		with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+			for label in labels:
+				img = qr_gen.generate_with_label(label)
+				img_buf = io.BytesIO()
+				img.save(img_buf, format="PNG")
+				img_buf.seek(0)
+				zf.writestr(f"label_{label.sequence_number:04d}.png", img_buf.read())
+		buf.seek(0)
+
+		return StreamingResponse(
+			buf,
+			media_type="application/zip",
+			headers={
+				"Content-Disposition": f'attachment; filename="barcode-labels-{batch_id}.zip"'
+			},
+		)
+	else:
+		# PDF output
+		sheet_gen = LabelSheetGenerator(page_size=page_size)
+		pdf_buf = io.BytesIO()
+
+		# LabelSheetGenerator.generate_pdf writes to a path; wrap with a temp file
+		import tempfile, os
+		with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+			tmp_path = tmp.name
+
+		try:
+			sheet_gen.generate_pdf(labels, tmp_path, include_text=True)
+			with open(tmp_path, "rb") as f:
+				pdf_buf.write(f.read())
+		finally:
+			os.unlink(tmp_path)
+
+		pdf_buf.seek(0)
+		return StreamingResponse(
+			pdf_buf,
+			media_type="application/pdf",
+			headers={
+				"Content-Disposition": f'attachment; filename="barcode-labels-{batch_id}.pdf"'
+			},
+		)
+
+
 # Route ordering fix: static collection paths (/resources, /locations, /shifts,
 # /shift-assignments, /gamification, /batch-priority) must precede /{project_id}
 # so FastAPI doesn't match them as project ID values.

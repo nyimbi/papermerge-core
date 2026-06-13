@@ -181,8 +181,7 @@ class VLMAssessmentRequest(BaseModel):
 	image_base64: str | None = None
 	mime_type: str | None = None
 	include_traditional: bool = True
-	ollama_base_url: str | None = None
-	model: str | None = None  # e.g., "qwen2.5-vl:7b" or "qwen3-vl"
+	model: str | None = None  # override model, e.g., "qwen2.5-VL"
 
 
 class VLMIssue(BaseModel):

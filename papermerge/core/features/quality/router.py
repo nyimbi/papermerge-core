@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.auth.dependencies import require_scopes
 from papermerge.core.features.auth import scopes
+from papermerge.core.config.settings import get_settings
 from . import schema
 from .db.orm import QualityRule, QualityAssessment, QualityIssueRecord, IssueStatus
 
@@ -505,9 +506,11 @@ async def assess_with_vlm(
 	from .vlm_assessor import VLMQualityAssessor, VLMQualityConfig
 	from pathlib import Path
 
+	settings = get_settings()
 	config = VLMQualityConfig(
-		ollama_base_url=request.ollama_base_url or "http://localhost:11434",
-		model=request.model or "qwen2.5-vl:7b",
+		litellm_base_url=settings.litellm_base_url,
+		litellm_api_key=settings.litellm_api_key,
+		model=request.model or "qwen2.5-VL",
 	)
 	assessor = VLMQualityAssessor(config)
 
@@ -549,19 +552,22 @@ async def assess_with_vlm(
 @router.get("/vlm/health")
 async def vlm_health_check(
 	user: require_scopes(scopes.NODE_VIEW),
-	ollama_base_url: str = "http://localhost:11434",
-	model: str = "qwen2.5-vl:7b",
 ) -> dict:
-	"""Check if VLM service is available and model is loaded."""
+	"""Check if LiteLLM VLM service is available and model is accessible."""
 	from .vlm_assessor import VLMQualityAssessor, VLMQualityConfig
 
-	config = VLMQualityConfig(ollama_base_url=ollama_base_url, model=model)
+	settings = get_settings()
+	config = VLMQualityConfig(
+		litellm_base_url=settings.litellm_base_url,
+		litellm_api_key=settings.litellm_api_key,
+		model="qwen2.5-VL",
+	)
 	assessor = VLMQualityAssessor(config)
 
 	is_available = await assessor.health_check()
 
 	return {
 		"available": is_available,
-		"model": model,
-		"base_url": ollama_base_url,
+		"model": config.model,
+		"base_url": settings.litellm_base_url,
 	}

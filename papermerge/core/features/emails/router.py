@@ -503,12 +503,51 @@ async def trigger_sync(
 	if account.owner_id != user.id:
 		raise HTTPException(status_code=403, detail="Access denied")
 
-	# Queue sync task
-	from papermerge.core.tasks import sync_email_account
+	# Queue sync task — use the feature-local poll task for consistent naming
+	from papermerge.core.features.emails.tasks import poll_email_account
 
-	sync_email_account.delay(account_id, user.id)
+	result = poll_email_account.delay(account_id)
 
-	return {"status": "sync_queued", "account_id": account_id}
+	return {
+		"status": "sync_queued",
+		"account_id": account_id,
+		"job_id": result.id,
+	}
+
+
+@router.get("/accounts/{account_id}/sync-status")
+async def get_sync_status(
+	account_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+):
+	"""Return sync status for an email account."""
+	from datetime import timedelta
+	from .views import SyncStatus
+
+	account = await get_email_account(session, account_id)
+
+	if not account:
+		raise HTTPException(status_code=404, detail="Account not found")
+
+	if account.owner_id != user.id:
+		raise HTTPException(status_code=403, detail="Access denied")
+
+	# Compute next_sync_at from last sync time + configured interval
+	next_sync_at = None
+	if account.last_sync_at and account.sync_enabled:
+		next_sync_at = account.last_sync_at + timedelta(
+			minutes=account.sync_interval_minutes
+		)
+
+	return SyncStatus(
+		account_id=account.id,
+		account_name=account.name,
+		is_syncing=False,  # Celery tasks are fire-and-forget; no live probe
+		last_sync_at=account.last_sync_at,
+		next_sync_at=next_sync_at,
+		error=account.connection_error if account.connection_status == "error" else None,
+	)
 
 
 # ----- Email Rules -----

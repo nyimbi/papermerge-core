@@ -26,8 +26,9 @@ def _log_vlm_request(model: str) -> str:
 @dataclass
 class VLMQualityConfig:
 	"""Configuration for VLM-based quality assessment."""
-	ollama_base_url: str = "http://localhost:11434"
-	model: str = "qwen2.5-vl:7b"  # or "qwen3-vl" when available
+	litellm_base_url: str = "http://84.247.181.100:4000/v1"
+	litellm_api_key: str = "sk-pjs-litellm-master-key"
+	model: str = "qwen2.5-VL"
 	timeout: float = 120.0
 	temperature: float = 0.3
 	max_tokens: int = 2048
@@ -80,7 +81,7 @@ class VLMQualityAssessor:
 
 	def __init__(self, config: VLMQualityConfig | None = None):
 		self.config = config or VLMQualityConfig()
-		self._base_url = self.config.ollama_base_url.rstrip("/")
+		self._base_url = self.config.litellm_base_url.rstrip("/")
 
 	async def assess_image(
 		self,
@@ -150,39 +151,47 @@ class VLMQualityAssessor:
 		image_base64: str,
 		mime_type: str,
 	) -> dict[str, Any]:
-		"""Call Ollama VLM API with the image."""
+		"""Call LiteLLM/OpenAI-compatible VLM API with the image."""
 		logger.info(_log_vlm_request(self.config.model))
 
-		# Construct messages with image
+		# Construct messages in OpenAI multimodal format
 		messages = [
 			{
 				"role": "user",
-				"content": QUALITY_ASSESSMENT_PROMPT,
-				"images": [image_base64],
+				"content": [
+					{"type": "text", "text": QUALITY_ASSESSMENT_PROMPT},
+					{
+						"type": "image_url",
+						"image_url": {
+							"url": f"data:{mime_type};base64,{image_base64}",
+						},
+					},
+				],
 			}
 		]
 
 		payload = {
 			"model": self.config.model,
 			"messages": messages,
-			"stream": False,
-			"format": "json",
-			"options": {
-				"temperature": self.config.temperature,
-				"num_predict": self.config.max_tokens,
-			},
+			"response_format": {"type": "json_object"},
+			"temperature": self.config.temperature,
+			"max_tokens": self.config.max_tokens,
 		}
 
-		url = f"{self._base_url}/api/chat"
+		url = f"{self._base_url}/chat/completions"
+		headers = {
+			"Authorization": f"Bearer {self.config.litellm_api_key}",
+			"Content-Type": "application/json",
+		}
 
 		try:
 			async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-				response = await client.post(url, json=payload)
+				response = await client.post(url, json=payload, headers=headers)
 				response.raise_for_status()
 				data = response.json()
 
-			content = data["message"]["content"]
-			# Parse JSON from response
+			content = data["choices"][0]["message"]["content"]
+			# Parse JSON from response (strip markdown fences if present)
 			if content.startswith("```"):
 				lines = content.split("\n")
 				content = "\n".join(lines[1:-1])
@@ -215,16 +224,16 @@ class VLMQualityAssessor:
 		}
 
 	async def health_check(self) -> bool:
-		"""Check if VLM service is available."""
+		"""Check if LiteLLM service is available and model is accessible."""
 		try:
+			headers = {"Authorization": f"Bearer {self.config.litellm_api_key}"}
 			async with httpx.AsyncClient(timeout=5.0) as client:
-				response = await client.get(f"{self._base_url}/api/tags")
+				response = await client.get(f"{self._base_url}/models", headers=headers)
 				if response.status_code != 200:
 					return False
 				data = response.json()
-				models = [m["name"] for m in data.get("models", [])]
-				# Check if our model is available
-				return any(self.config.model in m for m in models)
+				models = [m["id"] for m in data.get("data", [])]
+				return any(self.config.model.lower() in m.lower() for m in models)
 		except Exception as e:
 			logger.error(f"VLM health check failed: {e}")
 			return False

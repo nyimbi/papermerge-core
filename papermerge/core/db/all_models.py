@@ -20,6 +20,7 @@ from papermerge.core.features.document_types.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.document.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.emails.models import *  # noqa: F401, F403
 from papermerge.core.features.encryption.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.exceptions.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.form_recognition.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.groups.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.iam.db.orm import *  # noqa: F401, F403
