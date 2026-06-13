@@ -119,6 +119,49 @@ async def get_template(
 	)
 
 
+@router.patch("/templates/{template_id}")
+async def update_template(
+	template_id: UUID,
+	updates: schema.TemplateUpdate,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.TemplateInfo:
+	"""Update a form template's name, category, or description."""
+	template = await db_session.get(FormTemplate, template_id)
+	if not template:
+		raise HTTPException(status_code=404, detail="Template not found")
+	if template.tenant_id != user.tenant_id:
+		raise HTTPException(status_code=403, detail="Access denied")
+
+	if updates.name is not None:
+		template.name = updates.name
+	if updates.category is not None:
+		template.category = updates.category
+	if updates.description is not None:
+		template.description = updates.description
+
+	await db_session.commit()
+	await db_session.refresh(template)
+	return schema.TemplateInfo.from_orm_template(template)
+
+
+@router.delete("/templates/{template_id}", status_code=204)
+async def delete_template(
+	template_id: UUID,
+	user: require_scopes(scopes.NODE_DELETE),
+	db_session: AsyncSession = Depends(get_db),
+) -> None:
+	"""Delete a form template and all its fields."""
+	template = await db_session.get(FormTemplate, template_id)
+	if not template:
+		raise HTTPException(status_code=404, detail="Template not found")
+	if template.tenant_id != user.tenant_id:
+		raise HTTPException(status_code=403, detail="Access denied")
+
+	await db_session.delete(template)
+	await db_session.commit()
+
+
 @router.post("/extract")
 async def extract_form_data(
 	request: schema.ExtractionRequest,

@@ -29,6 +29,14 @@ class TemplateCreate(BaseModel):
 	page_count: int = 1
 
 
+class TemplateUpdate(BaseModel):
+	"""Schema for updating a form template."""
+	name: str | None = None
+	category: str | None = None
+	description: str | None = None
+	is_active: bool | None = None  # accepted but no-op (no ORM column)
+
+
 class TemplateInfo(BaseModel):
 	"""Basic template information.
 
