@@ -297,9 +297,6 @@ async def workflow_notifications_handler(
 		# Send current pending approvals immediately on connect
 		last_check = await push_pending_approvals(since=None)
 
-		# Send a connected confirmation
-		await websocket.send_text('{"event_type":"connected","message":"WebSocket connected"}')
-
 		while True:
 			# Poll for new approvals every 5s while handling client messages
 			try:
