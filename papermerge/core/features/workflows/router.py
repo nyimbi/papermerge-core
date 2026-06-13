@@ -740,3 +740,69 @@ async def instantiate_template(
 		return schema.WorkflowInstanceInfo.model_validate(instance)
 	except ValueError as e:
 		raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Escalation chains
+# ---------------------------------------------------------------------------
+
+@router.get("/escalation-chains")
+async def list_escalation_chains(
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> list[dict]:
+	"""List escalation chains for the current tenant."""
+	from sqlalchemy import select as _sel
+	from .db.orm import WorkflowEscalationChain, EscalationLevel
+
+	chains = (await db_session.execute(
+		_sel(WorkflowEscalationChain)
+		.where(WorkflowEscalationChain.tenant_id == user.tenant_id)
+		.order_by(WorkflowEscalationChain.name)
+	)).scalars().all()
+
+	return [
+		{
+			"id": str(c.id),
+			"name": c.name,
+		}
+		for c in chains
+	]
+
+
+@router.post("/escalation-chains", status_code=201)
+async def create_escalation_chain(
+	body: dict,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Create a new escalation chain."""
+	import uuid as _uuid
+	from datetime import datetime
+	from .db.orm import WorkflowEscalationChain, EscalationLevel
+
+	name = (body.get("name") or "").strip()
+	if not name:
+		raise HTTPException(status_code=422, detail="name is required")
+
+	chain = WorkflowEscalationChain(
+		id=_uuid.uuid4(),
+		tenant_id=user.tenant_id,
+		name=name,
+	)
+	db_session.add(chain)
+	await db_session.flush()
+
+	for i, level_data in enumerate(body.get("levels", [])):
+		db_session.add(EscalationLevel(
+			id=_uuid.uuid4(),
+			chain_id=chain.id,
+			level_order=i,
+			target_type=level_data.get("target_type", "user"),
+			target_id=_uuid.UUID(str(level_data["target_id"])) if level_data.get("target_id") else None,
+			wait_hours=int(level_data.get("wait_hours", 24)),
+			notify_on_escalation=bool(level_data.get("notify_on_escalation", True)),
+		))
+
+	await db_session.commit()
+	return {"id": str(chain.id), "name": chain.name}

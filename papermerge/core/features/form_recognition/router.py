@@ -289,3 +289,112 @@ async def get_extraction_queue(
 		"page": page,
 		"pageSize": page_size,
 	}
+
+
+# ---------------------------------------------------------------------------
+# POST /forms/extractions — frontend alias (mirrors POST /forms/extract)
+# ---------------------------------------------------------------------------
+
+@router.post("/extractions", status_code=201)
+async def create_extraction(
+	request: schema.ExtractionRequest,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Create a form extraction job (frontend-facing alias for POST /extract)."""
+	from datetime import datetime
+	from papermerge.core.tasks import send_task
+
+	existing_stmt = (
+		select(FormExtraction)
+		.where(
+			FormExtraction.document_id == request.document_id,
+			FormExtraction.status.in_(["pending", "processing"]),
+		)
+	)
+	existing = (await db_session.execute(existing_stmt)).scalar()
+	if existing:
+		return {
+			"id": str(existing.id),
+			"documentId": str(existing.document_id),
+			"templateId": str(existing.template_id) if existing.template_id else None,
+			"status": existing.status,
+			"confidence": existing.confidence_score or 0.0,
+			"createdAt": existing.created_at.isoformat() if existing.created_at else None,
+		}
+
+	extraction = FormExtraction(
+		document_id=request.document_id,
+		template_id=request.template_id,
+		status=ExtractionStatus.PENDING.value,
+		created_at=datetime.utcnow(),
+	)
+	db_session.add(extraction)
+	await db_session.commit()
+
+	send_task(
+		"darchiva.form.process",
+		kwargs={
+			"document_id": str(request.document_id),
+			"template_id": str(request.template_id) if request.template_id else None,
+			"tenant_id": str(user.tenant_id),
+		},
+	)
+
+	return {
+		"id": str(extraction.id),
+		"documentId": str(extraction.document_id),
+		"templateId": str(extraction.template_id) if extraction.template_id else None,
+		"status": extraction.status,
+		"confidence": 0.0,
+		"createdAt": extraction.created_at.isoformat() if extraction.created_at else None,
+	}
+
+
+@router.post("/extractions/{extraction_id}/confirm")
+async def confirm_extraction(
+	extraction_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Mark an extraction as confirmed/completed by reviewer."""
+	from datetime import datetime
+
+	extraction = await db_session.get(FormExtraction, extraction_id)
+	if not extraction:
+		raise HTTPException(status_code=404, detail="Extraction not found")
+
+	extraction.status = ExtractionStatus.COMPLETED.value
+	extraction.reviewed_at = datetime.utcnow()
+	extraction.reviewed_by = user.id
+	await db_session.commit()
+	return {"id": str(extraction.id), "status": extraction.status}
+
+
+@router.post("/extractions/{extraction_id}/re-extract")
+async def re_extract(
+	extraction_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Reset an extraction to pending and re-queue it."""
+	from papermerge.core.tasks import send_task
+
+	extraction = await db_session.get(FormExtraction, extraction_id)
+	if not extraction:
+		raise HTTPException(status_code=404, detail="Extraction not found")
+
+	extraction.status = ExtractionStatus.PENDING.value
+	extraction.confidence_score = None
+	extraction.extracted_at = None
+	await db_session.commit()
+
+	send_task(
+		"darchiva.form.process",
+		kwargs={
+			"document_id": str(extraction.document_id),
+			"template_id": str(extraction.template_id) if extraction.template_id else None,
+			"tenant_id": str(user.tenant_id),
+		},
+	)
+	return {"id": str(extraction.id), "status": extraction.status}
