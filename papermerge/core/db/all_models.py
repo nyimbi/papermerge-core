@@ -18,6 +18,7 @@ from papermerge.core.features.custom_fields.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.departments.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.document_types.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.document.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.emails.models import *  # noqa: F401, F403
 from papermerge.core.features.encryption.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.form_recognition.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.groups.db.orm import *  # noqa: F401, F403
@@ -39,6 +40,7 @@ from papermerge.core.features.search.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.scanners.models import *  # noqa: F401, F403
 from papermerge.core.features.scanning_projects.models import *  # noqa: F401, F403
 from papermerge.core.features.segmentation.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.serial_numbers.models import *  # noqa: F401, F403
 from papermerge.core.features.settings.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.shared_nodes.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.special_folders.db.orm import *  # noqa: F401, F403
