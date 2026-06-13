@@ -1,9 +1,10 @@
 # (c) Copyright Datacraft, 2026
 """ORM models for Scanning Operations (Safety, Custody)."""
+import enum
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Enum, Text
+from sqlalchemy import String, Integer, Boolean, DateTime, Float, ForeignKey, Enum, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,7 +53,7 @@ class SafetyCheckModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-class CustodyEventType(str, Enum):
+class CustodyEventType(str, enum.Enum):
     CHECK_OUT = "check_out"      # Warehouse -> Operator
     TRANSFER = "transfer"        # Operator -> Operator
     CHECK_IN = "check_in"        # Operator -> Warehouse
