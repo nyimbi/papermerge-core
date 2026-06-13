@@ -243,21 +243,72 @@ async def workflow_notifications_handler(
 	"""
 	WebSocket handler for workflow notifications.
 
-	Mount this in your FastAPI app:
-		@app.websocket("/ws/workflows/notifications")
-		async def ws_notifications(websocket: WebSocket, ...):
-			await workflow_notifications_handler(websocket, user.id, user.tenant_id)
+	On connect: immediately sends all pending approval requests for the user.
+	Polls every 5 seconds: pushes any newly assigned approvals since last check.
+	Handles client ping→pong keepalive.
 	"""
+	from papermerge.core.db.engine import get_async_session_maker
+	from .db.orm import WorkflowApprovalRequest
+	from sqlalchemy import select
+
 	await manager.connect(websocket, user_id, tenant_id)
+	AsyncSessionLocal = get_async_session_maker()
+	last_check = datetime.utcnow()
+
+	async def push_pending_approvals(since: datetime | None = None) -> datetime:
+		"""Query pending approval requests and push new ones to the client."""
+		now = datetime.utcnow()
+		async with AsyncSessionLocal() as db:
+			stmt = (
+				select(WorkflowApprovalRequest)
+				.where(
+					WorkflowApprovalRequest.assignee_id == user_id,
+					WorkflowApprovalRequest.status == "pending",
+				)
+				.order_by(WorkflowApprovalRequest.created_at.desc())
+			)
+			if since is not None:
+				stmt = stmt.where(WorkflowApprovalRequest.created_at > since)
+			result = await db.execute(stmt)
+			approvals = result.scalars().all()
+
+		for appr in approvals:
+			notification = WorkflowNotification(
+				event_type="approval_created",
+				title="Pending Approval Request",
+				message=f"You have a pending approval: {appr.title}",
+				severity="info",
+				data={
+					"approval_request_id": str(appr.id),
+					"title": appr.title,
+					"description": appr.description,
+					"deadline_at": appr.deadline_at.isoformat() if appr.deadline_at else None,
+					"status": appr.status,
+				},
+				timestamp=now,
+			)
+			try:
+				await websocket.send_text(notification.model_dump_json())
+			except Exception:
+				break
+		return now
 
 	try:
-		while True:
-			# Keep connection alive, handle any client messages
-			data = await websocket.receive_text()
+		# Send current pending approvals immediately on connect
+		last_check = await push_pending_approvals(since=None)
 
-			# Client can send ping/pong or acknowledgments
-			if data == "ping":
-				await websocket.send_text("pong")
+		# Send a connected confirmation
+		await websocket.send_text('{"event_type":"connected","message":"WebSocket connected"}')
+
+		while True:
+			# Poll for new approvals every 5s while handling client messages
+			try:
+				data = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+				if data == "ping":
+					await websocket.send_text("pong")
+			except asyncio.TimeoutError:
+				# Poll interval elapsed — check for new approvals
+				last_check = await push_pending_approvals(since=last_check)
 
 	except WebSocketDisconnect:
 		manager.disconnect(websocket, user_id, tenant_id)

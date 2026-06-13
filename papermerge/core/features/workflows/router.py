@@ -424,6 +424,17 @@ async def delegate_approval_request(
 
 	await db_session.commit()
 
+	# Push real-time notification to the new assignee
+	from .websocket import notify_delegation
+	import asyncio
+	asyncio.create_task(notify_delegation(
+		user_id=delegation.delegate_to_id,
+		approval_request_id=request_id,
+		title=approval_request.title,
+		delegated_from_name=user.username,
+		reason=delegation.reason,
+	))
+
 	return {"status": "delegated", "delegated_to": str(delegation.delegate_to_id)}
 
 
