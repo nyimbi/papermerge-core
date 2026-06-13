@@ -61,6 +61,29 @@ async def get_current_user_info(
     return user
 
 
+@router.patch("/me")
+async def update_current_user(
+    updates: dict,
+    user: Annotated[schema.User, Depends(get_current_user)],
+    db_session: AsyncSession = Depends(get_db),
+) -> schema.User:
+    """Update current user's own profile (email, username)."""
+    from papermerge.core.features.users.db.orm import User as UserORM
+    db_user = await db_session.get(UserORM, user.id)
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if "email" in updates and updates["email"]:
+        db_user.email = updates["email"]
+    if "username" in updates and updates["username"]:
+        db_user.username = updates["username"]
+    try:
+        await db_session.commit()
+        await db_session.refresh(db_user)
+    except IntegrityError:
+        await db_session.rollback()
+        raise HTTPException(status_code=400, detail="Username or email already taken")
+    return schema.User.model_validate(db_user)
+
 
 @router.get("/group-users")
 async def get_user_group_users(
@@ -550,3 +573,27 @@ async def admin_disable_mfa(
 		mfa.backup_codes = None
 		await db_session.commit()
 	return {"disabled": True}
+
+
+@router.post("/{user_id}/reset-password", status_code=200)
+async def admin_reset_password(
+	user_id: UUID,
+	body: dict,
+	cur_user: require_scopes(scopes.USER_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Admin: set a new password for a user."""
+	from passlib.hash import pbkdf2_sha256
+	from papermerge.core.features.users.db.orm import User as UserORM
+
+	new_password = body.get("password") or body.get("new_password")
+	if not new_password or len(new_password) < 8:
+		raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+	target = await db_session.get(UserORM, user_id)
+	if not target:
+		raise HTTPException(status_code=404, detail="User not found")
+
+	target.password = pbkdf2_sha256.hash(new_password)
+	await db_session.commit()
+	return {"reset": True}

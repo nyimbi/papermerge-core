@@ -258,3 +258,18 @@ async def get_portfolio_stats(
 		"active": active,
 		"archived": total - active,
 	}
+
+
+@router.post("/{portfolio_id}/archive", status_code=200)
+async def archive_portfolio(
+	portfolio_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Archive a portfolio."""
+	portfolio = await db_session.get(Portfolio, portfolio_id)
+	if not portfolio:
+		raise HTTPException(status_code=404, detail="Portfolio not found")
+	portfolio.status = "archived"
+	await db_session.commit()
+	return {"id": str(portfolio.id), "status": portfolio.status}

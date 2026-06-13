@@ -88,6 +88,58 @@ async def get_ingestion_source(
 	return schema.SourceDetail.model_validate(source)
 
 
+@router.patch("/sources/{source_id}")
+async def update_ingestion_source(
+	source_id: UUID,
+	updates: dict,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.SourceInfo:
+	"""Update ingestion source name/config."""
+	source = await db_session.get(IngestionSource, source_id)
+	if not source:
+		raise HTTPException(status_code=404, detail="Source not found")
+	if "name" in updates:
+		source.name = updates["name"]
+	if "config" in updates:
+		source.config = {**source.config, **updates["config"]}
+	if "mode" in updates:
+		source.mode = updates["mode"]
+	await db_session.commit()
+	await db_session.refresh(source)
+	return schema.SourceInfo.model_validate(source)
+
+
+@router.patch("/sources/{source_id}/toggle")
+async def toggle_ingestion_source(
+	source_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Toggle an ingestion source active/inactive."""
+	source = await db_session.get(IngestionSource, source_id)
+	if not source:
+		raise HTTPException(status_code=404, detail="Source not found")
+	source.is_active = not source.is_active
+	await db_session.commit()
+	return {"is_active": source.is_active}
+
+
+@router.post("/sources/{source_id}/trigger")
+async def trigger_ingestion_source(
+	source_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Trigger an immediate run of an ingestion source."""
+	source = await db_session.get(IngestionSource, source_id)
+	if not source:
+		raise HTTPException(status_code=404, detail="Source not found")
+	from papermerge.core.tasks import send_task
+	send_task("darchiva.ingestion.start_watcher", kwargs={"source_id": str(source_id)})
+	return {"success": True, "message": "Source triggered"}
+
+
 @router.post("/sources/{source_id}/start")
 async def start_ingestion_source(
 	source_id: UUID,

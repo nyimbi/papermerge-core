@@ -207,3 +207,54 @@ async def list_case_access(
 	return schema.CaseAccessListResponse(
 		items=[schema.CaseAccessInfo.model_validate(a) for a in access_list]
 	)
+
+
+@router.delete("/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_case(
+	case_id: UUID,
+	user: require_scopes(scopes.NODE_DELETE),
+	db_session: AsyncSession = Depends(get_db),
+) -> None:
+	"""Delete a case and all its documents/access records (cascade)."""
+	case = await db_session.get(Case, case_id)
+	if not case:
+		raise HTTPException(status_code=404, detail="Case not found")
+	await db_session.delete(case)
+	await db_session.commit()
+
+
+@router.post("/{case_id}/close", status_code=status.HTTP_200_OK)
+async def close_case(
+	case_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.CaseInfo:
+	"""Close a case."""
+	case = await db_session.get(Case, case_id)
+	if not case:
+		raise HTTPException(status_code=404, detail="Case not found")
+	case.status = "closed"
+	case.updated_by = user.id
+	await db_session.commit()
+	await db_session.refresh(case)
+	return schema.CaseInfo.model_validate(case)
+
+
+@router.get("/{case_id}/bundles")
+async def list_case_bundles(
+	case_id: UUID,
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""List bundles associated with a case."""
+	from papermerge.core.features.bundles.db.orm import Bundle
+	stmt = select(Bundle).where(Bundle.case_id == case_id)
+	result = await db_session.execute(stmt)
+	bundles = result.scalars().all()
+	return {
+		"items": [
+			{"id": str(b.id), "name": b.name, "created_at": b.created_at.isoformat() if b.created_at else None}
+			for b in bundles
+		],
+		"total": len(bundles),
+	}

@@ -748,3 +748,76 @@ async def provision_tenant(
 		admin_user_id=admin_user.id if admin_user else None,
 		setup_link=setup_link,
 	)
+
+
+@router.get("/{tenant_id}/users")
+async def list_tenant_users(
+	tenant_id: UUID,
+	user: require_scopes(scopes.USER_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+	page: int = 1,
+	page_size: int = 50,
+) -> dict:
+	"""List users belonging to a tenant."""
+	from papermerge.core.features.users.db.orm import User as UserORM
+	offset = (page - 1) * page_size
+	stmt = (
+		select(UserORM)
+		.where(UserORM.tenant_id == tenant_id)
+		.offset(offset)
+		.limit(page_size)
+	)
+	result = await db_session.execute(stmt)
+	users = result.scalars().all()
+	total_stmt = select(func.count()).select_from(UserORM).where(UserORM.tenant_id == tenant_id)
+	total = await db_session.scalar(total_stmt)
+	return {
+		"items": [
+			{"id": str(u.id), "username": u.username, "email": u.email, "is_active": u.is_active}
+			for u in users
+		],
+		"total": total,
+		"page": page,
+		"page_size": page_size,
+	}
+
+
+@router.delete("/{tenant_id}/users/{user_id}", status_code=204)
+async def remove_tenant_user(
+	tenant_id: UUID,
+	user_id: UUID,
+	cur_user: require_scopes(scopes.USER_DELETE),
+	db_session: AsyncSession = Depends(get_db),
+) -> None:
+	"""Remove (deactivate) a user from a tenant."""
+	from papermerge.core.features.users.db.orm import User as UserORM
+	target = await db_session.get(UserORM, user_id)
+	if not target or target.tenant_id != tenant_id:
+		raise HTTPException(status_code=404, detail="User not found in tenant")
+	target.is_active = False
+	await db_session.commit()
+
+
+@router.post("/{tenant_id}/users/invite", status_code=201)
+async def invite_tenant_user(
+	tenant_id: UUID,
+	body: dict,
+	cur_user: require_scopes(scopes.USER_CREATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Invite a user to a tenant by email."""
+	import secrets
+	from papermerge.core.features.iam.db.orm import UserInvitation
+	email = body.get("email")
+	if not email:
+		raise HTTPException(status_code=400, detail="email is required")
+	invitation = UserInvitation(
+		email=email,
+		tenant_id=tenant_id,
+		invited_by_id=cur_user.id,
+		role_ids=body.get("role_ids"),
+	)
+	db_session.add(invitation)
+	await db_session.commit()
+	await db_session.refresh(invitation)
+	return {"id": str(invitation.id), "email": invitation.email, "token": invitation.token, "status": invitation.status}
