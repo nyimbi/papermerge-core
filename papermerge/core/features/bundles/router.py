@@ -113,6 +113,29 @@ async def get_bundle(
 	)
 
 
+@router.get("/{bundle_id}/documents")
+async def list_bundle_documents(
+	bundle_id: UUID,
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""List documents in a bundle ordered by position."""
+	bundle = await db_session.get(Bundle, bundle_id)
+	if not bundle:
+		raise HTTPException(status_code=404, detail="Bundle not found")
+
+	stmt = select(BundleDocument).where(
+		BundleDocument.bundle_id == bundle_id
+	).order_by(BundleDocument.position)
+	result = await db_session.execute(stmt)
+	documents = result.scalars().all()
+
+	return {
+		"items": [schema.BundleDocumentInfo.model_validate(d) for d in documents],
+		"total": len(documents),
+	}
+
+
 @router.post("/{bundle_id}/documents")
 async def add_document_to_bundle(
 	bundle_id: UUID,
