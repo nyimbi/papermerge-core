@@ -276,6 +276,53 @@ class GlobalScannerSettingsResponse(BaseModel):
 	default_destination_folder_id: str | None = None
 
 
+# === Scan Agent Config ===
+
+class HotkeyConfig(BaseModel):
+	model_config = ConfigDict(extra='forbid')
+
+	scan_next_page: str = Field(default='F9', description='Trigger next flatbed page scan')
+	accept_page: str = Field(default='F10', description='Accept current preview page')
+	reject_page: str = Field(default='F11', description='Reject and discard current page')
+	end_batch: str = Field(default='F12', description='End batch and trigger upload')
+	capture_camera: str = Field(default='Space', description='Fire camera shutter / foot-pedal')
+
+
+class ScanAgentPreferences(BaseModel):
+	model_config = ConfigDict(extra='forbid')
+
+	auto_upload: bool = True
+	show_preview: bool = True
+	preview_timeout_ms: int = Field(default=5000, ge=0)
+	darchiva_url: str | None = None
+	log_level: str = Field(default='info', pattern='^(debug|info|warn|error)$')
+
+
+class ScanAgentConfig(BaseModel):
+	model_config = ConfigDict(extra='forbid')
+
+	hotkeys: HotkeyConfig = Field(default_factory=HotkeyConfig)
+	preferences: ScanAgentPreferences = Field(default_factory=ScanAgentPreferences)
+
+
+class ScanAgentConfigUpdate(BaseModel):
+	"""Partial update — only supplied fields are merged."""
+	model_config = ConfigDict(extra='forbid')
+
+	hotkeys: HotkeyConfig | None = None
+	preferences: ScanAgentPreferences | None = None
+
+
+class ScanAgentStatusResponse(BaseModel):
+	model_config = ConfigDict(extra='forbid')
+
+	reachable: bool
+	agent_url: str
+	version: str | None = None
+	connected_to_darchiva: bool | None = None
+	error: str | None = None
+
+
 # === Analytics ===
 
 class ScannerUsageStats(BaseModel):
