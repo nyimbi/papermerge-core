@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.auth import get_current_user
@@ -14,7 +15,9 @@ from papermerge.core.features.users.schema import User
 
 from . import service
 from .ai_advisor import get_project_advisor
+from .models import ScanningProjectModel
 from .views import (
+	QualityConfig,
 	ScanningProject,
 	ScanningProjectCreate,
 	ScanningProjectUpdate,
@@ -2083,6 +2086,45 @@ async def stitch_images_from_uploads(
 			"X-Stitch-Images-Used": str(result.images_used),
 		},
 	)
+
+
+# ── Quality Config ────────────────────────────────────────────────────────────
+
+@router.get("/{project_id}/quality-config", response_model=QualityConfig)
+async def get_quality_config(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> QualityConfig:
+	"""Return the current quality configuration for a scanning project."""
+	row = await db.execute(
+		select(ScanningProjectModel).where(ScanningProjectModel.id == project_id)
+	)
+	project = row.scalar_one_or_none()
+	if not project:
+		raise HTTPException(status_code=404, detail="Project not found")
+	if project.quality_config:
+		return QualityConfig.model_validate(project.quality_config)
+	return QualityConfig()
+
+
+@router.put("/{project_id}/quality-config", response_model=QualityConfig)
+async def update_quality_config(
+	project_id: str,
+	config: QualityConfig,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> QualityConfig:
+	"""Replace the quality configuration for a scanning project."""
+	row = await db.execute(
+		select(ScanningProjectModel).where(ScanningProjectModel.id == project_id)
+	)
+	project = row.scalar_one_or_none()
+	if not project:
+		raise HTTPException(status_code=404, detail="Project not found")
+	project.quality_config = config.model_dump()
+	await db.commit()
+	return config
 
 
 # Route ordering fix: static collection paths (/resources, /locations, /shifts,

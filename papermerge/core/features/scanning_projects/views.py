@@ -103,6 +103,37 @@ class IssueType(str, Enum):
 
 
 # =====================================================
+# Quality Configuration
+# =====================================================
+
+class QualityConfig(BaseModel):
+	model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+	min_score: float = Field(default=0.75, ge=0.0, le=1.0, description="Pages below this score go to rescan queue")
+	min_dpi: int = Field(default=300, ge=72, le=1200)
+	auto_reject_defects: list[str] = Field(
+		default_factory=lambda: ["document_cutoff", "glare"],
+		description="Defects that always trigger rescan (non-blocking)",
+	)
+	flag_for_review_defects: list[str] = Field(
+		default_factory=lambda: ["text_too_small", "shadow"],
+		description="Defects routed to supervisor review queue",
+	)
+	enable_vlm_deep_analysis: bool = Field(
+		default=False,
+		description="Run VLM (qwen2.5-VL) as a second pass on borderline scores",
+	)
+	vlm_threshold: float = Field(
+		default=0.6,
+		ge=0.0,
+		le=1.0,
+		description="Scores below this value trigger VLM deep analysis when enabled",
+	)
+	enable_dedup: bool = Field(default=True, description="Check SHA-256 + pHash for duplicates at ingestion")
+	dedup_action: str = Field(default="block", pattern="^(block|flag|allow)$")
+
+
+# =====================================================
 # Scanning Project Models
 # =====================================================
 
@@ -127,6 +158,7 @@ class ScanningProjectBase(BaseModel):
 	file_format: str | None = "pdf"
 	ocr_enabled: bool = True
 	quality_sampling_rate: float | None = 0.1
+	quality_config: QualityConfig | None = None
 	destination_folder_id: str | None = None
 	project_metadata: dict | None = None
 	start_date: datetime | None = None
@@ -157,6 +189,7 @@ class ScanningProjectUpdate(BaseModel):
 	file_format: str | None = None
 	ocr_enabled: bool | None = None
 	quality_sampling_rate: float | None = None
+	quality_config: QualityConfig | None = None
 	destination_folder_id: str | None = None
 	project_metadata: dict | None = None
 	start_date: datetime | None = None

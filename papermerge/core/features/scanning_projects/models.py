@@ -47,6 +47,7 @@ class ScanningProjectModel(Base):
 	file_format: Mapped[str | None] = mapped_column(String(20), default="pdf")
 	ocr_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 	quality_sampling_rate: Mapped[float | None] = mapped_column(Float, default=0.1)
+	quality_config: Mapped[dict | None] = mapped_column(JSON)
 	destination_folder_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("nodes.id", ondelete="SET NULL"))
 	project_metadata: Mapped[dict | None] = mapped_column("metadata", JSON)
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -852,4 +853,17 @@ class ProjectCheckpointModel(Base):
 	reviewed_by_id: Mapped[str | None] = mapped_column(String(36))
 	reviewed_by_name: Mapped[str | None] = mapped_column(String(255))
 	reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
+	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class DocumentFingerprintModel(Base):
+	"""SHA-256 + pHash fingerprint for dedup checks at ingestion time."""
+	__tablename__ = "document_fingerprints"
+
+	id: Mapped[str] = mapped_column(String(36), primary_key=True)
+	document_id: Mapped[str] = mapped_column(String(36), ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, index=True)
+	batch_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scanning_batches.id", ondelete="SET NULL"), nullable=True)
+	sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+	phash: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+	tenant_id: Mapped[str] = mapped_column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
