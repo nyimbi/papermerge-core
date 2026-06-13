@@ -4,6 +4,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.engine import get_db
@@ -642,6 +643,45 @@ async def update_rule(
 		actions=[RuleAction(**a) for a in (rule.actions or [])],
 		created_at=rule.created_at,
 	)
+
+
+@router.post("/accounts/{account_id}/sync")
+async def trigger_account_sync(
+	account_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+	"""Trigger an immediate IMAP poll for a specific email account."""
+	from .tasks import poll_email_account
+	task = poll_email_account.delay(account_id)
+	return {"task_id": task.id, "status": "queued", "account_id": account_id}
+
+
+@router.get("/accounts/{account_id}/sync-status")
+async def get_account_sync_status(
+	account_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+	"""Return the last sync time and document count for an email account."""
+	from .models import EmailAccount, EmailImport
+	from sqlalchemy import func as sa_func
+
+	account = await session.get(EmailAccount, account_id)
+	if not account:
+		raise HTTPException(status_code=404, detail="Account not found")
+
+	count_row = await session.execute(
+		select(sa_func.count()).select_from(EmailImport).where(EmailImport.account_id == account_id)
+	)
+	doc_count = count_row.scalar() or 0
+
+	return {
+		"account_id": account_id,
+		"last_sync_at": account.last_sync_at.isoformat() if account.last_sync_at else None,
+		"sync_enabled": account.sync_enabled,
+		"documents_imported": doc_count,
+	}
 
 
 @router.delete("/rules/{rule_id}")

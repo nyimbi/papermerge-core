@@ -2088,6 +2088,57 @@ async def stitch_images_from_uploads(
 	)
 
 
+# ── Project Export ───────────────────────────────────────────────────────────
+
+@router.get("/{project_id}/export.csv")
+async def export_project_csv(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+):
+	"""Download a CSV manifest of all batches and their scan progress."""
+	import csv
+	import io
+	from fastapi.responses import StreamingResponse as _SR
+	from .models import ScanningProjectModel, ScanningBatchModel
+
+	proj_row = await db.execute(select(ScanningProjectModel).where(ScanningProjectModel.id == project_id))
+	project = proj_row.scalar_one_or_none()
+	if not project:
+		raise HTTPException(status_code=404, detail="Project not found")
+
+	batches_row = await db.execute(
+		select(ScanningBatchModel)
+		.where(ScanningBatchModel.project_id == project_id)
+		.order_by(ScanningBatchModel.batch_number)
+	)
+	batches = batches_row.scalars().all()
+
+	buf = io.StringIO()
+	writer = csv.writer(buf)
+	writer.writerow([
+		"batch_number", "status", "physical_location",
+		"estimated_pages", "actual_pages", "scanned_pages",
+		"assigned_operator", "assigned_scanner", "started_at", "completed_at",
+	])
+	for b in batches:
+		writer.writerow([
+			b.batch_number, b.status, b.physical_location,
+			b.estimated_pages, b.actual_pages, b.scanned_pages,
+			b.assigned_operator_name or "", b.assigned_scanner_name or "",
+			b.started_at.isoformat() if b.started_at else "",
+			b.completed_at.isoformat() if b.completed_at else "",
+		])
+
+	buf.seek(0)
+	filename = f"{project.code}-batches.csv"
+	return _SR(
+		iter([buf.getvalue()]),
+		media_type="text/csv",
+		headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+	)
+
+
 # ── Batch Manipulation (path-level, no project_id) ───────────────────────────
 # VirtualRebundler calls /scanning-projects/batches/{id}/...
 
