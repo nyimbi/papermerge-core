@@ -182,8 +182,8 @@ async def revoke_token(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Token not found")
 
     token_name = api_token.name
-    deleted = await dbapi.delete_token(db_session, token_id, user.id)
-    if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Token not found")
+    # Ignore False return — a concurrent DELETE already revoked the token,
+    # which is a successful outcome from the caller's perspective.
+    await dbapi.delete_token(db_session, token_id, user.id)
 
     return schema.APITokenDeleted(id=token_id, name=token_name)

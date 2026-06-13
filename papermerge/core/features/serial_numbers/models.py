@@ -33,7 +33,7 @@ class SerialNumberSequence(Base):
 	"""
 	__tablename__ = "serial_number_sequences"
 
-	id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid7str)
+	id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid7str)
 	name: Mapped[str] = mapped_column(String(100), nullable=False)
 	description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -60,13 +60,13 @@ class SerialNumberSequence(Base):
 	# Scope - which document types use this sequence
 	# NULL = global default, specific ID = per document type
 	document_type_id: Mapped[str | None] = mapped_column(
-		String(32),
+		String(36),
 		ForeignKey("document_types.id", ondelete="CASCADE"),
 		nullable=True
 	)
 
 	# Per-tenant isolation
-	tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+	tenant_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 	# Settings
 	is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -76,7 +76,7 @@ class SerialNumberSequence(Base):
 	# Audit
 	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 	updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-	created_by_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+	created_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 	__table_args__ = (
 		# Only one sequence per document type per tenant
@@ -159,11 +159,11 @@ class DocumentSerialNumber(Base):
 	"""
 	__tablename__ = "document_serial_numbers"
 
-	id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid7str)
+	id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid7str)
 
 	# The document
 	document_id: Mapped[str] = mapped_column(
-		String(32),
+		String(36),
 		ForeignKey("nodes.id", ondelete="CASCADE"),
 		nullable=False,
 		unique=True
@@ -174,7 +174,7 @@ class DocumentSerialNumber(Base):
 
 	# Which sequence generated this
 	sequence_id: Mapped[str | None] = mapped_column(
-		String(32),
+		String(36),
 		ForeignKey("serial_number_sequences.id", ondelete="SET NULL"),
 		nullable=True
 	)
@@ -186,11 +186,11 @@ class DocumentSerialNumber(Base):
 	is_manual: Mapped[bool] = mapped_column(Boolean, default=False)
 
 	# Tenant
-	tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+	tenant_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 	# Audit
 	assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-	assigned_by_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+	assigned_by_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 	__table_args__ = (
 		# Serial numbers must be unique within a tenant

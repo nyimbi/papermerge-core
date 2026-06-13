@@ -430,15 +430,31 @@ async def move_single_node(
             raise exc.HTTP403Forbidden()
 
         async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
-            await nodes_dbapi.move_nodes(
+            affected_row_count = await nodes_dbapi.move_nodes(
                 db_session,
                 source_ids=[node_id],
                 target_id=body.target_id,
             )
     except exc.HTTP403Forbidden:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    except NoResultFound:
-        raise HTTPException(status_code=400, detail="Node not found")
+    except NoResultFound as e:
+        logger.error(e, exc_info=True)
+        raise HTTPException(
+            status_code=404,
+            detail=schema.Error(messages=["Node not found"]).model_dump(),
+        )
+    except (IntegrityError, EntityNotFound) as e:
+        logger.debug(e, exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail=schema.Error(messages=["Move failed — check target exists and name is unique"]).model_dump(),
+        )
+
+    if affected_row_count == 0:
+        raise HTTPException(
+            status_code=419,
+            detail=schema.Error(messages=["Node not found or already at target"]).model_dump(),
+        )
 
     return [node_id]
 

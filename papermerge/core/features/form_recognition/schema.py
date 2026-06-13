@@ -34,7 +34,6 @@ class TemplateUpdate(BaseModel):
 	name: str | None = None
 	category: str | None = None
 	description: str | None = None
-	is_active: bool | None = None  # accepted but no-op (no ORM column)
 
 
 class TemplateInfo(BaseModel):

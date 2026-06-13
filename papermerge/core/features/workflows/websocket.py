@@ -257,6 +257,10 @@ async def workflow_notifications_handler(
 
 	async def push_pending_approvals(since: datetime | None = None) -> datetime:
 		"""Query pending approval requests and push new ones to the client."""
+		# Capture now BEFORE the query so any approval created during query
+		# execution has created_at > now and is caught on the next poll cycle.
+		# Capturing after the query would permanently miss approvals created
+		# in that window (their created_at would be < the post-query timestamp).
 		now = datetime.utcnow()
 		async with AsyncSessionLocal() as db:
 			stmt = (

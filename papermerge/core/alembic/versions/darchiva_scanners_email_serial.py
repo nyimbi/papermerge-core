@@ -99,7 +99,7 @@ def upgrade() -> None:
     # ── Serial Numbers ───────────────────────────────────────────────────────
     op.create_table(
         "serial_number_sequences",
-        sa.Column("id", sa.String(32), primary_key=True),
+        sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("name", sa.String(100), nullable=False),
         sa.Column("description", sa.Text, nullable=True),
         sa.Column("pattern", sa.String(200), nullable=False, server_default="{PREFIX}-{YEAR}{MONTH}-{SEQ:5}"),
@@ -107,14 +107,14 @@ def upgrade() -> None:
         sa.Column("current_value", sa.Integer, nullable=False, server_default="0"),
         sa.Column("reset_frequency", sa.String(20), nullable=False, server_default="yearly"),
         sa.Column("last_reset_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("document_type_id", sa.String(32), sa.ForeignKey("document_types.id", ondelete="CASCADE"), nullable=True),
-        sa.Column("tenant_id", sa.String(32), nullable=True),
+        sa.Column("document_type_id", sa.String(36), sa.ForeignKey("document_types.id", ondelete="CASCADE"), nullable=True),
+        sa.Column("tenant_id", sa.String(36), sa.ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("auto_assign", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("allow_manual", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_by_id", sa.String(32), nullable=True),
+        sa.Column("created_by_id", sa.String(36), nullable=True),
         sa.UniqueConstraint("document_type_id", "tenant_id", name="uq_sequence_doctype_tenant"),
     )
     op.create_index("ix_serial_sequence_doctype", "serial_number_sequences", ["document_type_id"])
@@ -122,15 +122,15 @@ def upgrade() -> None:
 
     op.create_table(
         "document_serial_numbers",
-        sa.Column("id", sa.String(32), primary_key=True),
-        sa.Column("document_id", sa.String(32), sa.ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, unique=True),
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("document_id", sa.String(36), sa.ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False, unique=True),
         sa.Column("serial_number", sa.String(100), nullable=False),
-        sa.Column("sequence_id", sa.String(32), sa.ForeignKey("serial_number_sequences.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("sequence_id", sa.String(36), sa.ForeignKey("serial_number_sequences.id", ondelete="SET NULL"), nullable=True),
         sa.Column("sequence_value", sa.Integer, nullable=True),
         sa.Column("is_manual", sa.Boolean, nullable=False, server_default="false"),
-        sa.Column("tenant_id", sa.String(32), nullable=True),
+        sa.Column("tenant_id", sa.String(36), sa.ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True),
         sa.Column("assigned_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("assigned_by_id", sa.String(32), nullable=True),
+        sa.Column("assigned_by_id", sa.String(36), nullable=True),
         sa.UniqueConstraint("serial_number", "tenant_id", name="uq_serial_number_tenant"),
     )
     op.create_index("ix_doc_serial_number", "document_serial_numbers", ["serial_number"])
@@ -161,14 +161,14 @@ def upgrade() -> None:
         sa.Column("last_sync_at", sa.DateTime, nullable=True),
         sa.Column("last_sync_uid", sa.String(100), nullable=True),
         sa.Column("sync_interval_minutes", sa.Integer, nullable=False, server_default="15"),
-        sa.Column("target_folder_id", sa.String(36), sa.ForeignKey("nodes.id"), nullable=True),
+        sa.Column("target_folder_id", sa.String(36), sa.ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True),
         sa.Column("auto_process", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("import_attachments", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("attachment_filter", sa.JSON, nullable=True),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("connection_status", sa.String(20), nullable=False, server_default="unknown"),
         sa.Column("connection_error", sa.Text, nullable=True),
-        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
@@ -182,12 +182,13 @@ def upgrade() -> None:
         sa.Column("first_message_date", sa.DateTime, nullable=True),
         sa.Column("last_message_date", sa.DateTime, nullable=True),
         sa.Column("participants", sa.JSON, nullable=True),
-        sa.Column("folder_id", sa.String(36), sa.ForeignKey("nodes.id"), nullable=True),
-        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("folder_id", sa.String(36), sa.ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
     op.create_index("ix_email_threads_thread_id", "email_threads", ["thread_id"])
+    op.create_index("ix_email_threads_owner", "email_threads", ["owner_id"])
 
     op.create_table(
         "email_imports",
@@ -215,8 +216,8 @@ def upgrade() -> None:
         sa.Column("raw_headers", sa.JSON, nullable=True),
         sa.Column("import_status", sa.String(20), nullable=False, server_default="pending"),
         sa.Column("import_error", sa.Text, nullable=True),
-        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
-        sa.Column("folder_id", sa.String(36), sa.ForeignKey("nodes.id"), nullable=True),
+        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("folder_id", sa.String(36), sa.ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
@@ -250,19 +251,22 @@ def upgrade() -> None:
         sa.Column("priority", sa.Integer, nullable=False, server_default="100"),
         sa.Column("conditions", sa.JSON, nullable=True),
         sa.Column("actions", sa.JSON, nullable=True),
-        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("owner_id", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.now()),
     )
+    op.create_index("ix_email_accounts_owner", "email_accounts", ["owner_id"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_email_accounts_owner", table_name="email_accounts")
     op.drop_table("email_rules")
     op.drop_index("ix_email_attachments_import", table_name="email_attachments")
     op.drop_table("email_attachments")
     op.drop_index("ix_email_imports_status", table_name="email_imports")
     op.drop_index("ix_email_imports_message_id", table_name="email_imports")
     op.drop_table("email_imports")
+    op.drop_index("ix_email_threads_owner", table_name="email_threads")
     op.drop_index("ix_email_threads_thread_id", table_name="email_threads")
     op.drop_table("email_threads")
     op.drop_table("email_accounts")
