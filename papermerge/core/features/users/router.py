@@ -521,6 +521,31 @@ async def export_users(
 	)
 
 
+@router.post("/export")
+async def export_users_post(
+	body: dict,
+	cur_user: require_scopes(scopes.USER_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+):
+	"""Export users as JSON blob (POST variant, accepts user_ids in body)."""
+	import json
+	from fastapi.responses import Response
+	from papermerge.core.features.users.db.orm import User as UserORM
+	from sqlalchemy import select as sa_select
+	user_ids = body.get("user_ids")
+	stmt = sa_select(UserORM)
+	if user_ids:
+		stmt = stmt.where(UserORM.id.in_([str(uid) for uid in user_ids]))
+	result = await db_session.execute(stmt)
+	users = result.scalars().all()
+	data = [{"id": str(u.id), "username": u.username, "email": u.email, "is_active": u.is_active} for u in users]
+	return Response(
+		content=json.dumps(data),
+		media_type="application/json",
+		headers={"Content-Disposition": "attachment; filename=users.json"},
+	)
+
+
 @router.post("/{user_id}/mfa/enable")
 async def admin_enable_mfa(
 	user_id: UUID,
