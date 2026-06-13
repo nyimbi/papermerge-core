@@ -36,6 +36,8 @@ from papermerge.core.features.quality.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.roles.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.routing.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.search.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.scanners.models import *  # noqa: F401, F403
+from papermerge.core.features.scanning_projects.models import *  # noqa: F401, F403
 from papermerge.core.features.segmentation.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.settings.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.shared_nodes.db.orm import *  # noqa: F401, F403
