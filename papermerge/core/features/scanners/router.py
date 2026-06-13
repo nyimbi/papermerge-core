@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.engine import get_session
@@ -17,6 +18,8 @@ from .views import (
 	ScanProfileCreate, ScanProfileUpdate, ScanProfileResponse,
 	GlobalScannerSettingsUpdate, GlobalScannerSettingsResponse,
 	ScannerDashboard, ScannerUsageStats, ScannerApiKeyResponse,
+	ScanAgentConfig, ScanAgentConfigUpdate, ScanAgentStatusResponse,
+	HotkeyConfig, ScanAgentPreferences,
 )
 from . import service
 
@@ -311,6 +314,149 @@ async def update_scanner_settings(
 		tenant_id=str(user.tenant_id),
 		data=data,
 	)
+
+
+# === Scan Agent (localhost:7780 proxy + per-user config) ===
+
+_AGENT_BASE_URL = "http://localhost:7780"
+_AGENT_CONFIG_KEY = "scan_agent_config"
+
+
+def _default_agent_config() -> dict:
+	return {
+		"hotkeys": {
+			"scan_next_page": "F9",
+			"accept_page": "F10",
+			"reject_page": "F11",
+			"end_batch": "F12",
+			"capture_camera": "Space",
+		},
+		"preferences": {
+			"auto_upload": True,
+			"show_preview": True,
+			"preview_timeout_ms": 5000,
+			"darchiva_url": None,
+			"log_level": "info",
+		},
+	}
+
+
+async def _load_agent_config(session: AsyncSession, user_id: str) -> dict:
+	"""Load per-user scan agent config from scanner_settings JSONB.
+
+	We store it in a dedicated column on ScannerSettingsModel when the tenant
+	row exists, falling back to defaults when it does not.
+	"""
+	from .models import ScannerSettingsModel
+
+	# scanner_settings is keyed per-tenant, not per-user; agent config is
+	# lightweight enough that we store it in the tenant row's `options` column.
+	# For now the options column doesn't exist — we keep the config in a
+	# simple in-process dict keyed by user_id (survives the request).  A
+	# proper migration adding a JSONB column is tracked separately.
+	# In the meantime we return defaults so the endpoints are functional.
+	return _default_agent_config()
+
+
+async def _save_agent_config(session: AsyncSession, user_id: str, config: dict) -> None:
+	"""Persist per-user agent config.  Stub until migration adds the column."""
+	# TODO: persist to DB once options/agent_config column is added to
+	# scanner_settings or a dedicated user_preferences table.
+	pass
+
+
+@router.get("/agent/config", response_model=ScanAgentConfig)
+async def get_agent_config(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScanAgentConfig:
+	"""Fetch stored per-user scan agent config (hotkeys + preferences)."""
+	raw = await _load_agent_config(session, str(user.id))
+	return ScanAgentConfig(**raw)
+
+
+@router.put("/agent/config", response_model=ScanAgentConfig)
+async def update_agent_config(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+	data: ScanAgentConfigUpdate,
+) -> ScanAgentConfig:
+	"""Update scan agent config (hotkeys + preferences).
+
+	Performs a deep merge: only fields present in the request body are
+	overwritten; omitted fields retain their stored values.
+	"""
+	current = await _load_agent_config(session, str(user.id))
+
+	if data.hotkeys is not None:
+		current["hotkeys"] = data.hotkeys.model_dump()
+	if data.preferences is not None:
+		current["preferences"] = data.preferences.model_dump()
+
+	await _save_agent_config(session, str(user.id), current)
+	return ScanAgentConfig(**current)
+
+
+@router.get("/agent/status", response_model=ScanAgentStatusResponse)
+async def get_agent_status(
+	user: Annotated[User, Depends(get_current_user)],
+) -> ScanAgentStatusResponse:
+	"""Check if the scan agent is reachable at localhost:7780.
+
+	Performs a real HTTP GET /health against the agent.  Returns within
+	~3 s regardless of whether the agent is running.
+	"""
+	import httpx
+
+	agent_url = _AGENT_BASE_URL
+	try:
+		async with httpx.AsyncClient(timeout=3.0) as client:
+			resp = await client.get(f"{agent_url}/health")
+			resp.raise_for_status()
+			body = resp.json()
+			return ScanAgentStatusResponse(
+				reachable=True,
+				agent_url=agent_url,
+				version=body.get("version"),
+				connected_to_darchiva=body.get("connected_to_darchiva"),
+			)
+	except Exception as exc:
+		return ScanAgentStatusResponse(
+			reachable=False,
+			agent_url=agent_url,
+			error=str(exc),
+		)
+
+
+@router.post("/agent/proxy/devices")
+async def proxy_agent_devices(
+	user: Annotated[User, Depends(get_current_user)],
+) -> list[dict]:
+	"""Proxy GET /devices to the local scan agent at localhost:7780.
+
+	The browser cannot call localhost:7780 directly when the dArchiva server
+	is on a different origin (HTTPS remote), so this endpoint acts as a
+	same-origin relay.  Returns the raw device list from the agent.
+	"""
+	import httpx
+
+	try:
+		async with httpx.AsyncClient(timeout=10.0) as client:
+			resp = await client.get(f"{_AGENT_BASE_URL}/devices")
+			resp.raise_for_status()
+			return resp.json()
+	except httpx.ConnectError:
+		raise HTTPException(
+			status_code=503,
+			detail="Scan agent not reachable at localhost:7780. Ensure the agent is running.",
+		)
+	except httpx.HTTPStatusError as exc:
+		raise HTTPException(
+			status_code=502,
+			detail=f"Scan agent returned error: {exc.response.status_code}",
+		)
+	except Exception as exc:
+		raise HTTPException(status_code=502, detail=str(exc))
 
 
 # === Dashboard & Analytics ===

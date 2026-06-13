@@ -1,9 +1,10 @@
 # (c) Copyright Datacraft, 2026
 """FastAPI router for Scanning Projects feature."""
 from datetime import date
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1885,6 +1886,205 @@ async def generate_barcode_labels(
 		)
 
 
+# =====================================================
+# Image Stitching Endpoints
+# =====================================================
+
+
+class StitchFromPathsRequest(BaseModel):
+	image_paths: list[str]
+	output_format: str = "jpeg"   # "jpeg" | "png" | "tiff"
+	min_overlap: float = 0.15
+
+
+@router.post("/stitch-images")
+async def stitch_images_from_paths(
+	body: StitchFromPathsRequest,
+	user: Annotated[User, Depends(get_current_user)],
+) -> "StreamingResponse":
+	"""Stitch multiple overlapping document images from server-side paths.
+
+	Request body:
+	  - image_paths: list of absolute file paths accessible to the server
+	  - output_format: "jpeg" | "png" | "tiff"  (default: "jpeg")
+	  - min_overlap: fractional expected overlap between adjacent images (default: 0.15)
+
+	Returns a StreamingResponse of the stitched image, or a 422/503 JSON error.
+	"""
+	import io
+	from fastapi.responses import StreamingResponse as _SR
+
+	from .stitching import (
+		StitchStatus,
+		_CV2_AVAILABLE,
+		encode_image,
+		stitch_document_images,
+	)
+
+	if not _CV2_AVAILABLE:
+		from fastapi.responses import JSONResponse
+		return JSONResponse(
+			status_code=503,
+			content={"detail": "opencv-python is not installed on this server"},
+		)
+
+	fmt = body.output_format.lower()
+	if fmt not in ("jpeg", "jpg", "png", "tiff", "tif"):
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail=f"Unsupported output_format {body.output_format!r}; choose jpeg, png, or tiff",
+		)
+
+	if len(body.image_paths) < 2:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail="At least 2 image_paths are required",
+		)
+	if len(body.image_paths) > 8:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail="Maximum 8 images per stitch request",
+		)
+
+	paths = [Path(p) for p in body.image_paths]
+	for p in paths:
+		if not p.exists():
+			raise HTTPException(
+				status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+				detail=f"Image not found: {p}",
+			)
+
+	result = stitch_document_images(paths, min_overlap=body.min_overlap)
+
+	if result.status != StitchStatus.OK or result.image is None:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail={
+				"status": result.status,
+				"error": result.error_message,
+				"images_used": result.images_used,
+			},
+		)
+
+	media_type_map = {
+		"jpeg": "image/jpeg",
+		"jpg": "image/jpeg",
+		"png": "image/png",
+		"tiff": "image/tiff",
+		"tif": "image/tiff",
+	}
+	img_bytes = encode_image(result.image, fmt)
+	return _SR(
+		content=io.BytesIO(img_bytes),
+		media_type=media_type_map[fmt],
+		headers={
+			"X-Stitch-Status": result.status,
+			"X-Stitch-Confidence": str(result.confidence),
+			"X-Stitch-Images-Used": str(result.images_used),
+		},
+	)
+
+
+@router.post("/stitch-images/from-uploads")
+async def stitch_images_from_uploads(
+	user: Annotated[User, Depends(get_current_user)],
+	files: Annotated[list[UploadFile], File(description="2–8 overlapping document images")],
+	output_format: Annotated[str, Form()] = "jpeg",
+	min_overlap: Annotated[float, Form()] = 0.15,
+) -> "StreamingResponse":
+	"""Stitch uploaded images (multipart/form-data).
+
+	Form fields:
+	  - files[]: 2–8 image files (JPEG, PNG, TIFF)
+	  - output_format: "jpeg" | "png" | "tiff"  (default: "jpeg")
+	  - min_overlap: float  (default: 0.15)
+
+	Returns a StreamingResponse of the stitched image, or a 422/503 JSON error.
+	"""
+	import io
+	import os
+	import tempfile
+	from fastapi.responses import StreamingResponse as _SR
+
+	from .stitching import (
+		StitchStatus,
+		_CV2_AVAILABLE,
+		encode_image,
+		stitch_document_images,
+	)
+
+	if not _CV2_AVAILABLE:
+		from fastapi.responses import JSONResponse
+		return JSONResponse(
+			status_code=503,
+			content={"detail": "opencv-python is not installed on this server"},
+		)
+
+	fmt = output_format.lower()
+	if fmt not in ("jpeg", "jpg", "png", "tiff", "tif"):
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail=f"Unsupported output_format {output_format!r}",
+		)
+
+	if len(files) < 2:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail="At least 2 files are required",
+		)
+	if len(files) > 8:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail="Maximum 8 files per stitch request",
+		)
+
+	# Write uploads to temp files so OpenCV can read them
+	tmp_paths: list[Path] = []
+	try:
+		for upload in files:
+			suffix = Path(upload.filename or "image.jpg").suffix or ".jpg"
+			with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+				content = await upload.read()
+				tmp.write(content)
+				tmp_paths.append(Path(tmp.name))
+
+		result = stitch_document_images(tmp_paths, min_overlap=min_overlap)
+	finally:
+		for p in tmp_paths:
+			try:
+				os.unlink(p)
+			except OSError:
+				pass
+
+	if result.status != StitchStatus.OK or result.image is None:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail={
+				"status": result.status,
+				"error": result.error_message,
+				"images_used": result.images_used,
+			},
+		)
+
+	media_type_map = {
+		"jpeg": "image/jpeg",
+		"jpg": "image/jpeg",
+		"png": "image/png",
+		"tiff": "image/tiff",
+		"tif": "image/tiff",
+	}
+	img_bytes = encode_image(result.image, fmt)
+	return _SR(
+		content=io.BytesIO(img_bytes),
+		media_type=media_type_map[fmt],
+		headers={
+			"X-Stitch-Status": result.status,
+			"X-Stitch-Confidence": str(result.confidence),
+			"X-Stitch-Images-Used": str(result.images_used),
+		},
+	)
+
+
 # Route ordering fix: static collection paths (/resources, /locations, /shifts,
 # /shift-assignments, /gamification, /batch-priority) must precede /{project_id}
 # so FastAPI doesn't match them as project ID values.
@@ -1900,6 +2100,7 @@ _STATIC_PREFIXES = (
 	"/scanning-projects/location-dashboard",
 	"/scanning-projects/maintenance",
 	"/scanning-projects/certifications",
+	"/scanning-projects/stitch-images",
 )
 _static_routes = [
 	r for r in router.routes

@@ -8,7 +8,8 @@ from pathlib import Path
 from uuid import UUID
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from celery.app import default_app as celery_app
@@ -601,6 +602,85 @@ async def get_stats(
 		avg_confidence=round(avg_conf, 3),
 		documents_created=docs_created,
 		multi_document_scans=multi_doc,
+	)
+
+
+@router.post(
+	"/deskew",
+	summary="Deskew a document image",
+	description=(
+		"Upload a document image and receive the deskewed version as a JPEG stream. "
+		"The detected skew angle is returned in the X-Deskew-Angle response header."
+	),
+	response_class=StreamingResponse,
+)
+async def deskew_document(
+	file: Annotated[UploadFile, File(description="Image file to deskew")],
+	method: str = Query(
+		"adaptive",
+		description="Deskew algorithm: 'adaptive' (default, 97.6% acc.), 'hough', or 'auto'",
+		pattern="^(adaptive|hough|auto)$",
+	),
+) -> StreamingResponse:
+	"""
+	Deskew an uploaded document image.
+
+	Returns the corrected image as a JPEG stream with the following headers:
+
+	- **X-Deskew-Angle**: detected skew angle in degrees
+	- **X-Deskew-Method**: algorithm that produced the result
+	- **X-Deskew-Confidence**: detection confidence (0.0–1.0)
+	"""
+	try:
+		import io
+		import cv2
+		import numpy as np
+		from papermerge.core.features.scanning_projects.deskew import deskew_image
+	except ImportError as exc:
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail=f"Deskew dependencies unavailable: {exc}",
+		) from exc
+
+	raw = await file.read()
+	if not raw:
+		raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file upload")
+
+	arr = np.frombuffer(raw, dtype=np.uint8)
+	img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+	if img is None:
+		raise HTTPException(
+			status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+			detail="Could not decode image — unsupported format or corrupt file",
+		)
+
+	try:
+		result = deskew_image(img, method=method)
+	except ValueError as exc:
+		raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+	except Exception as exc:
+		logger.exception("Deskew failed for uploaded file %s: %s", file.filename, exc)
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail="Deskew processing failed",
+		) from exc
+
+	ok, encoded = cv2.imencode(".jpg", result.corrected_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+	if not ok:
+		raise HTTPException(
+			status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			detail="Failed to encode deskewed image",
+		)
+
+	return StreamingResponse(
+		content=iter([encoded.tobytes()]),
+		media_type="image/jpeg",
+		headers={
+			"X-Deskew-Angle": f"{result.angle_degrees:.4f}",
+			"X-Deskew-Method": result.method_used,
+			"X-Deskew-Confidence": f"{result.confidence:.4f}",
+			"Content-Disposition": f'attachment; filename="deskewed_{file.filename or "image.jpg"}"',
+		},
 	)
 
 

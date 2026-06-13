@@ -1,0 +1,1077 @@
+openapi: 3.1.0
+info:
+  title: dArchiva Scan Agent API
+  description: |
+    REST API exposed by the dArchiva Scan Agent — a Go binary running on the
+    operator's local workstation at localhost:7780. The web application calls
+    these endpoints directly from the browser to drive local scanners and
+    cameras, manage hot folders, and coordinate page-level scanning workflows.
+
+    Security note: the agent binds only to the loopback interface. There is no
+    auth token; network reachability is the trust boundary. A shared secret
+    header (X-Agent-Secret) may be added in a future revision.
+  version: 1.0.0
+  contact:
+    name: dArchiva Engineering
+    url: https://darchiva.io
+
+servers:
+  - url: http://localhost:7780
+    description: Local scan agent (loopback only)
+
+tags:
+  - name: health
+    description: Agent liveness and connectivity
+  - name: devices
+    description: Attached scanner enumeration
+  - name: jobs
+    description: Scan job lifecycle
+  - name: config
+    description: Hotkey and preference configuration
+  - name: camera
+    description: Camera / foot-pedal capture
+  - name: hot-folders
+    description: Watched folder management
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Health
+  # ---------------------------------------------------------------------------
+
+  /health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Agent liveness, version, and dArchiva connectivity
+      description: |
+        Returns immediately. The web app polls this endpoint to confirm the
+        agent is running and can reach the dArchiva server. HTTP 200 is always
+        returned as long as the agent process is alive; inspect the response
+        body for connectivity details.
+      responses:
+        '200':
+          description: Agent is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                version: "1.2.3"
+                connected_to_darchiva: true
+                darchiva_url: "https://app.darchiva.io"
+                uptime_seconds: 3721
+                platform: darwin
+                arch: arm64
+
+  # ---------------------------------------------------------------------------
+  # Devices
+  # ---------------------------------------------------------------------------
+
+  /devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: List attached scanners with capabilities
+      description: |
+        Enumerates scanners visible to the agent via all supported protocols
+        (TWAIN, WIA, ISIS, SANE, eSCL). The list is refreshed from the OS on
+        each call; responses are not cached. Expect 1–3 seconds on the first
+        call if the protocol stack needs to initialise.
+      responses:
+        '200':
+          description: Device list (may be empty)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeviceInfo'
+              example:
+                - id: "twain://EPSON_ES-580W"
+                  name: "EPSON ES-580W"
+                  protocol: twain
+                  manufacturer: Epson
+                  model: ES-580W
+                  connection_type: network
+                  host: "192.168.1.42"
+                  port: 9100
+                  capabilities:
+                    platen: true
+                    adf_present: true
+                    adf_duplex: true
+                    adf_capacity: 100
+                    resolutions: [150, 200, 300, 400, 600, 1200]
+                    color_modes: [color, grayscale, monochrome]
+                    paper_sizes: [a4, a5, letter, legal, auto]
+                    max_width_mm: 215.9
+                    max_height_mm: 355.6
+                    blank_page_removal: true
+                    auto_crop: true
+                    auto_deskew: true
+                    brightness_control: true
+                    contrast_control: true
+                  status: idle
+        '503':
+          description: Protocol stack unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Scan Jobs
+  # ---------------------------------------------------------------------------
+
+  /scan:
+    post:
+      operationId: startScan
+      tags: [jobs]
+      summary: Start a new scan job
+      description: |
+        Creates a scan job and begins acquisition immediately. Returns the job
+        record with status=pending or status=scanning. Poll GET /jobs/{job_id}
+        to track progress.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScanRequest'
+            example:
+              device_id: "twain://EPSON_ES-580W"
+              profile:
+                dpi: 300
+                color_mode: color
+                paper_size: a4
+                duplex: false
+                source: adf
+                blank_page_removal: true
+                auto_crop: true
+                auto_deskew: true
+                brightness: 0
+                contrast: 0
+              max_pages: 50
+              darchiva_destination:
+                folder_id: "01h8g3k2m4n5p6q7r8s9t0u1v2"
+                auto_upload: true
+      responses:
+        '201':
+          description: Job created and scan started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanJob'
+        '400':
+          description: Invalid request (unknown device, bad profile)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Device is busy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /jobs/{job_id}:
+    get:
+      operationId: getScanJob
+      tags: [jobs]
+      summary: Poll scan job status
+      description: |
+        Returns current job state. Clients should poll at 1–2 s intervals until
+        status is one of: completed, failed, cancelled.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanJob'
+              example:
+                id: "job_01h8g3k2m4n5p6q7r8s9t0u1v2"
+                status: scanning
+                device_id: "twain://EPSON_ES-580W"
+                pages_scanned: 7
+                total_pages_expected: null
+                started_at: "2026-06-13T09:12:00Z"
+                completed_at: null
+                error: null
+                output_files: []
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      operationId: cancelScanJob
+      tags: [jobs]
+      summary: Cancel a scan job
+      description: |
+        Requests graceful cancellation. The device is released and any partially
+        scanned pages are discarded. Returns 204 whether the job was running or
+        already in a terminal state (idempotent).
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '204':
+          description: Cancelled (or already terminal)
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /jobs/{job_id}/upload:
+    post:
+      operationId: uploadJobPages
+      tags: [jobs]
+      summary: Upload completed pages to dArchiva server
+      description: |
+        Triggered after the job reaches status=completed when auto_upload is
+        false, or by the UI when the operator reviews pages before submission.
+        The agent streams each page file to the dArchiva server using the
+        stored bearer token. Returns once all pages are acknowledged by the
+        server.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRequest'
+      responses:
+        '200':
+          description: Upload completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResult'
+        '400':
+          description: Job not in completed state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: dArchiva server unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Agent Config (hotkeys + preferences)
+  # ---------------------------------------------------------------------------
+
+  /config:
+    get:
+      operationId: getConfig
+      tags: [config]
+      summary: Get current hotkey and agent configuration
+      responses:
+        '200':
+          description: Current configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConfig'
+              example:
+                hotkeys:
+                  scan_next_page: F9
+                  accept_page: F10
+                  reject_page: F11
+                  end_batch: F12
+                  capture_camera: Space
+                preferences:
+                  auto_upload: true
+                  show_preview: true
+                  preview_timeout_ms: 5000
+                  darchiva_url: "https://app.darchiva.io"
+                  log_level: info
+
+    put:
+      operationId: updateConfig
+      tags: [config]
+      summary: Update hotkey and agent configuration
+      description: |
+        Full replacement of the config document. Send the complete object; the
+        agent overwrites its stored config file atomically. Returns the saved
+        configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentConfig'
+      responses:
+        '200':
+          description: Saved configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConfig'
+        '400':
+          description: Invalid hotkey string or conflicting bindings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Camera / Foot-pedal Capture
+  # ---------------------------------------------------------------------------
+
+  /camera/capture:
+    post:
+      operationId: cameraCapture
+      tags: [camera]
+      summary: Trigger a camera capture (foot-pedal equivalent)
+      description: |
+        Commands the agent to fire the camera shutter (or the configured
+        capture device) and store the resulting image as the next page of the
+        active job. If no job is active, the agent creates an ad-hoc single-
+        page job. Returns immediately with a page record; image processing
+        (deskew, crop) happens asynchronously and the page status updates.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraCaptureRequest'
+      responses:
+        '201':
+          description: Capture triggered; page record returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapturedPage'
+        '409':
+          description: Camera busy or not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Hot Folders
+  # ---------------------------------------------------------------------------
+
+  /hot-folders:
+    get:
+      operationId: listHotFolders
+      tags: [hot-folders]
+      summary: List configured hot folders
+      responses:
+        '200':
+          description: Hot folder list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HotFolder'
+
+    post:
+      operationId: addHotFolder
+      tags: [hot-folders]
+      summary: Add a hot folder to watch
+      description: |
+        Registers a local filesystem path for continuous monitoring. Any file
+        matching the configured glob pattern dropped into the folder is
+        automatically uploaded to the dArchiva destination.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HotFolderCreate'
+            example:
+              path: "/Users/ops/Scans/Incoming"
+              name: "Ops Inbox"
+              glob_pattern: "*.{pdf,tif,tiff,jpg,png}"
+              destination:
+                folder_id: "01h8g3k2m4n5p6q7r8s9t0u1v2"
+              poll_interval_ms: 2000
+              move_to_processed: true
+              processed_path: "/Users/ops/Scans/Done"
+      responses:
+        '201':
+          description: Hot folder registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HotFolder'
+        '400':
+          description: Invalid path or conflicting configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Path already watched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /hot-folders/{id}:
+    delete:
+      operationId: removeHotFolder
+      tags: [hot-folders]
+      summary: Remove a hot folder
+      description: |
+        Stops watching the folder and removes its registration. Files already
+        in the folder are not affected.
+      parameters:
+        - $ref: '#/components/parameters/HotFolderId'
+      responses:
+        '204':
+          description: Removed
+        '404':
+          description: Hot folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+# =============================================================================
+# Components
+# =============================================================================
+
+components:
+
+  parameters:
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Scan job identifier returned by POST /scan
+
+    HotFolderId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Hot folder identifier returned by POST /hot-folders
+
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Health
+    # -------------------------------------------------------------------------
+
+    HealthResponse:
+      type: object
+      required: [status, version, connected_to_darchiva, uptime_seconds, platform, arch]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: Always "ok" when the agent process is alive
+        version:
+          type: string
+          description: Agent semver string
+          example: "1.2.3"
+        connected_to_darchiva:
+          type: boolean
+          description: Whether the agent can reach the configured dArchiva server
+        darchiva_url:
+          type: string
+          format: uri
+          description: Configured dArchiva server URL
+        uptime_seconds:
+          type: integer
+          description: Seconds since the agent process started
+        platform:
+          type: string
+          description: OS name (darwin, windows, linux)
+        arch:
+          type: string
+          description: CPU architecture (amd64, arm64)
+
+    # -------------------------------------------------------------------------
+    # Devices
+    # -------------------------------------------------------------------------
+
+    DeviceInfo:
+      type: object
+      required: [id, name, protocol, status, capabilities]
+      properties:
+        id:
+          type: string
+          description: |
+            Opaque device identifier stable for the lifetime of the agent
+            process. Format: "<protocol>://<device_path>".
+          example: "twain://EPSON_ES-580W"
+        name:
+          type: string
+          description: Human-readable device name from the OS driver
+          example: "EPSON ES-580W"
+        protocol:
+          type: string
+          enum: [twain, wia, isis, sane, escl]
+          description: |
+            Driver protocol used to communicate with the device:
+            - twain — TWAIN 2.x (Windows/macOS)
+            - wia   — Windows Image Acquisition (Windows only)
+            - isis  — Image and Scanner Interface Specification (Windows)
+            - sane  — Scanner Access Now Easy (Linux/macOS)
+            - escl  — AirScan / eSCL (network, cross-platform)
+        manufacturer:
+          type: string
+          example: "Epson"
+        model:
+          type: string
+          example: "ES-580W"
+        serial_number:
+          type: string
+        firmware_version:
+          type: string
+        connection_type:
+          type: string
+          enum: [usb, network, virtual]
+        host:
+          type: string
+          description: Network host (present when connection_type=network)
+        port:
+          type: integer
+          description: Network port (present when connection_type=network)
+        status:
+          type: string
+          enum: [idle, busy, error, offline]
+        capabilities:
+          $ref: '#/components/schemas/DeviceCapabilities'
+
+    DeviceCapabilities:
+      type: object
+      required: [platen, resolutions, color_modes, paper_sizes, max_width_mm, max_height_mm]
+      properties:
+        platen:
+          type: boolean
+          description: Flatbed platen present
+        adf_present:
+          type: boolean
+          description: Automatic Document Feeder present
+          default: false
+        adf_duplex:
+          type: boolean
+          description: ADF supports duplex (two-sided) scanning
+          default: false
+        adf_capacity:
+          type: integer
+          description: Maximum sheet capacity of the ADF
+          default: 0
+        resolutions:
+          type: array
+          items:
+            type: integer
+          description: Supported DPI values in ascending order
+          example: [150, 200, 300, 400, 600, 1200]
+        color_modes:
+          type: array
+          items:
+            type: string
+            enum: [color, grayscale, monochrome]
+        paper_sizes:
+          type: array
+          items:
+            type: string
+            enum: [a3, a4, a5, b4, b5, letter, legal, tabloid, auto]
+        max_width_mm:
+          type: number
+          description: Maximum scan width in millimetres
+          example: 215.9
+        max_height_mm:
+          type: number
+          description: Maximum scan height in millimetres
+          example: 355.6
+        blank_page_removal:
+          type: boolean
+          description: Device supports hardware blank-page detection
+          default: false
+        auto_crop:
+          type: boolean
+          description: Device supports automatic document edge detection
+          default: false
+        auto_deskew:
+          type: boolean
+          description: Device supports automatic deskew correction
+          default: false
+        brightness_control:
+          type: boolean
+          default: true
+        contrast_control:
+          type: boolean
+          default: true
+
+    # -------------------------------------------------------------------------
+    # Scan Profile
+    # -------------------------------------------------------------------------
+
+    ScanProfile:
+      type: object
+      required: [dpi, color_mode, paper_size]
+      properties:
+        dpi:
+          type: integer
+          minimum: 75
+          maximum: 2400
+          default: 300
+          description: Scan resolution in dots per inch
+        color_mode:
+          type: string
+          enum: [color, grayscale, monochrome]
+          default: color
+        paper_size:
+          type: string
+          enum: [a3, a4, a5, b4, b5, letter, legal, tabloid, auto]
+          default: a4
+          description: |
+            "auto" instructs the driver to detect the loaded paper size.
+        duplex:
+          type: boolean
+          default: false
+          description: Scan both sides via ADF
+        source:
+          type: string
+          enum: [platen, adf, adf_duplex]
+          default: platen
+          description: Paper source. "adf_duplex" overrides the duplex flag.
+        blank_page_removal:
+          type: boolean
+          default: false
+          description: Discard pages below the brightness threshold
+        blank_page_threshold:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 98
+          description: |
+            Percentage of white pixels required to classify a page as blank.
+            Only relevant when blank_page_removal=true.
+        auto_crop:
+          type: boolean
+          default: false
+          description: Detect document edges and crop to content
+        auto_deskew:
+          type: boolean
+          default: false
+          description: Rotate the image to correct document skew
+        brightness:
+          type: integer
+          minimum: -100
+          maximum: 100
+          default: 0
+          description: Brightness adjustment (-100 darkest, +100 brightest)
+        contrast:
+          type: integer
+          minimum: -100
+          maximum: 100
+          default: 0
+          description: Contrast adjustment (-100 flat, +100 high-contrast)
+        output_format:
+          type: string
+          enum: [jpeg, png, tiff, pdf]
+          default: jpeg
+        jpeg_quality:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 85
+          description: JPEG compression quality. Ignored for non-JPEG formats.
+
+    # -------------------------------------------------------------------------
+    # Scan Job
+    # -------------------------------------------------------------------------
+
+    DarchivaDestination:
+      type: object
+      properties:
+        folder_id:
+          type: string
+          description: dArchiva folder UUID to receive the scanned document
+        auto_upload:
+          type: boolean
+          default: true
+          description: |
+            When true the agent uploads pages automatically once the job
+            completes. When false the UI must call POST /jobs/{job_id}/upload.
+
+    ScanRequest:
+      type: object
+      required: [device_id, profile]
+      properties:
+        device_id:
+          type: string
+          description: Device identifier from GET /devices
+        profile:
+          $ref: '#/components/schemas/ScanProfile'
+        max_pages:
+          type: integer
+          minimum: 1
+          maximum: 9999
+          description: |
+            Stop scanning after this many pages. Omit for "scan until ADF
+            empty" behaviour.
+        darchiva_destination:
+          $ref: '#/components/schemas/DarchivaDestination'
+
+    ScannedPage:
+      type: object
+      required: [page_number, status]
+      properties:
+        page_number:
+          type: integer
+        status:
+          type: string
+          enum: [captured, processing, accepted, rejected]
+        file_path:
+          type: string
+          description: Local path of the scanned image file (agent-internal)
+        width_px:
+          type: integer
+        height_px:
+          type: integer
+        file_size_bytes:
+          type: integer
+        captured_at:
+          type: string
+          format: date-time
+        was_blank:
+          type: boolean
+          description: True if the page was removed by blank-page detection
+
+    ScanJob:
+      type: object
+      required: [id, status, device_id, profile, pages_scanned, created_at]
+      properties:
+        id:
+          type: string
+          description: Unique job identifier
+          example: "job_01h8g3k2m4n5p6q7r8s9t0u1v2"
+        status:
+          type: string
+          enum: [pending, scanning, processing, completed, failed, cancelled]
+        device_id:
+          type: string
+        profile:
+          $ref: '#/components/schemas/ScanProfile'
+        pages_scanned:
+          type: integer
+          default: 0
+        total_pages_expected:
+          type: integer
+          description: Null when total is unknown (ADF auto-stop mode)
+        pages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScannedPage'
+        darchiva_destination:
+          $ref: '#/components/schemas/DarchivaDestination'
+        error:
+          type: string
+          description: Error message when status=failed
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        upload_result:
+          $ref: '#/components/schemas/UploadResult'
+
+    UploadRequest:
+      type: object
+      properties:
+        destination_override:
+          $ref: '#/components/schemas/DarchivaDestination'
+          description: |
+            Override the destination set at job creation. Useful when the
+            operator routes to a different folder after reviewing pages.
+        page_numbers:
+          type: array
+          items:
+            type: integer
+          description: |
+            Specific page numbers to upload. Omit to upload all accepted pages.
+
+    UploadResult:
+      type: object
+      required: [success, pages_uploaded]
+      properties:
+        success:
+          type: boolean
+        pages_uploaded:
+          type: integer
+        document_ids:
+          type: array
+          items:
+            type: string
+          description: dArchiva document UUIDs created by the upload
+        errors:
+          type: array
+          items:
+            type: string
+        uploaded_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Hotkey Config
+    # -------------------------------------------------------------------------
+
+    HotkeyBinding:
+      type: string
+      description: |
+        Key name as a string. Single keys: F1–F12, Space, Enter, Tab,
+        Escape, Backspace, Delete, Insert, Home, End, PageUp, PageDown.
+        Modifier combos: Ctrl+<key>, Alt+<key>, Shift+<key>,
+        Ctrl+Shift+<key>, etc. The agent validates that no two actions share
+        the same binding.
+      examples:
+        - F9
+        - F10
+        - Space
+        - Ctrl+Shift+S
+
+    HotkeyConfig:
+      type: object
+      required:
+        - scan_next_page
+        - accept_page
+        - reject_page
+        - end_batch
+        - capture_camera
+      properties:
+        scan_next_page:
+          $ref: '#/components/schemas/HotkeyBinding'
+          default: F9
+          description: Trigger the next page scan on a flatbed (equivalent to lifting lid and pressing scan)
+        accept_page:
+          $ref: '#/components/schemas/HotkeyBinding'
+          default: F10
+          description: Accept the displayed preview page and advance
+        reject_page:
+          $ref: '#/components/schemas/HotkeyBinding'
+          default: F11
+          description: Reject (discard) the current preview page and rescan
+        end_batch:
+          $ref: '#/components/schemas/HotkeyBinding'
+          default: F12
+          description: Mark the batch complete and trigger upload
+        capture_camera:
+          $ref: '#/components/schemas/HotkeyBinding'
+          default: Space
+          description: Fire camera shutter (foot-pedal equivalent)
+
+    AgentPreferences:
+      type: object
+      properties:
+        auto_upload:
+          type: boolean
+          default: true
+          description: Automatically upload completed jobs without waiting for UI confirmation
+        show_preview:
+          type: boolean
+          default: true
+          description: Show per-page preview in the web UI during scanning
+        preview_timeout_ms:
+          type: integer
+          default: 5000
+          description: |
+            How long to show each page preview before auto-accepting.
+            Set to 0 to disable auto-accept.
+        darchiva_url:
+          type: string
+          format: uri
+          description: URL of the dArchiva server the agent authenticates against
+        darchiva_token:
+          type: string
+          description: |
+            Bearer token used to authenticate upload requests. Write-only:
+            the GET /config response omits this field. Send the token in
+            PUT /config to rotate it.
+          writeOnly: true
+        log_level:
+          type: string
+          enum: [debug, info, warn, error]
+          default: info
+
+    AgentConfig:
+      type: object
+      required: [hotkeys]
+      properties:
+        hotkeys:
+          $ref: '#/components/schemas/HotkeyConfig'
+        preferences:
+          $ref: '#/components/schemas/AgentPreferences'
+
+    # -------------------------------------------------------------------------
+    # Camera Capture
+    # -------------------------------------------------------------------------
+
+    CameraCaptureRequest:
+      type: object
+      properties:
+        job_id:
+          type: string
+          description: |
+            Attach this capture to an existing job. If omitted and no job is
+            active, the agent creates one automatically.
+        camera_id:
+          type: string
+          description: |
+            Identifier of the camera to use (from the OS camera list). Omit
+            to use the default camera.
+        auto_deskew:
+          type: boolean
+          default: true
+        auto_crop:
+          type: boolean
+          default: true
+
+    CapturedPage:
+      type: object
+      required: [page_number, job_id, status, captured_at]
+      properties:
+        page_number:
+          type: integer
+        job_id:
+          type: string
+        status:
+          type: string
+          enum: [captured, processing, accepted]
+        preview_url:
+          type: string
+          description: |
+            Relative URL on the agent server to fetch the JPEG preview, e.g.
+            /jobs/{job_id}/pages/{page_number}/preview
+        width_px:
+          type: integer
+        height_px:
+          type: integer
+        captured_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Hot Folders
+    # -------------------------------------------------------------------------
+
+    HotFolderDestination:
+      type: object
+      properties:
+        folder_id:
+          type: string
+          description: dArchiva destination folder UUID
+
+    HotFolderCreate:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Absolute path on the local filesystem to watch
+          example: "/Users/ops/Scans/Incoming"
+        name:
+          type: string
+          description: Human-readable label. Defaults to the directory name.
+        glob_pattern:
+          type: string
+          default: "*.{pdf,tif,tiff,jpg,jpeg,png}"
+          description: Glob pattern controlling which filenames are picked up
+        destination:
+          $ref: '#/components/schemas/HotFolderDestination'
+        poll_interval_ms:
+          type: integer
+          minimum: 500
+          maximum: 60000
+          default: 2000
+          description: |
+            Milliseconds between filesystem polls. The agent also uses OS
+            file-system events (inotify/FSEvents/ReadDirectoryChangesW) where
+            available; polling is a fallback.
+        move_to_processed:
+          type: boolean
+          default: false
+          description: Move successfully uploaded files to processed_path
+        processed_path:
+          type: string
+          description: |
+            Destination for processed files. Required when
+            move_to_processed=true.
+        delete_after_upload:
+          type: boolean
+          default: false
+          description: |
+            Delete files after a successful upload. Mutually exclusive with
+            move_to_processed.
+
+    HotFolder:
+      allOf:
+        - $ref: '#/components/schemas/HotFolderCreate'
+        - type: object
+          required: [id, active, files_processed, created_at]
+          properties:
+            id:
+              type: string
+              description: Agent-assigned hot folder identifier
+            active:
+              type: boolean
+              description: Whether the watcher is currently running
+            files_processed:
+              type: integer
+              description: Cumulative count of files uploaded since registration
+            last_file_at:
+              type: string
+              format: date-time
+              description: Timestamp of the last file processed
+            last_error:
+              type: string
+              description: Last upload error message, if any
+            created_at:
+              type: string
+              format: date-time
+
+    # -------------------------------------------------------------------------
+    # Errors
+    # -------------------------------------------------------------------------
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code
+          example: device_busy
+        message:
+          type: string
+          description: Human-readable error description
+          example: "The requested scanner is currently processing another job."
+        details:
+          type: object
+          additionalProperties: true
+          description: Optional structured context (e.g. conflicting job_id)
