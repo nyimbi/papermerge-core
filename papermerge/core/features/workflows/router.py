@@ -187,6 +187,49 @@ async def get_workflow(
 	return schema.WorkflowDetail.model_validate(workflow)
 
 
+@router.patch("/{workflow_id}")
+async def update_workflow(
+	workflow_id: UUID,
+	update: schema.WorkflowUpdate,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.WorkflowInfo:
+	"""Update workflow name, description, or active status."""
+	from .db.orm import Workflow
+
+	workflow = await db_session.get(Workflow, workflow_id)
+	if not workflow:
+		raise HTTPException(status_code=404, detail="Workflow not found")
+
+	if update.name is not None:
+		workflow.name = update.name
+	if update.description is not None:
+		workflow.description = update.description
+	if update.is_active is not None:
+		workflow.is_active = update.is_active
+	workflow.updated_by = user.id
+
+	await db_session.commit()
+	await db_session.refresh(workflow)
+	return schema.WorkflowInfo.model_validate(workflow)
+
+
+@router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workflow(
+	workflow_id: UUID,
+	user: require_scopes(scopes.NODE_DELETE),
+	db_session: AsyncSession = Depends(get_db),
+) -> None:
+	"""Delete a workflow definition."""
+	from .db.orm import Workflow
+
+	workflow = await db_session.get(Workflow, workflow_id)
+	if not workflow:
+		raise HTTPException(status_code=404, detail="Workflow not found")
+	await db_session.delete(workflow)
+	await db_session.commit()
+
+
 @router.post("/{workflow_id}/start")
 async def start_workflow(
 	workflow_id: UUID,

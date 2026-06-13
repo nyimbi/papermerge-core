@@ -21,6 +21,13 @@ class WorkflowCreate(BaseModel):
 	steps: list[WorkflowStepCreate]
 
 
+class WorkflowUpdate(BaseModel):
+	"""Schema for updating a workflow."""
+	name: str | None = None
+	description: str | None = None
+	is_active: bool | None = None
+
+
 class WorkflowInfo(BaseModel):
 	"""Basic workflow information."""
 	id: UUID
