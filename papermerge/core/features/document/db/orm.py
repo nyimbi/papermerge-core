@@ -1,8 +1,9 @@
 import uuid
+from datetime import datetime
 from uuid import UUID
 from pathlib import Path
 
-from sqlalchemy import ForeignKey, Enum
+from sqlalchemy import ForeignKey, Enum, Boolean, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from papermerge.core.db.audit_cols import AuditColumns
@@ -58,6 +59,11 @@ class Document(Node):
     versions: Mapped[list["DocumentVersion"]] = relationship(
         back_populates="document", lazy="selectin"
     )
+
+    # Legal holds and retention
+    legal_hold: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    retention_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retention_policy: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     __mapper_args__ = {
         "polymorphic_identity": "document",

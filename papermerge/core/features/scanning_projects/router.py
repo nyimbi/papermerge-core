@@ -2376,6 +2376,97 @@ async def update_quality_config(
 	return config
 
 
+# ── Camera Capture → Document ─────────────────────────────────────────────────
+
+@router.post("/camera/capture", status_code=201)
+async def camera_capture_to_document(
+	user: Annotated[User, Depends(get_current_user)],
+	image: UploadFile = File(..., description="Captured image (JPEG/PNG)"),
+	folder_id: str | None = Form(default=None),
+	title: str | None = Form(default=None),
+	lang: str = Form(default="eng"),
+	project_id: str | None = Form(default=None),
+) -> dict:
+	"""
+	Ingest a camera-captured image as a document.
+
+	Accepts a raw image upload, writes it to storage, creates a Document
+	record, and queues OCR — identical pipeline to scanner ingest.
+	"""
+	import uuid as _uuid
+	from papermerge.core import pathlib as pmg_pathlib
+	from papermerge.core.db.engine import get_async_session_maker
+	from papermerge.core.features.document.db import api as doc_dbapi
+	from papermerge.core.features.document import schema as doc_schema
+	from papermerge.core.types import MimeType
+	from papermerge.storage.base import get_storage_backend
+	from papermerge.core.tasks import send_task
+
+	content_type = (image.content_type or "image/jpeg").lower()
+	if "jpeg" in content_type or "jpg" in content_type:
+		mime = MimeType.image_jpeg
+		ext = "jpg"
+	elif "png" in content_type:
+		mime = MimeType.image_png
+		ext = "png"
+	elif "tiff" in content_type:
+		mime = MimeType.image_tiff
+		ext = "tiff"
+	else:
+		mime = MimeType.application_pdf
+		ext = "pdf"
+
+	data = await image.read()
+	doc_id = _uuid.uuid4()
+	doc_ver_id = _uuid.uuid4()
+	safe_title = title or (image.filename or f"camera_{doc_id.hex[:8]}")
+	file_name = f"{_uuid.uuid4().hex[:8]}_{safe_title.rsplit('.', 1)[0]}.{ext}"
+	object_key = str(pmg_pathlib.docver_path(doc_ver_id, file_name=file_name))
+
+	storage = get_storage_backend()
+	await storage.upload_bytes(data=data, object_key=object_key, content_type=mime.value)
+
+	session_maker = get_async_session_maker()
+	async with session_maker() as session:
+		new_doc = doc_schema.NewDocument(
+			id=doc_id,
+			title=safe_title,
+			lang=lang,
+			parent_id=_uuid.UUID(folder_id) if folder_id else None,
+			ocr=True,
+			file_name=file_name,
+			created_by=user.id,
+			updated_by=user.id,
+		)
+		doc = await doc_dbapi.create_document(
+			session,
+			new_doc,
+			mime_type=mime,
+			document_version_id=doc_ver_id,
+		)
+		await session.commit()
+
+	send_task(
+		"process_upload",
+		kwargs={
+			"document_id": str(doc_id),
+			"document_version_id": str(doc_ver_id),
+			"lang": lang,
+			"user_id": str(user.id),
+		},
+		route_name="s3",
+	)
+
+	return {
+		"documentId": str(doc_id),
+		"documentVersionId": str(doc_ver_id),
+		"fileName": file_name,
+		"mimeType": mime.value,
+		"sizeBytes": len(data),
+		"projectId": project_id,
+	}
+
+
 # Route ordering fix: static collection paths (/resources, /locations, /shifts,
 # /shift-assignments, /gamification, /batch-priority) must precede /{project_id}
 # so FastAPI doesn't match them as project ID values.

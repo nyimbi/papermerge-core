@@ -490,3 +490,161 @@ def process_email_ingestion(tenant_id: str, email_data: dict):
 					logger.error(f"Failed to ingest attachment {filename!r}: {e}")
 
 	asyncio.run(_run())
+
+
+@shared_task(name="darchiva.scanning.rescan_requested")
+def handle_rescan_requested(
+	batch_id: str,
+	sample_id: str,
+	project_id: str,
+	reason: str,
+	reviewer_id: str | None = None,
+):
+	"""
+	Handle a QC-failed batch by creating a re-scan notification in the audit log
+	and updating the batch status so the operator queue shows it.
+	"""
+	logger.info(_log_task(f"rescan_requested:batch={batch_id[:8]}"))
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.scanning_projects.models import ScanningBatchModel
+		from papermerge.core.features.audit.db.orm import AuditLog
+
+		session_maker = get_async_session_maker()
+		async with session_maker() as session:
+			batch = await session.get(ScanningBatchModel, batch_id)
+			if batch:
+				batch.status = "rescan_requested"
+				batch.notes = f"Re-scan requested: {reason}"
+			log = AuditLog(
+				object_id=batch_id,
+				object_type="scanning_batch",
+				action="rescan_requested",
+				detail={
+					"sample_id": sample_id,
+					"project_id": project_id,
+					"reason": reason,
+					"reviewer_id": reviewer_id,
+				},
+			)
+			session.add(log)
+			await session.commit()
+
+	asyncio.run(_run())
+
+
+@shared_task(name="darchiva.documents.index_embeddings")
+def index_document_embeddings(document_id: str, user_id: str | None = None):
+	"""
+	Generate and store vector embeddings for a document's text content.
+
+	Triggered after OCR completes. Uses the configured embedding provider
+	(default: Ollama nomic-embed-text via ml server).
+	"""
+	logger.info(_log_task(f"index_embeddings:{document_id[:8]}"))
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.config import get_settings
+		from papermerge.core.search.semantic import SemanticSearch
+		from papermerge.core.search.embeddings.ollama import OllamaEmbeddings
+		from uuid import UUID
+
+		cfg = get_settings()
+		if not cfg.semantic_search_enabled:
+			return
+
+		base_url = getattr(cfg, "embedding_base_url", "http://localhost:11434")
+		model = getattr(cfg, "embedding_model", "nomic-embed-text")
+		embedding_svc = OllamaEmbeddings(base_url=base_url, model=model)
+		session_maker = get_async_session_maker()
+		searcher = SemanticSearch(
+			embedding_service=embedding_svc,
+			session_factory=session_maker,
+		)
+		await searcher.index_document(UUID(document_id))
+
+	asyncio.run(_run())
+
+
+@shared_task(name="darchiva.documents.extract_entities")
+def extract_document_entities(document_id: str, user_id: str | None = None):
+	"""
+	Extract named entities (vendor, date, amount, invoice number) from a document
+	using the local LiteLLM proxy (qwen2.5-VL).
+
+	Stores results in document_metadata JSON column.
+	"""
+	logger.info(_log_task(f"extract_entities:{document_id[:8]}"))
+
+	async def _run():
+		import json
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.document.db.orm import Document, DocumentVersion
+		from sqlalchemy import select
+
+		session_maker = get_async_session_maker()
+		async with session_maker() as session:
+			stmt = (
+				select(DocumentVersion)
+				.where(DocumentVersion.document_id == document_id)
+				.order_by(DocumentVersion.number.desc())
+				.limit(1)
+			)
+			ver = (await session.execute(stmt)).scalar_one_or_none()
+			if not ver or not ver.text:
+				return
+
+			text = ver.text[:8000]  # context limit
+
+			try:
+				import httpx
+				payload = {
+					"model": "qwen2.5-VL",
+					"messages": [
+						{
+							"role": "system",
+							"content": (
+								"Extract named entities from the document text. "
+								"Reply ONLY with a JSON object containing these keys: "
+								"vendor (string or null), invoice_number (string or null), "
+								"invoice_date (ISO date string or null), "
+								"due_date (ISO date string or null), "
+								"total_amount (float or null), currency (string or null), "
+								"document_type (string: invoice|receipt|contract|report|other)."
+							),
+						},
+						{"role": "user", "content": text},
+					],
+					"temperature": 0.0,
+					"max_tokens": 512,
+					"response_format": {"type": "json_object"},
+				}
+				async with httpx.AsyncClient(timeout=30) as client:
+					resp = await client.post(
+						"http://84.247.181.100:4000/v1/chat/completions",
+						json=payload,
+						headers={
+							"Authorization": "Bearer sk-pjs-litellm-master-key",
+							"Content-Type": "application/json",
+						},
+					)
+					resp.raise_for_status()
+					entities = json.loads(
+						resp.json()["choices"][0]["message"]["content"]
+					)
+
+				doc = await session.get(Document, document_id)
+				if doc:
+					# Store on node metadata (extend existing or create new)
+					existing = getattr(doc, "document_metadata", None) or {}
+					existing.update({"entities": entities})
+					doc.document_metadata = existing
+					await session.commit()
+					logger.info(f"Entities extracted for {document_id}: {list(entities.keys())}")
+
+			except Exception as e:
+				logger.warning(f"Entity extraction failed for {document_id}: {e}")
+
+	asyncio.run(_run())

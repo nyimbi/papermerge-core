@@ -223,6 +223,44 @@ async def create_bundle_section(
 	return schema.BundleSectionInfo.model_validate(db_section)
 
 
+@router.patch("/{bundle_id}/documents/{document_id}")
+async def reorder_bundle_document(
+	bundle_id: UUID,
+	document_id: UUID,
+	request: schema.ReorderDocumentRequest,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.BundleDocumentInfo:
+	"""Move a document to a new position within the bundle."""
+	stmt = select(BundleDocument).where(
+		BundleDocument.bundle_id == bundle_id,
+		BundleDocument.document_id == document_id,
+	)
+	result = await db_session.execute(stmt)
+	target = result.scalar_one_or_none()
+	if not target:
+		raise HTTPException(status_code=404, detail="Document not in bundle")
+
+	# Fetch all docs ordered by position, excluding the target
+	all_stmt = select(BundleDocument).where(
+		BundleDocument.bundle_id == bundle_id,
+	).order_by(BundleDocument.position)
+	all_result = await db_session.execute(all_stmt)
+	all_docs = [d for d in all_result.scalars().all() if d.document_id != document_id]
+
+	# Insert target at desired position (1-indexed, clamped)
+	new_pos = max(1, min(request.position, len(all_docs) + 1))
+	all_docs.insert(new_pos - 1, target)
+
+	# Renumber sequentially
+	for idx, doc in enumerate(all_docs, start=1):
+		doc.position = idx
+
+	await db_session.commit()
+	await db_session.refresh(target)
+	return schema.BundleDocumentInfo.model_validate(target)
+
+
 @router.post("/{bundle_id}/paginate")
 async def generate_pagination(
 	bundle_id: UUID,

@@ -630,6 +630,24 @@ async def update_qc_sample(
 					project.rejected_pages += 1
 				project.updated_at = datetime.utcnow()
 
+				# Re-scan workflow: when QC fails, create a task for the operator
+				if data.review_status == QCReviewStatus.FAILED and batch:
+					from papermerge.core.tasks import send_task
+					try:
+						send_task(
+							"darchiva.scanning.rescan_requested",
+							kwargs={
+								"batch_id": str(sample.batch_id),
+								"sample_id": str(sample.id),
+								"project_id": str(batch.project_id),
+								"reason": data.review_notes or "QC review failed",
+								"reviewer_id": str(reviewer_id) if reviewer_id else None,
+							},
+							route_name="ocr",
+						)
+					except Exception as _e:
+						logger.warning(f"Failed to queue rescan task for batch {sample.batch_id}: {_e}")
+
 	await session.commit()
 	await session.refresh(sample)
 	return QualityControlSample.model_validate(sample)

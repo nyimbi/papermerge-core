@@ -93,6 +93,11 @@ class BundleSectionCreate(BaseModel):
 	name: str
 
 
+class ReorderDocumentRequest(BaseModel):
+	"""Request to move a document to a new position (1-indexed)."""
+	position: int
+
+
 class PaginationResult(BaseModel):
 	"""Result of bundle pagination."""
 	total_pages: int

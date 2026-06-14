@@ -708,7 +708,7 @@ async def execute_scan_job(
 
 			storage = get_storage_backend()
 			doc_ids = []
-			created_docs = []
+			doc_page_pairs: list[tuple] = []
 			ext = scan_result.format.lower()
 			if ext in ('jpeg', 'jpg'):
 				mime = MimeType.image_jpeg
@@ -764,10 +764,27 @@ async def execute_scan_job(
 					route_name="s3",
 				)
 
-				doc_ids.append(str(doc.id))
-				created_docs.append(doc)
+				send_task(
+					"darchiva.documents.index_embeddings",
+					kwargs={"document_id": str(doc.id), "user_id": str(job.user_id)},
+					countdown=120,
+				)
+				send_task(
+					"darchiva.documents.extract_entities",
+					kwargs={"document_id": str(doc.id), "user_id": str(job.user_id)},
+					countdown=130,
+				)
 
-			for doc in created_docs:
+				doc_ids.append(str(doc.id))
+				doc_page_pairs.append((doc, page_bytes))
+
+			for i, (doc, page_bytes) in enumerate(doc_page_pairs):
+				# BLAKE3 content hash for dedup
+				import blake3 as _blake3
+				_hasher = _blake3.blake3()
+				_hasher.update(page_bytes)
+				page_hash = _hasher.hexdigest()
+
 				provenance = DocumentProvenance(
 					document_id=doc.id,
 					batch_id=job.batch_id,
@@ -781,11 +798,12 @@ async def execute_scan_job(
 					scan_settings=job.options,
 					original_page_count=1,
 					current_page_count=1,
+					blake3_hash=page_hash,
 					tenant_id=UUID(tenant_id)
 				)
 				session.add(provenance)
 				await session.flush()
-				
+
 				event = ProvenanceEvent(
 					provenance_id=provenance.id,
 					event_type=EventType.SCANNED,
@@ -794,7 +812,43 @@ async def execute_scan_job(
 					description=f"Document scanned using {scanner.name} ({scanner.protocol})"
 				)
 				session.add(event)
-			
+
+				# OpenCV quality assessment (VLM is optional; skip gracefully if unavailable)
+				try:
+					import numpy as _np
+					import cv2 as _cv2
+					from papermerge.core.features.quality.assessment import QualityAssessor
+					from papermerge.core.features.quality.db.orm import QualityAssessment
+
+					_nparr = _np.frombuffer(page_bytes, _np.uint8)
+					_img = _cv2.imdecode(_nparr, _cv2.IMREAD_COLOR)
+					if _img is not None:
+						_metrics = QualityAssessor().assess_from_array(_img, dpi=options.resolution)
+						session.add(QualityAssessment(
+							document_id=doc.id,
+							page_number=1,
+							quality_score=_metrics.quality_score,
+							passed=_metrics.passed,
+							resolution_dpi=_metrics.resolution_dpi,
+							skew_angle=_metrics.skew_angle,
+							brightness=_metrics.brightness,
+							contrast=_metrics.contrast,
+							sharpness=_metrics.sharpness,
+							noise_level=_metrics.noise_level,
+							blur_score=_metrics.blur_score,
+							is_blank=_metrics.is_blank,
+							orientation=_metrics.orientation,
+							width_px=_metrics.width_px,
+							height_px=_metrics.height_px,
+							file_size_bytes=len(page_bytes),
+							issue_count=len(_metrics.issues),
+							critical_issues=_metrics.critical_issue_count,
+							assessed_by="system",
+							tenant_id=UUID(tenant_id),
+						))
+				except Exception as _qe:
+					logger.warning(f"Quality assessment skipped for scan page {i + 1}: {_qe}")
+
 			job.document_ids = doc_ids
 
 		else:

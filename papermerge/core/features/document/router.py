@@ -331,6 +331,18 @@ async def upload_document(
         route_name="s3"
     )
 
+    # Queue embedding indexing and entity extraction after OCR completes
+    send_task(
+        "darchiva.documents.index_embeddings",
+        kwargs={"document_id": str(doc.id), "user_id": str(user.id)},
+        countdown=120,
+    )
+    send_task(
+        "darchiva.documents.extract_entities",
+        kwargs={"document_id": str(doc.id), "user_id": str(user.id)},
+        countdown=130,
+    )
+
     logger.info(f"Document {doc.id} uploaded, queued for processing")
 
     return doc

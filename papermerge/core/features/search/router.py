@@ -194,3 +194,61 @@ async def delete_saved_search(
 	await db_session.commit()
 	if not result.fetchall():
 		raise HTTPException(status_code=404, detail="Saved search not found.")
+
+
+@router.get("/semantic")
+async def semantic_search(
+	user: Annotated[core_schema.User, Depends(get_current_user)],
+	q: str = Query(min_length=1, description="Natural-language query"),
+	limit: int = Query(default=20, ge=1, le=100),
+	threshold: float = Query(default=0.5, ge=0.0, le=1.0),
+) -> dict:
+	"""
+	Semantic (vector) search using document embeddings.
+
+	Returns documents ranked by cosine similarity to the query.
+	Requires semantic_search_enabled=true in settings.
+	"""
+	from papermerge.core.config import get_settings
+	from papermerge.core.db.engine import get_async_session_maker
+	from papermerge.core.search.semantic import SemanticSearch
+	from papermerge.core.search.embeddings.ollama import OllamaEmbeddings
+
+	cfg = get_settings()
+	if not cfg.semantic_search_enabled:
+		raise HTTPException(
+			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+			detail="Semantic search is not enabled. Set SEMANTIC_SEARCH_ENABLED=true.",
+		)
+
+	base_url = getattr(cfg, "embedding_base_url", "http://localhost:11434")
+	model = getattr(cfg, "embedding_model", "nomic-embed-text")
+	embedding_svc = OllamaEmbeddings(base_url=base_url, model=model)
+	searcher = SemanticSearch(
+		embedding_service=embedding_svc,
+		session_factory=get_async_session_maker(),
+	)
+
+	result = await searcher.search(
+		query=q,
+		user_id=user.id,
+		limit=limit,
+		threshold=threshold,
+	)
+	return {
+		"hits": [
+			{
+				"documentId": str(h.document_id),
+				"title": h.title,
+				"score": h.score,
+				"snippet": h.snippet,
+			}
+			for h in result.hits
+		],
+		"total": result.total,
+		"timings": {
+			"embedMs": round(result.query_embedding_time_ms, 1),
+			"searchMs": round(result.search_time_ms, 1),
+			"totalMs": round(result.total_time_ms, 1),
+		},
+	}
