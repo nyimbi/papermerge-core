@@ -85,29 +85,34 @@ class ScannerDiscovery:
 	async def _browse_service(self, service_type: str):
 		"""Browse for a specific service type."""
 		try:
-			from zeroconf import ServiceListener
+			from zeroconf.asyncio import AsyncServiceBrowser
 
-			class ScannerListener(ServiceListener):
-				def __init__(self, discovery: 'ScannerDiscovery'):
-					self.discovery = discovery
+			discovery_ref = self
 
-				def add_service(self, zc, type_, name):
+			class ScannerHandler:
+				"""Handlers called by AsyncServiceBrowser (zeroconf ≥0.132 API)."""
+
+				def add_service(self, zc, type_: str, name: str) -> None:
 					asyncio.create_task(
-						self.discovery._on_service_added(zc, type_, name)
+						discovery_ref._on_service_added(zc, type_, name)
 					)
 
-				def remove_service(self, zc, type_, name):
-					self.discovery._on_service_removed(name)
+				def remove_service(self, zc, type_: str, name: str) -> None:
+					discovery_ref._on_service_removed(name)
 
-				def update_service(self, zc, type_, name):
+				def update_service(self, zc, type_: str, name: str) -> None:
 					asyncio.create_task(
-						self.discovery._on_service_added(zc, type_, name)
+						discovery_ref._on_service_added(zc, type_, name)
 					)
 
-			listener = ScannerListener(self)
-			await self._zeroconf.async_add_service_listener(
-				service_type, listener
+			handler = ScannerHandler()
+			browser = AsyncServiceBrowser(
+				self._zeroconf.zeroconf, service_type, handlers=[handler]
 			)
+			# Keep a reference so the browser is not garbage-collected
+			if not hasattr(self, '_browsers'):
+				self._browsers = []
+			self._browsers.append(browser)
 
 		except Exception as e:
 			logger.error(f"Error browsing {service_type}: {e}")

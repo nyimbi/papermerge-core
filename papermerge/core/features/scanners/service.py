@@ -3,7 +3,9 @@
 import asyncio
 import concurrent.futures
 import logging
+import uuid as _uuid_module
 from datetime import datetime, timedelta
+from io import BytesIO
 from typing import Any
 from uuid import UUID
 
@@ -699,38 +701,72 @@ async def execute_scan_job(
 			scanner.total_jobs += 1
 			scanner.last_seen_at = datetime.now()
 
-			# Create documents from scanned pages in bulk
-			docs_data = []
-			for i, page_data in enumerate(scan_result.pages):
+			# Create documents from scanned pages: upload bytes + queue OCR
+			from papermerge.core import pathlib as pmg_pathlib
+			from papermerge.storage.base import get_storage_backend
+			from papermerge.core.tasks import send_task
+
+			storage = get_storage_backend()
+			doc_ids = []
+			created_docs = []
+			ext = scan_result.format.lower()
+			if ext in ('jpeg', 'jpg'):
+				mime = MimeType.image_jpeg
+				file_ext = 'jpg'
+			elif ext == 'png':
+				mime = MimeType.image_png
+				file_ext = 'png'
+			elif ext == 'tiff':
+				mime = MimeType.image_tiff
+				file_ext = 'tiff'
+			else:
+				mime = MimeType.application_pdf
+				file_ext = 'pdf'
+
+			for i, page_bytes in enumerate(scan_result.pages):
+				doc_id = _uuid_module.uuid4()
+				doc_ver_id = _uuid_module.uuid4()
+				file_name = f"scan_{job.id[:8]}_{i+1}.{file_ext}"
+				object_key = str(pmg_pathlib.docver_path(doc_ver_id, file_name=file_name))
+
 				new_doc_attrs = doc_schema.NewDocument(
+					id=doc_id,
 					title=f"Scan_{job.id[:8]}_{i+1}",
 					parent_id=UUID(job.destination_folder_id) if job.destination_folder_id else None,
 					lang=options.lang or 'deu',
 					ocr=True,
+					file_name=file_name,
 					created_by=UUID(job.user_id),
-					updated_by=UUID(job.user_id)
+					updated_by=UUID(job.user_id),
 				)
-				
-				# Determine mime type
-				ext = scan_result.format.lower()
-				mime = MimeType.application_pdf
-				if ext == 'jpeg' or ext == 'jpg':
-					mime = MimeType.image_jpeg
-				elif ext == 'png':
-					mime = MimeType.image_png
-				elif ext == 'tiff':
-					mime = MimeType.image_tiff
-				
-				docs_data.append((new_doc_attrs, mime))
 
-			created_docs = await doc_dbapi.bulk_create_documents(
-				db_session=session,
-				documents_data=docs_data
-			)
-			
-			doc_ids = [str(doc.id) for doc in created_docs]
-			
-			# Create provenance and log events for each created document
+				doc = await doc_dbapi.create_document(
+					session,
+					new_doc_attrs,
+					mime_type=mime,
+					document_version_id=doc_ver_id,
+				)
+
+				await storage.upload_bytes(
+					data=page_bytes,
+					object_key=object_key,
+					content_type=mime.value,
+				)
+
+				send_task(
+					"process_upload",
+					kwargs={
+						"document_id": str(doc.id),
+						"document_version_id": str(doc_ver_id),
+						"lang": options.lang or 'deu',
+						"user_id": str(job.user_id),
+					},
+					route_name="s3",
+				)
+
+				doc_ids.append(str(doc.id))
+				created_docs.append(doc)
+
 			for doc in created_docs:
 				provenance = DocumentProvenance(
 					document_id=doc.id,

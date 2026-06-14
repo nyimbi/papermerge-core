@@ -48,6 +48,31 @@ class StorageBackend(ABC):
         """Upload file and return actual size in bytes"""
         pass
 
+    async def upload_bytes(
+        self,
+        data: bytes,
+        object_key: str,
+        content_type: str,
+    ) -> int:
+        """Upload raw bytes. Default wraps in UploadFile and calls upload_file."""
+        from io import BytesIO
+        from starlette.datastructures import Headers
+
+        fake = UploadFile(
+            file=BytesIO(data),
+            size=len(data),
+            filename=object_key.rsplit("/", 1)[-1],
+            headers=Headers({"content-type": content_type}),
+        )
+        result = await self.upload_file(
+            file=fake,
+            object_key=object_key,
+            content_type=content_type,
+            max_file_size=200 * 1024 * 1024,
+        )
+        # upload_file may return (size, content) tuple (local backend) or just int
+        return result[0] if isinstance(result, tuple) else result
+
 
 def get_storage_backend() -> StorageBackend:
     """
