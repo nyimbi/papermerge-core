@@ -261,42 +261,236 @@ async def get_compliance_report(
 
 
 @router.get("/export")
+@utils.docstring_parameter(scope=scopes.AUDIT_LOG_VIEW)
 async def export_audit_logs(
-    user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.NODE_VIEW])],
+    user: Annotated[schema.User, Security(get_current_user, scopes=[scopes.AUDIT_LOG_VIEW])],
     db_session: AsyncSession = Depends(get_db),
-    user_id: uuid.UUID | None = None,
-    start_date: datetime | None = None,
-    end_date: datetime | None = None,
-):
-    """Export audit logs as JSON."""
-    import json
-    from sqlalchemy import select as sa_select
-    from fastapi.responses import Response
-    from papermerge.core.features.audit.db.orm import AuditLog
+    format: str = Query("csv", pattern="^(csv|pdf)$"),
+    # Re-use the same filter params as the list endpoint
+    filter_operation: str | None = Query(None),
+    filter_table_name: str | None = Query(None),
+    filter_username: str | None = Query(None),
+    filter_user_id: str | None = Query(None),
+    filter_record_id: str | None = Query(None),
+    filter_timestamp_from: str | None = Query(None),
+    filter_timestamp_to: str | None = Query(None),
+    filter_free_text: str | None = Query(None),
+) -> Response:
+    """Export audit logs as CSV or printable HTML (PDF).
 
-    stmt = sa_select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(10000)
-    if user_id:
-        stmt = stmt.where(AuditLog.user_id == user_id)
-    if start_date:
-        stmt = stmt.where(AuditLog.timestamp >= start_date)
-    if end_date:
-        stmt = stmt.where(AuditLog.timestamp <= end_date)
+    Required scope: `{scope}`
+
+    - **format=csv**: returns a downloadable CSV file
+    - **format=pdf**: returns printable HTML with a print stylesheet; open in browser and Print→Save as PDF
+    """
+    import csv
+    import io
+    import html as html_mod
+    from datetime import timezone
+    from fastapi.responses import Response as FastAPIResponse
+    from sqlalchemy import select as sa_select, and_, or_, func as sa_func, String as sa_String
+    from papermerge.core.features.audit.db import orm as audit_orm
+
+    # ── build query (no pagination, all matching rows) ──────────────────────
+    stmt = sa_select(audit_orm.AuditLog).order_by(audit_orm.AuditLog.timestamp.desc())
+
+    conditions = []
+
+    if filter_operation:
+        ops = [op.strip().upper() for op in filter_operation.split(",") if op.strip()]
+        if ops:
+            conditions.append(audit_orm.AuditLog.operation.in_(ops))
+
+    if filter_table_name:
+        tables = [t.strip() for t in filter_table_name.split(",") if t.strip()]
+        if tables:
+            conditions.append(audit_orm.AuditLog.table_name.in_(tables))
+
+    if filter_username:
+        usernames = [u.strip() for u in filter_username.split(",") if u.strip()]
+        if usernames:
+            conditions.append(audit_orm.AuditLog.username.in_(usernames))
+
+    if filter_user_id:
+        try:
+            uid = uuid.UUID(filter_user_id)
+            conditions.append(audit_orm.AuditLog.user_id == uid)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid filter_user_id UUID")
+
+    if filter_record_id:
+        try:
+            rid = uuid.UUID(filter_record_id)
+            conditions.append(audit_orm.AuditLog.record_id == rid)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid filter_record_id UUID")
+
+    if filter_timestamp_from:
+        try:
+            dt_from = datetime.fromisoformat(filter_timestamp_from.replace("Z", "+00:00"))
+            conditions.append(audit_orm.AuditLog.timestamp >= dt_from)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid filter_timestamp_from")
+
+    if filter_timestamp_to:
+        try:
+            dt_to = datetime.fromisoformat(filter_timestamp_to.replace("Z", "+00:00"))
+            conditions.append(audit_orm.AuditLog.timestamp <= dt_to)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid filter_timestamp_to")
+
+    if filter_free_text:
+        conditions.append(
+            or_(
+                sa_func.cast(audit_orm.AuditLog.record_id, sa_String).ilike(f"%{filter_free_text}%"),
+                sa_func.cast(audit_orm.AuditLog.user_id, sa_String).ilike(f"%{filter_free_text}%"),
+                audit_orm.AuditLog.username.ilike(f"%{filter_free_text}%"),
+                audit_orm.AuditLog.table_name.ilike(f"%{filter_free_text}%"),
+                audit_orm.AuditLog.operation.ilike(f"%{filter_free_text}%"),
+            )
+        )
+
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
 
     result = await db_session.execute(stmt)
     logs = result.scalars().all()
-    data = [
-        {
-            "id": str(log.id),
-            "user_id": str(log.user_id) if log.user_id else None,
-            "operation": log.operation,
-            "table_name": log.table_name,
-            "record_id": str(log.record_id) if log.record_id else None,
-            "created_at": log.timestamp.isoformat() if log.timestamp else None,
-        }
-        for log in logs
-    ]
-    return Response(
-        content=json.dumps(data),
-        media_type="application/json",
-        headers={"Content-Disposition": "attachment; filename=audit-logs.json"},
+
+    # ── build filter summary string for headers ──────────────────────────────
+    active_filters: list[str] = []
+    if filter_operation:
+        active_filters.append(f"Operation: {filter_operation}")
+    if filter_table_name:
+        active_filters.append(f"Table: {filter_table_name}")
+    if filter_username:
+        active_filters.append(f"User: {filter_username}")
+    if filter_timestamp_from:
+        active_filters.append(f"From: {filter_timestamp_from}")
+    if filter_timestamp_to:
+        active_filters.append(f"To: {filter_timestamp_to}")
+    filter_summary = ", ".join(active_filters) if active_filters else "None"
+
+    generated_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    file_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # ── CSV export ────────────────────────────────────────────────────────────
+    if format == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "timestamp", "user_email", "action", "table_name", "record_id", "changes_summary"
+        ])
+        for log in logs:
+            ts = log.timestamp.isoformat() if log.timestamp else ""
+            user_email = log.username or (str(log.user_id) if log.user_id else "")
+            action = str(log.operation.value if hasattr(log.operation, "value") else log.operation)
+            table = log.table_name or ""
+            record = str(log.record_id) if log.record_id else ""
+            # Build changes summary from changed_fields / old+new values
+            if log.changed_fields:
+                summary = "Changed: " + ", ".join(log.changed_fields)
+            elif log.audit_message:
+                summary = log.audit_message
+            elif log.new_values:
+                keys = list(log.new_values.keys())[:5]
+                summary = "Fields: " + ", ".join(keys)
+            else:
+                summary = ""
+            writer.writerow([ts, user_email, action, table, record, summary])
+
+        filename = f"audit-{file_date}.csv"
+        return FastAPIResponse(
+            content=buf.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    # ── HTML/print export (PDF) ───────────────────────────────────────────────
+    rows_html_parts: list[str] = []
+    for log in logs:
+        ts = log.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC") if log.timestamp else ""
+        user_email = html_mod.escape(log.username or (str(log.user_id) if log.user_id else "—"))
+        action = html_mod.escape(
+            str(log.operation.value if hasattr(log.operation, "value") else log.operation)
+        )
+        table = html_mod.escape(log.table_name or "")
+        record = html_mod.escape(str(log.record_id) if log.record_id else "")
+        if log.changed_fields:
+            summary = html_mod.escape("Changed: " + ", ".join(log.changed_fields))
+        elif log.audit_message:
+            summary = html_mod.escape(log.audit_message)
+        elif log.new_values:
+            keys = list(log.new_values.keys())[:5]
+            summary = html_mod.escape("Fields: " + ", ".join(keys))
+        else:
+            summary = ""
+        rows_html_parts.append(
+            f"<tr><td>{ts}</td><td>{user_email}</td><td>{action}</td>"
+            f"<td>{table}</td><td>{record}</td><td>{summary}</td></tr>"
+        )
+
+    rows_html = "\n".join(rows_html_parts)
+    row_count = len(logs)
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>dArchiva Audit Log Export</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: Arial, Helvetica, sans-serif; font-size: 12pt; color: #111; background: #fff; padding: 24px; }}
+    header {{ border-bottom: 2px solid #1a56db; padding-bottom: 12px; margin-bottom: 16px; }}
+    header h1 {{ font-size: 18pt; color: #1a56db; }}
+    header .meta {{ font-size: 9pt; color: #555; margin-top: 4px; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 9pt; }}
+    thead tr {{ background: #1a56db; color: #fff; }}
+    thead th {{ padding: 6px 8px; text-align: left; font-weight: bold; }}
+    tbody tr:nth-child(even) {{ background: #f3f6fb; }}
+    tbody td {{ padding: 5px 8px; border-bottom: 1px solid #dde3ee; word-break: break-word; }}
+    .summary {{ font-size: 9pt; color: #444; margin-bottom: 12px; }}
+    @media print {{
+      body {{ font-size: 10pt; padding: 0; }}
+      header {{ padding-bottom: 8px; }}
+      thead tr {{ background: #1a56db !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+      tbody tr:nth-child(even) {{ background: #f3f6fb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+      @page {{ margin: 1.5cm; size: A4 landscape; }}
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>dArchiva &mdash; Audit Log Export</h1>
+    <div class="meta">Generated: {generated_date} &nbsp;&bull;&nbsp; Total rows: {row_count}</div>
+  </header>
+  <div class="summary">
+    <strong>Filters applied:</strong> {html_mod.escape(filter_summary)}
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Timestamp</th>
+        <th>User / Email</th>
+        <th>Action</th>
+        <th>Table</th>
+        <th>Record ID</th>
+        <th>Changes Summary</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows_html if rows_html else '<tr><td colspan="6" style="text-align:center;color:#888">No records found</td></tr>'}
+    </tbody>
+  </table>
+</body>
+</html>"""
+
+    return FastAPIResponse(
+        content=html_content,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+        },
     )

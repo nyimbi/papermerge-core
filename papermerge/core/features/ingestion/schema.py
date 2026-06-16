@@ -235,3 +235,25 @@ class BatchValidationRequest(BaseModel):
 	"""Request to validate files before ingestion."""
 	file_paths: list[str]
 	template_id: UUID | None = None
+
+
+# ==================== Source Dashboard Schemas ====================
+
+class SourceDashboardItem(BaseModel):
+	"""Aggregated health + activity data for one ingestion source."""
+	id: str
+	type: str  # watched_folder, email, api, scanner, scan_agent
+	name: str
+	status: str  # active, inactive, error, degraded
+	last_activity_at: datetime | None = None
+	docs_ingested_24h: int = 0
+	docs_ingested_7d: int = 0
+	error_count: int = 0
+	last_error: str | None = None
+
+	model_config = ConfigDict(from_attributes=True)
+
+
+class SourceDashboardResponse(BaseModel):
+	"""Dashboard aggregating all ingestion source types."""
+	sources: list[SourceDashboardItem]

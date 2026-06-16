@@ -11,8 +11,9 @@ from papermerge.core import scopes, db
 from papermerge.core.features.auth import get_current_user
 from papermerge.core.db.engine import get_db
 from papermerge.core import schema as core_schema
-from .schema import SearchQueryParams, SearchDocumentsResponse
+from .schema import SearchQueryParams, SearchDocumentsResponse, SearchFacetsResponse
 from .db.orm import SavedSearch, DocumentSearchIndex
+from .db.api import get_search_facets
 
 router = APIRouter(
     prefix="/search",
@@ -114,6 +115,39 @@ async def documents_search(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Search operation failed. Please try again later."
+        )
+
+
+@router.get(
+    "/facets",
+    response_model=SearchFacetsResponse,
+    responses={
+        403: {"description": "Insufficient permissions"},
+        500: {"description": "Facet computation failed"},
+    },
+)
+async def search_facets(
+    user: scopes.ViewNode,
+    q: str = Query(default="", description="Optional search query to scope facets"),
+    db_session: AsyncSession = Depends(db.get_db),
+) -> SearchFacetsResponse:
+    """
+    Return facet counts for the advanced search sidebar.
+
+    Facets are scoped to documents the current user can access.
+    Optionally pass `q` to narrow facets to a full-text search query.
+    """
+    try:
+        return await get_search_facets(
+            db_session=db_session,
+            user_id=user.id,
+            q=q or None,
+        )
+    except Exception as e:
+        logger.error(f"Facet computation failed for user {user.id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Facet computation failed.",
         )
 
 

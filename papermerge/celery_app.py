@@ -97,6 +97,9 @@ app.conf.task_routes = {
     # Outbound webhooks
     "darchiva.webhooks.deliver": {"queue": prefixed("core")},
     "darchiva.webhooks.deliver_ocr_complete": {"queue": prefixed("core")},
+    # Retention policies
+    "darchiva.retention.sweep": {"queue": prefixed("core")},
+    "darchiva.retention.run_policy": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks
@@ -116,5 +119,9 @@ app.conf.beat_schedule = {
     "sync-all-email-accounts": {
         "task": "darchiva.email.poll_all_accounts",
         "schedule": 300.0,  # Every 5 minutes — respects per-account sync_interval_minutes
+    },
+    "retention-policy-sweep": {
+        "task": "darchiva.retention.sweep",
+        "schedule": 86400.0,  # Daily
     },
 }

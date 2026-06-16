@@ -653,6 +653,135 @@ async def get_document_details(
     return doc
 
 
+class OcrWord(BaseModel):
+    """Per-word OCR data with fractional page coordinates."""
+    text: str
+    confidence: float        # 0.0 – 1.0
+    x: float                 # left edge, fraction of page width
+    y: float                 # top edge, fraction of page height
+    width: float             # fraction of page width
+    height: float            # fraction of page height
+
+
+class OcrWordsResponse(BaseModel):
+    words: list[OcrWord]
+    source: str              # "hocr" | "placeholder"
+    page_number: int
+
+
+@router.get(
+    "/{document_id}/pages/{page_number}/ocr-words",
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_VIEW}` permission on the node",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        }
+    },
+)
+async def get_page_ocr_words(
+        document_id: uuid.UUID,
+        page_number: int,
+        user: require_scopes(scopes.NODE_VIEW),
+        db_session: AsyncSession = Depends(get_db),
+) -> OcrWordsResponse:
+    """Return per-word OCR data for a single page.
+
+    Coordinates (x, y, width, height) are fractions of the page image
+    dimensions (0.0–1.0), suitable for CSS `position: absolute` overlays.
+
+    When an hOCR file exists for the page the real Tesseract word
+    confidence values are returned.  When no hOCR file is present
+    (e.g. the document was imported as plain text), a placeholder
+    response is returned with uniform 0.85 confidence so the overlay
+    renders without error.
+    """
+    from sqlalchemy import select as sa_select
+    from papermerge.core import orm as core_orm
+    from papermerge.core.pathlib import abs_page_hocr_path
+    from papermerge.core.lib import extract_words_from
+
+    # Permission check
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    # Resolve the page ID from document_id + page_number (last version)
+    stmt = (
+        sa_select(core_orm.Page)
+        .join(core_orm.DocumentVersion,
+              core_orm.Page.document_version_id == core_orm.DocumentVersion.id)
+        .where(core_orm.DocumentVersion.document_id == document_id)
+        .where(core_orm.Page.number == page_number)
+        .order_by(core_orm.DocumentVersion.number.desc())
+        .limit(1)
+    )
+    result = await db_session.execute(stmt)
+    page_orm = result.scalar_one_or_none()
+
+    if page_orm is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Page {page_number} not found for document {document_id}",
+        )
+
+    hocr_path = abs_page_hocr_path(page_orm.id)
+
+    if not hocr_path.exists():
+        # No hOCR: return placeholder so the overlay still renders
+        return OcrWordsResponse(
+            words=[],
+            source="placeholder",
+            page_number=page_number,
+        )
+
+    # Parse hOCR — extract_words_from returns pixel coords; we need the
+    # page image dimensions to normalise them.  The hOCR file itself
+    # carries the page bbox in the ocr_page span, so we read it directly.
+    import re as _re
+    import lxml.html as _lhtml
+
+    hocr_bytes = hocr_path.read_bytes()
+    html_root = _lhtml.fromstring(hocr_bytes)
+
+    # Page dimensions from the ocr_page element
+    page_width_px = 1.0
+    page_height_px = 1.0
+    for page_span in html_root.xpath("//*[@class='ocr_page']"):
+        title_attr = page_span.attrib.get('title', '')
+        m = _re.search(r'bbox\s+\d+\s+\d+\s+(\d+)\s+(\d+)', title_attr)
+        if m:
+            page_width_px = float(m.group(1)) or 1.0
+            page_height_px = float(m.group(2)) or 1.0
+            break
+
+    raw_words = extract_words_from(hocr_path)
+    words: list[OcrWord] = []
+    for w in raw_words:
+        x1, y1, x2, y2 = w['x1'], w['y1'], w['x2'], w['y2']
+        fw = (x2 - x1) / page_width_px
+        fh = (y2 - y1) / page_height_px
+        if fw <= 0 or fh <= 0:
+            continue
+        words.append(OcrWord(
+            text=w['text'],
+            confidence=w['wconf'] / 100.0,
+            x=x1 / page_width_px,
+            y=y1 / page_height_px,
+            width=fw,
+            height=fh,
+        ))
+
+    return OcrWordsResponse(
+        words=words,
+        source="hocr",
+        page_number=page_number,
+    )
+
+
 @router.get(
     "/{document_id}/anomaly",
     response_model=AnomalyResult,

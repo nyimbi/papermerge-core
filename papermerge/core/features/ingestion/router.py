@@ -27,6 +27,227 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 
+@router.get("/sources/dashboard")
+async def get_sources_dashboard(
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+) -> schema.SourceDashboardResponse:
+	"""Aggregate health + activity across all ingestion source types.
+
+	Covers:
+	  - ingestion_sources (watched_folder, email, api, scanner)
+	  - email_accounts (IMAP / OAuth)
+	  - scan_agents fleet
+	"""
+	from datetime import datetime, timezone, timedelta
+	from sqlalchemy import text
+
+	now = datetime.now(timezone.utc)
+	cutoff_24h = now - timedelta(hours=24)
+	cutoff_7d = now - timedelta(days=7)
+	tenant_id = str(user.tenant_id)
+
+	items: list[schema.SourceDashboardItem] = []
+
+	# ── 1. ingestion_sources rows ────────────────────────────────────────────
+	src_stmt = select(IngestionSource).where(
+		IngestionSource.tenant_id == user.tenant_id
+	)
+	result = await db_session.execute(src_stmt)
+	ing_sources = result.scalars().all()
+
+	for src in ing_sources:
+		# Count completed jobs in 24h / 7d
+		def _job_count(cutoff: datetime) -> "select":
+			return (
+				select(func.count())
+				.select_from(IngestionJob)
+				.where(
+					IngestionJob.source_id == src.id,
+					IngestionJob.status == "completed",
+					IngestionJob.created_at >= cutoff,
+				)
+			)
+
+		docs_24h = (await db_session.scalar(_job_count(cutoff_24h))) or 0
+		docs_7d = (await db_session.scalar(_job_count(cutoff_7d))) or 0
+
+		# Count failed jobs (all-time acts as error_count indicator)
+		err_stmt = (
+			select(func.count())
+			.select_from(IngestionJob)
+			.where(
+				IngestionJob.source_id == src.id,
+				IngestionJob.status == "failed",
+			)
+		)
+		error_count = (await db_session.scalar(err_stmt)) or 0
+
+		# Last error message
+		last_err_stmt = (
+			select(IngestionJob.error_message)
+			.where(
+				IngestionJob.source_id == src.id,
+				IngestionJob.status == "failed",
+				IngestionJob.error_message.isnot(None),
+			)
+			.order_by(IngestionJob.created_at.desc())
+			.limit(1)
+		)
+		last_error = await db_session.scalar(last_err_stmt)
+
+		if not src.is_active:
+			status = "inactive"
+		elif error_count > 0:
+			status = "error"
+		else:
+			status = "active"
+
+		items.append(schema.SourceDashboardItem(
+			id=str(src.id),
+			type=src.source_type,
+			name=src.name,
+			status=status,
+			last_activity_at=src.last_checked_at,
+			docs_ingested_24h=docs_24h,
+			docs_ingested_7d=docs_7d,
+			error_count=error_count,
+			last_error=last_error,
+		))
+
+	# ── 2. email_accounts ────────────────────────────────────────────────────
+	try:
+		from papermerge.core.features.emails.models import EmailAccountModel, EmailImportModel
+		ea_stmt = select(EmailAccountModel).where(
+			EmailAccountModel.owner_id.in_(
+				select(text("id")).select_from(text("users")).where(
+					text("tenant_id = :tid")
+				).params(tid=tenant_id)
+			)
+		)
+		ea_result = await db_session.execute(ea_stmt)
+		email_accounts = ea_result.scalars().all()
+
+		for acct in email_accounts:
+			# docs ingested via this account
+			def _email_count(cutoff: datetime) -> "select":
+				return (
+					select(func.count())
+					.select_from(EmailImportModel)
+					.where(
+						EmailImportModel.source_account_id == acct.id,
+						EmailImportModel.import_status == "completed",
+						EmailImportModel.created_at >= cutoff,
+					)
+				)
+
+			docs_24h = (await db_session.scalar(_email_count(cutoff_24h))) or 0
+			docs_7d = (await db_session.scalar(_email_count(cutoff_7d))) or 0
+
+			if not acct.is_active:
+				status = "inactive"
+			elif acct.connection_status == "error":
+				status = "error"
+			elif acct.connection_status == "connected":
+				status = "active"
+			else:
+				status = "inactive"
+
+			items.append(schema.SourceDashboardItem(
+				id=str(acct.id),
+				type="email_account",
+				name=acct.name,
+				status=status,
+				last_activity_at=acct.last_sync_at,
+				docs_ingested_24h=docs_24h,
+				docs_ingested_7d=docs_7d,
+				error_count=1 if acct.connection_error else 0,
+				last_error=acct.connection_error,
+			))
+	except Exception as exc:
+		logger.debug("email_accounts dashboard aggregation skipped: %s", exc)
+
+	# ── 3. scan_agents ───────────────────────────────────────────────────────
+	try:
+		from papermerge.core.features.agents.models import AgentModel
+		from datetime import timezone as _tz
+		agent_stmt = select(AgentModel).where(AgentModel.tenant_id == tenant_id)
+		agent_result = await db_session.execute(agent_stmt)
+		agents = agent_result.scalars().all()
+
+		online_threshold = now - timedelta(minutes=5)
+
+		for agent in agents:
+			last_seen = agent.last_seen
+			if last_seen and last_seen.tzinfo is None:
+				last_seen = last_seen.replace(tzinfo=_tz.utc)
+
+			if last_seen and last_seen >= online_threshold:
+				status = "active"
+			elif last_seen:
+				status = "inactive"
+			else:
+				status = "inactive"
+
+			items.append(schema.SourceDashboardItem(
+				id=str(agent.id),
+				type="scan_agent",
+				name=agent.name or agent.hostname,
+				status=status,
+				last_activity_at=last_seen,
+				docs_ingested_24h=0,
+				docs_ingested_7d=0,
+				error_count=0,
+				last_error=None,
+			))
+	except Exception as exc:
+		logger.debug("scan_agents dashboard aggregation skipped: %s", exc)
+
+	return schema.SourceDashboardResponse(sources=items)
+
+
+@router.post("/sources/{source_id}/retry")
+async def retry_ingestion_source(
+	source_id: UUID,
+	user: require_scopes(scopes.NODE_UPDATE),
+	db_session: AsyncSession = Depends(get_db),
+) -> dict:
+	"""Re-trigger a failed ingestion source sync."""
+	source = await db_session.get(IngestionSource, source_id)
+	if not source:
+		raise HTTPException(status_code=404, detail="Source not found")
+
+	# Reset any failed jobs for this source to pending so they are retried
+	failed_jobs_stmt = (
+		select(IngestionJob)
+		.where(
+			IngestionJob.source_id == source_id,
+			IngestionJob.status == "failed",
+		)
+		.limit(50)
+	)
+	result = await db_session.execute(failed_jobs_stmt)
+	failed_jobs = result.scalars().all()
+	for job in failed_jobs:
+		job.status = "pending"
+		job.retry_count = (job.retry_count or 0) + 1
+
+	# Activate the source if it was inactive
+	if not source.is_active:
+		source.is_active = True
+
+	await db_session.commit()
+
+	# Queue the watcher/processor task
+	from papermerge.core.tasks import send_task
+	send_task("darchiva.ingestion.start_watcher", kwargs={"source_id": str(source_id)})
+
+	return {
+		"success": True,
+		"message": f"Source {source.name} re-triggered, {len(failed_jobs)} failed job(s) reset to pending",
+	}
+
+
 @router.get("/sources")
 async def list_ingestion_sources(
 	user: require_scopes(scopes.NODE_VIEW),

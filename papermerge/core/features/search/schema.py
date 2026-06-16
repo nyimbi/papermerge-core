@@ -90,6 +90,10 @@ class SortBy(str, Enum):
     CREATED_BY = "created_by"
     UPDATED_BY = "updated_by"
     OWNED_BY = "owned_by"
+    QUALITY_ASC = "quality_asc"
+    RELEVANCE = "relevance"
+    DATE_DESC = "date_desc"
+    DATE_ASC = "date_asc"
 
 
 class SortDirection(str, Enum):
@@ -377,6 +381,44 @@ class SearchFilters(BaseModel):
         description="Who updated the document"
     )
 
+    # ---- Scanning / dArchiva-specific filters --------------------------------
+    date_from: Optional[date] = Field(
+        None,
+        description="Filter documents created on or after this date (ISO date string)"
+    )
+
+    date_to: Optional[date] = Field(
+        None,
+        description="Filter documents created on or before this date (ISO date string)"
+    )
+
+    quality_score_min: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=100.0,
+        description="Minimum quality score (0-100). Excludes documents below threshold."
+    )
+
+    scanned_by_id: Optional[UUID] = Field(
+        None,
+        description="Filter by operator (user) who created the document"
+    )
+
+    project_id: Optional[str] = Field(
+        None,
+        description="Filter by scanning project ID"
+    )
+
+    has_annotations: Optional[bool] = Field(
+        None,
+        description="If true, return only documents with at least one annotation"
+    )
+
+    has_exceptions: Optional[bool] = Field(
+        None,
+        description="If true, return only documents with at least one exception event"
+    )
+
     @field_validator('tags')
     @classmethod
     def validate_tag_values(cls, tags: Optional[TagFilter]) -> Any:
@@ -585,3 +627,32 @@ class SearchDocumentsResponse(BaseModel):
     )
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ============================================================================
+# Facets Response Schema
+# ============================================================================
+
+class FacetItem(BaseModel):
+    name: str
+    count: int
+
+
+class DateHistogramBucket(BaseModel):
+    date: str  # YYYY-MM
+    count: int
+
+
+class QualityBucket(BaseModel):
+    label: str   # e.g. "0-25", "25-50", "50-75", "75-100"
+    min: float
+    max: float
+    count: int
+
+
+class SearchFacetsResponse(BaseModel):
+    document_types: List[FacetItem] = Field(default_factory=list)
+    date_histogram: List[DateHistogramBucket] = Field(default_factory=list)
+    quality_buckets: List[QualityBucket] = Field(default_factory=list)
+    operators: List[FacetItem] = Field(default_factory=list)
+    projects: List[FacetItem] = Field(default_factory=list)

@@ -1068,3 +1068,151 @@ def dispatch_webhook_event(event_type: str, payload: dict, tenant_id: str) -> No
 			loop.run_until_complete(_query_and_dispatch())
 	except RuntimeError:
 		_asyncio.run(_query_and_dispatch())
+
+
+# ---------------------------------------------------------------------------
+# Retention policy sweep
+# ---------------------------------------------------------------------------
+
+
+@shared_task(name="darchiva.retention.sweep")
+def sweep_retention_policies():
+	"""Daily sweep: find documents matching active retention policies and act on them."""
+	logger.info(_log_task("sweep_retention_policies"))
+	import asyncio as _asyncio
+
+	async def _run():
+		from datetime import datetime, timedelta
+
+		from sqlalchemy import and_, select
+
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.retention.db.orm import RetentionPolicy
+
+		async_session = get_async_session_maker()
+		async with async_session() as session:
+			stmt = select(RetentionPolicy).where(RetentionPolicy.is_active == True)  # noqa: E712
+			result = await session.execute(stmt)
+			policies = result.scalars().all()
+
+			total_processed = 0
+			for policy in policies:
+				try:
+					count = await _apply_policy(session, policy)
+					policy.last_run_at = datetime.utcnow() if count >= 0 else policy.last_run_at
+					policy.docs_processed = (policy.docs_processed or 0) + max(count, 0)
+					total_processed += max(count, 0)
+				except Exception as exc:
+					logger.error(
+						f"retention sweep error policy={policy.id}: {exc}", exc_info=True
+					)
+
+			await session.commit()
+			logger.info(f"retention sweep complete: processed {total_processed} documents")
+
+	async def _apply_policy(session, policy: "RetentionPolicy") -> int:
+		from datetime import datetime as _dt, timedelta
+
+		from sqlalchemy import and_, select
+
+		from papermerge.core.features.document.db.orm import Document
+
+		cutoff = _dt.utcnow() - timedelta(days=policy.after_days)
+
+		stmt = select(Document).where(
+			Document.tenant_id == policy.tenant_id,
+			Document.created_at <= cutoff,
+			Document.legal_hold == False,  # noqa: E712
+		)
+		if policy.applies_to_project_id:
+			stmt = stmt.where(Document.scanning_project_id == policy.applies_to_project_id)
+		if policy.applies_to_document_type:
+			# Join via document_type name if available; filter loosely
+			stmt = stmt.where(Document.document_type_id != None)  # noqa: E711
+
+		result = await session.execute(stmt)
+		docs = result.scalars().all()
+
+		count = 0
+		for doc in docs:
+			try:
+				if policy.policy_type == "delete":
+					await session.delete(doc)
+					count += 1
+				elif policy.policy_type == "archive":
+					# Mark document as archived via a flag if available, else log
+					if hasattr(doc, "is_archived"):
+						doc.is_archived = True
+						count += 1
+					else:
+						logger.debug(
+							f"retention archive: document model has no is_archived field, "
+							f"skipping doc={doc.id}"
+						)
+				elif policy.policy_type == "move" and policy.destination_folder_id:
+					doc.parent_id = policy.destination_folder_id
+					count += 1
+			except Exception as exc:
+				logger.error(
+					f"retention apply error doc={doc.id} policy={policy.id}: {exc}", exc_info=True
+				)
+
+		return count
+
+	asyncio.run(_run())
+
+
+@shared_task(name="darchiva.retention.run_policy")
+def run_retention_policy_task(policy_id: str, dry_run: bool = False):
+	"""Run a single retention policy by ID (triggered manually or from the API)."""
+	logger.info(_log_task(f"run_retention_policy_task:{policy_id[:8]} dry_run={dry_run}"))
+	import asyncio as _asyncio
+
+	async def _run():
+		from datetime import datetime as _dt, timedelta
+
+		from sqlalchemy import select
+
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.document.db.orm import Document
+		from papermerge.core.features.retention.db.orm import RetentionPolicy
+
+		async_session = get_async_session_maker()
+		async with async_session() as session:
+			policy = await session.get(RetentionPolicy, policy_id)
+			if not policy:
+				logger.error(f"run_retention_policy_task: policy {policy_id!r} not found")
+				return
+
+			cutoff = _dt.utcnow() - timedelta(days=policy.after_days)
+			stmt = select(Document).where(
+				Document.tenant_id == policy.tenant_id,
+				Document.created_at <= cutoff,
+				Document.legal_hold == False,  # noqa: E712
+			)
+			if policy.applies_to_project_id:
+				stmt = stmt.where(Document.scanning_project_id == policy.applies_to_project_id)
+
+			result = await session.execute(stmt)
+			docs = result.scalars().all()
+			count = len(docs)
+
+			if not dry_run:
+				for doc in docs:
+					if policy.policy_type == "delete":
+						await session.delete(doc)
+					elif policy.policy_type == "move" and policy.destination_folder_id:
+						doc.parent_id = policy.destination_folder_id
+					elif policy.policy_type == "archive" and hasattr(doc, "is_archived"):
+						doc.is_archived = True
+
+				policy.last_run_at = _dt.utcnow()
+				policy.docs_processed = (policy.docs_processed or 0) + count
+				await session.commit()
+
+			logger.info(
+				f"run_retention_policy_task: policy={policy_id[:8]} "
+				f"matched={count} dry_run={dry_run}"
+			)
+
+	_asyncio.run(_run())

@@ -234,7 +234,10 @@ class ScanningBatchBase(BaseModel):
 
 
 class ScanningBatchCreate(ScanningBatchBase):
-	pass
+	template_id: str | None = Field(
+		default=None,
+		description="Optional batch template ID. When supplied, template scan settings are applied and usage_count is incremented.",
+	)
 
 
 class ScanningBatchUpdate(BaseModel):

@@ -14,7 +14,8 @@ import math
 from uuid import UUID
 from typing import Sequence
 
-from sqlalchemy import select, func, and_, or_, text
+from datetime import datetime, timezone as dt_timezone
+from sqlalchemy import select, func, and_, or_, text, String
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +34,11 @@ from papermerge.core.types import OwnerType, ResourceType
 from papermerge.core.features.custom_fields.cf_types.registry import \
     TypeRegistry
 from papermerge.core.features.document.db.orm import DocumentVersion
+from papermerge.core.features.quality.db.orm import QualityAssessment
+from papermerge.core.features.annotations.db.orm import DocumentAnnotation
+from papermerge.core.features.exceptions.db.orm import ExceptionEvent
+from papermerge.core.features.batches.db.orm import ScanBatch
+from papermerge.core.features.scanning_projects.models import ScanningProjectModel
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +396,87 @@ async def search_documents(
         if owner_conditions:
             base_query = base_query.where(and_(*owner_conditions))
             count_query = count_query.where(and_(*owner_conditions))
+
+    # =========================================================================
+    # Apply date_from / date_to filters (created_at shorthand)
+    # =========================================================================
+    if params.filters and params.filters.date_from:
+        dt_from = datetime.combine(params.filters.date_from, datetime.min.time()).replace(tzinfo=dt_timezone.utc)
+        base_query = base_query.where(orm.Node.created_at >= dt_from)
+        count_query = count_query.where(orm.Node.created_at >= dt_from)
+
+    if params.filters and params.filters.date_to:
+        dt_to = datetime.combine(params.filters.date_to, datetime.max.time()).replace(tzinfo=dt_timezone.utc)
+        base_query = base_query.where(orm.Node.created_at <= dt_to)
+        count_query = count_query.where(orm.Node.created_at <= dt_to)
+
+    # =========================================================================
+    # Apply quality_score_min filter (join QualityAssessment)
+    # =========================================================================
+    if params.filters and params.filters.quality_score_min is not None:
+        quality_subq = (
+            select(QualityAssessment.document_id)
+            .where(QualityAssessment.quality_score >= params.filters.quality_score_min)
+        )
+        base_query = base_query.where(DocumentSearchIndex.document_id.in_(quality_subq))
+        count_query = count_query.where(DocumentSearchIndex.document_id.in_(quality_subq))
+
+    # =========================================================================
+    # Apply scanned_by_id filter (document created_by)
+    # =========================================================================
+    if params.filters and params.filters.scanned_by_id is not None:
+        base_query = base_query.where(orm.Node.created_by == params.filters.scanned_by_id)
+        count_query = count_query.where(orm.Node.created_by == params.filters.scanned_by_id)
+
+    # =========================================================================
+    # Apply project_id filter (via ScanBatch -> document relationship)
+    # =========================================================================
+    if params.filters and params.filters.project_id is not None:
+        # ScanBatch links operator/project to batches; documents are linked via
+        # node.created_by matching operator_id. We use a subquery on ScanBatch.
+        try:
+            project_uuid = UUID(params.filters.project_id)
+        except (ValueError, AttributeError):
+            project_uuid = None
+        if project_uuid is not None:
+            batch_operator_subq = (
+                select(ScanBatch.operator_id)
+                .where(ScanBatch.project_id == str(project_uuid))
+                .where(ScanBatch.operator_id.isnot(None))
+            )
+            base_query = base_query.where(orm.Node.created_by.in_(batch_operator_subq))
+            count_query = count_query.where(orm.Node.created_by.in_(batch_operator_subq))
+
+    # =========================================================================
+    # Apply has_annotations filter
+    # =========================================================================
+    if params.filters and params.filters.has_annotations is not None:
+        annotation_subq = (
+            select(DocumentAnnotation.document_id).distinct()
+        )
+        if params.filters.has_annotations:
+            base_query = base_query.where(DocumentSearchIndex.document_id.in_(annotation_subq))
+            count_query = count_query.where(DocumentSearchIndex.document_id.in_(annotation_subq))
+        else:
+            base_query = base_query.where(~DocumentSearchIndex.document_id.in_(annotation_subq))
+            count_query = count_query.where(~DocumentSearchIndex.document_id.in_(annotation_subq))
+
+    # =========================================================================
+    # Apply has_exceptions filter
+    # =========================================================================
+    if params.filters and params.filters.has_exceptions is not None:
+        # ExceptionEvent.document_id is a String column containing UUID values
+        exception_doc_ids_subq = (
+            select(func.cast(ExceptionEvent.document_id, doc_orm.Document.id.type))
+            .where(ExceptionEvent.document_id.isnot(None))
+            .distinct()
+        )
+        if params.filters.has_exceptions:
+            base_query = base_query.where(DocumentSearchIndex.document_id.in_(exception_doc_ids_subq))
+            count_query = count_query.where(DocumentSearchIndex.document_id.in_(exception_doc_ids_subq))
+        else:
+            base_query = base_query.where(~DocumentSearchIndex.document_id.in_(exception_doc_ids_subq))
+            count_query = count_query.where(~DocumentSearchIndex.document_id.in_(exception_doc_ids_subq))
 
     # Note: We'll apply sorting later, after getting distinct document IDs
 
@@ -1132,5 +1219,224 @@ async def find_unindexed_documents(
     unindexed_ids = [row[0] for row in result]
 
     logger.info(f"Found {len(unindexed_ids)} documents missing from search index")
+
+
+async def get_search_facets(
+    db_session: AsyncSession,
+    *,
+    user_id: UUID,
+    q: str | None = None,
+) -> search_schema.SearchFacetsResponse:
+    """
+    Compute facet counts for the search UI.
+
+    Returns:
+      - document_types: counts per document type
+      - date_histogram: monthly document counts
+      - quality_buckets: four 25-point quality bands
+      - operators: counts per creating user
+      - projects: counts per scanning project
+    """
+    # Access control: only docs owned by this user (or their groups)
+    user_groups_subquery = select(UserGroup.group_id).where(UserGroup.user_id == user_id)
+
+    access_filter = or_(
+        and_(
+            DocumentSearchIndex.owner_type == OwnerType.USER.value,
+            DocumentSearchIndex.owner_id == user_id,
+        ),
+        and_(
+            DocumentSearchIndex.owner_type == OwnerType.GROUP.value,
+            DocumentSearchIndex.owner_id.in_(user_groups_subquery),
+        ),
+    )
+
+    # Optionally narrow by FTS query
+    fts_filter = None
+    if q and q.strip():
+        ts_query = func.plainto_tsquery('english', q.strip())
+        fts_filter = DocumentSearchIndex.search_vector.op('@@')(ts_query)
+
+    def _base(extra_join=None):
+        q2 = (
+            select(DocumentSearchIndex.document_id)
+            .join(orm.Node, DocumentSearchIndex.document_id == orm.Node.id)
+            .join(
+                orm.Ownership,
+                and_(
+                    orm.Ownership.resource_type == ResourceType.NODE.value,
+                    orm.Ownership.resource_id == orm.Node.id,
+                ),
+            )
+            .where(access_filter)
+        )
+        if fts_filter is not None:
+            q2 = q2.where(fts_filter)
+        if extra_join is not None:
+            q2 = extra_join(q2)
+        return q2
+
+    # ------------------------------------------------------------------
+    # 1. Document types
+    # ------------------------------------------------------------------
+    dt_rows = (await db_session.execute(
+        select(
+            DocumentSearchIndex.document_type_name,
+            func.count(DocumentSearchIndex.document_id.distinct()).label("cnt"),
+        )
+        .join(orm.Node, DocumentSearchIndex.document_id == orm.Node.id)
+        .join(
+            orm.Ownership,
+            and_(
+                orm.Ownership.resource_type == ResourceType.NODE.value,
+                orm.Ownership.resource_id == orm.Node.id,
+            ),
+        )
+        .where(access_filter)
+        .where(DocumentSearchIndex.document_type_name.isnot(None))
+        .group_by(DocumentSearchIndex.document_type_name)
+        .order_by(func.count(DocumentSearchIndex.document_id.distinct()).desc())
+        .limit(20)
+    )).all()
+
+    document_types = [
+        search_schema.FacetItem(name=r[0], count=r[1])
+        for r in dt_rows if r[0]
+    ]
+
+    # ------------------------------------------------------------------
+    # 2. Monthly date histogram (created_at from nodes)
+    # ------------------------------------------------------------------
+    date_rows = (await db_session.execute(
+        select(
+            func.to_char(orm.Node.created_at, 'YYYY-MM').label("month"),
+            func.count(orm.Node.id.distinct()).label("cnt"),
+        )
+        .join(
+            orm.Ownership,
+            and_(
+                orm.Ownership.resource_type == ResourceType.NODE.value,
+                orm.Ownership.resource_id == orm.Node.id,
+            ),
+        )
+        .join(
+            DocumentSearchIndex,
+            DocumentSearchIndex.document_id == orm.Node.id,
+        )
+        .where(access_filter)
+        .group_by(func.to_char(orm.Node.created_at, 'YYYY-MM'))
+        .order_by(func.to_char(orm.Node.created_at, 'YYYY-MM').desc())
+        .limit(24)
+    )).all()
+
+    date_histogram = [
+        search_schema.DateHistogramBucket(date=r[0], count=r[1])
+        for r in date_rows if r[0]
+    ]
+
+    # ------------------------------------------------------------------
+    # 3. Quality buckets  (join QualityAssessment)
+    # ------------------------------------------------------------------
+    quality_bands = [
+        ("0-25", 0.0, 25.0),
+        ("25-50", 25.0, 50.0),
+        ("50-75", 50.0, 75.0),
+        ("75-100", 75.0, 100.0),
+    ]
+    quality_buckets = []
+    for label, lo, hi in quality_bands:
+        (cnt,) = (await db_session.execute(
+            select(func.count(QualityAssessment.document_id.distinct()))
+            .join(
+                DocumentSearchIndex,
+                DocumentSearchIndex.document_id == QualityAssessment.document_id,
+            )
+            .join(orm.Node, DocumentSearchIndex.document_id == orm.Node.id)
+            .join(
+                orm.Ownership,
+                and_(
+                    orm.Ownership.resource_type == ResourceType.NODE.value,
+                    orm.Ownership.resource_id == orm.Node.id,
+                ),
+            )
+            .where(access_filter)
+            .where(QualityAssessment.quality_score >= lo)
+            .where(QualityAssessment.quality_score < hi if hi < 100.0 else QualityAssessment.quality_score <= hi)
+        )).one()
+        quality_buckets.append(
+            search_schema.QualityBucket(label=label, min=lo, max=hi, count=cnt or 0)
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Operators (users who created documents)
+    # ------------------------------------------------------------------
+    op_rows = (await db_session.execute(
+        select(
+            orm.User.username,
+            func.count(orm.Node.id.distinct()).label("cnt"),
+        )
+        .join(orm.Node, orm.Node.created_by == orm.User.id)
+        .join(
+            orm.Ownership,
+            and_(
+                orm.Ownership.resource_type == ResourceType.NODE.value,
+                orm.Ownership.resource_id == orm.Node.id,
+            ),
+        )
+        .join(
+            DocumentSearchIndex,
+            DocumentSearchIndex.document_id == orm.Node.id,
+        )
+        .where(access_filter)
+        .group_by(orm.User.username)
+        .order_by(func.count(orm.Node.id.distinct()).desc())
+        .limit(20)
+    )).all()
+
+    operators = [
+        search_schema.FacetItem(name=r[0], count=r[1])
+        for r in op_rows if r[0]
+    ]
+
+    # ------------------------------------------------------------------
+    # 5. Projects (via ScanBatch operator_id -> Node.created_by)
+    # ------------------------------------------------------------------
+    proj_rows = (await db_session.execute(
+        select(
+            ScanningProjectModel.name,
+            func.count(orm.Node.id.distinct()).label("cnt"),
+        )
+        .join(ScanBatch, ScanBatch.project_id == func.cast(ScanningProjectModel.id, type_=String))
+        .join(orm.Node, orm.Node.created_by == ScanBatch.operator_id)
+        .join(
+            orm.Ownership,
+            and_(
+                orm.Ownership.resource_type == ResourceType.NODE.value,
+                orm.Ownership.resource_id == orm.Node.id,
+            ),
+        )
+        .join(
+            DocumentSearchIndex,
+            DocumentSearchIndex.document_id == orm.Node.id,
+        )
+        .where(access_filter)
+        .where(ScanBatch.operator_id.isnot(None))
+        .group_by(ScanningProjectModel.name)
+        .order_by(func.count(orm.Node.id.distinct()).desc())
+        .limit(20)
+    )).all()
+
+    projects = [
+        search_schema.FacetItem(name=r[0], count=r[1])
+        for r in proj_rows if r[0]
+    ]
+
+    return search_schema.SearchFacetsResponse(
+        document_types=document_types,
+        date_histogram=date_histogram,
+        quality_buckets=quality_buckets,
+        operators=operators,
+        projects=projects,
+    )
 
     return unindexed_ids

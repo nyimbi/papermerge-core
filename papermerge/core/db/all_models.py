@@ -41,6 +41,7 @@ from papermerge.core.features.routing.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.search.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.scanners.models import *  # noqa: F401, F403
 from papermerge.core.features.scanning_projects.models import *  # noqa: F401, F403
+from papermerge.core.features.scanning_projects.models_templates import *  # noqa: F401, F403
 from papermerge.core.features.scanning_projects.operations_models import *  # noqa: F401, F403
 from papermerge.core.features.segmentation.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.serial_numbers.models import *  # noqa: F401, F403
@@ -53,5 +54,6 @@ from papermerge.core.features.tenants.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.users.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.webauthn.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.user_home.models import *  # noqa: F401, F403
+from papermerge.core.features.retention.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.webhooks.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.workflows.db.orm import *  # noqa: F401, F403

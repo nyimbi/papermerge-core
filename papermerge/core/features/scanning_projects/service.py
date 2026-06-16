@@ -288,11 +288,33 @@ async def create_batch(
 	project_id: str,
 	data: ScanningBatchCreate,
 ) -> ScanningBatch:
-	"""Create a new batch for a project."""
+	"""Create a new batch for a project.
+
+	If data.template_id is set the batch notes are pre-filled from the
+	template's notes_template and the template's usage_count is incremented.
+	template_id itself is not persisted on the batch row.
+	"""
+	batch_data = data.model_dump(exclude={"template_id"})
+	template_id = data.template_id
+
+	# Apply template defaults before creating the batch
+	if template_id:
+		from papermerge.core.features.scanning_projects.models_templates import BatchTemplateModel
+		from sqlalchemy import select as _select
+		tpl_result = await session.execute(
+			_select(BatchTemplateModel).where(BatchTemplateModel.id == template_id)
+		)
+		tpl = tpl_result.scalar_one_or_none()
+		if tpl:
+			# Pre-fill notes from template if caller didn't supply their own
+			if not batch_data.get("notes") and tpl.notes_template:
+				batch_data["notes"] = tpl.notes_template
+			tpl.usage_count = (tpl.usage_count or 0) + 1
+
 	batch = ScanningBatchModel(
 		id=uuid7str(),
 		project_id=project_id,
-		**data.model_dump(),
+		**batch_data,
 	)
 	session.add(batch)
 	await session.commit()
