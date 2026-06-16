@@ -1,3 +1,4 @@
+import difflib
 import logging
 import uuid
 from typing import Any
@@ -11,6 +12,7 @@ from fastapi import (
     Depends,
     Form
 )
+from pydantic import BaseModel
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -814,3 +816,139 @@ async def get_document_doc_thumbnail_status(
                 )
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Version diff response models
+# ---------------------------------------------------------------------------
+
+class DiffChunk(BaseModel):
+    type: str  # "equal" | "insert" | "delete"
+    words: list[str]
+
+
+class VersionDiffResponse(BaseModel):
+    version_a: int
+    version_b: int
+    additions: int
+    deletions: int
+    unchanged: int
+    diff: list[DiffChunk]
+
+
+def _extract_version_text(db_ver) -> str:
+    """
+    Return the full text for a DocumentVersion ORM object.
+
+    Prefer DocumentVersion.text (already concatenated by OCR worker).
+    Fall back to joining page-level text in page-number order.
+    """
+    if db_ver.text:
+        return db_ver.text
+
+    pages = sorted(db_ver.pages, key=lambda p: p.number)
+    parts = [p.text for p in pages if p.text]
+    return " ".join(parts)
+
+
+def _word_diff(text_a: str, text_b: str) -> list[DiffChunk]:
+    """Word-level diff using difflib.SequenceMatcher."""
+    words_a = text_a.split()
+    words_b = text_b.split()
+
+    sm = difflib.SequenceMatcher(None, words_a, words_b, autojunk=False)
+    chunks: list[DiffChunk] = []
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            chunks.append(DiffChunk(type="equal", words=words_a[i1:i2]))
+        elif tag == "insert":
+            chunks.append(DiffChunk(type="insert", words=words_b[j1:j2]))
+        elif tag == "delete":
+            chunks.append(DiffChunk(type="delete", words=words_a[i1:i2]))
+        elif tag == "replace":
+            # Treat as delete-then-insert so the frontend has clean segments
+            chunks.append(DiffChunk(type="delete", words=words_a[i1:i2]))
+            chunks.append(DiffChunk(type="insert", words=words_b[j1:j2]))
+
+    return chunks
+
+
+@router.get(
+    "/{document_id}/versions/diff",
+    response_model=VersionDiffResponse,
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_VIEW}` permission on the node",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Document or requested version not found",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+    },
+)
+async def get_document_version_diff(
+        document_id: uuid.UUID,
+        user: require_scopes(scopes.NODE_VIEW),
+        version_a: int = Query(..., ge=1, description="Version number of the older snapshot"),
+        version_b: int = Query(..., ge=1, description="Version number of the newer snapshot"),
+        db_session: AsyncSession = Depends(get_db),
+) -> VersionDiffResponse:
+    """
+    Compute a word-level text diff between two versions of a document.
+
+    Returns classified word chunks (equal / insert / delete) suitable for
+    rendering a split-pane or inline diff view in the frontend.
+    """
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    from sqlalchemy import select as _select
+    from papermerge.core import orm as _orm
+    from sqlalchemy.orm import selectinload as _selectinload
+
+    async def _load_ver(number: int):
+        stmt = (
+            _select(_orm.DocumentVersion)
+            .options(_selectinload(_orm.DocumentVersion.pages))
+            .where(
+                _orm.DocumentVersion.document_id == document_id,
+                _orm.DocumentVersion.number == number,
+            )
+        )
+        result = await db_session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    ver_a = await _load_ver(version_a)
+    ver_b = await _load_ver(version_b)
+
+    if ver_a is None or ver_b is None:
+        missing = version_a if ver_a is None else version_b
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Version {missing} not found for document {document_id}",
+        )
+
+    text_a = _extract_version_text(ver_a)
+    text_b = _extract_version_text(ver_b)
+
+    chunks = _word_diff(text_a, text_b)
+
+    additions = sum(len(c.words) for c in chunks if c.type == "insert")
+    deletions = sum(len(c.words) for c in chunks if c.type == "delete")
+    unchanged = sum(len(c.words) for c in chunks if c.type == "equal")
+
+    return VersionDiffResponse(
+        version_a=version_a,
+        version_b=version_b,
+        additions=additions,
+        deletions=deletions,
+        unchanged=unchanged,
+        diff=chunks,
+    )

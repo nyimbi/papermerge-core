@@ -8,6 +8,7 @@
 # Importing this module guarantees all feature ORM classes are registered
 # in the mapper registry before any mapper configuration occurs.
 
+from papermerge.core.features.annotations.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.api_tokens.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.audit.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.batches.db.orm import *  # noqa: F401, F403
@@ -45,6 +46,7 @@ from papermerge.core.features.segmentation.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.serial_numbers.models import *  # noqa: F401, F403
 from papermerge.core.features.settings.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.shared_nodes.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.sharing.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.special_folders.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.tags.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.tenants.db.orm import *  # noqa: F401, F403

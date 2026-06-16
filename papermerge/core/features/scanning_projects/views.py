@@ -230,6 +230,7 @@ class ScanningBatchBase(BaseModel):
 	barcode: str | None = None
 	estimated_pages: PositiveInt = 0
 	notes: str | None = None
+	priority: int = Field(default=0, ge=0, le=2)
 
 
 class ScanningBatchCreate(ScanningBatchBase):

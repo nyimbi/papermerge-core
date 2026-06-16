@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,15 +58,80 @@ async def update_batch_status(
 	if body.status in ("quality_check", "complete"):
 		try:
 			from papermerge.core.tasks import send_task
+			# Map batch priority (0,1,2) → Celery priority (0,3,6) on 0-9 scale
+			celery_priority = batch.priority * 3
 			send_task(
 				"darchiva.quality.assess_batch",
 				kwargs={"batch_id": batch_id},
+				priority=celery_priority,
 			)
-			_log.info("Queued quality assessment for batch %s (status=%s)", batch_id, body.status)
+			_log.info(
+				"Queued quality assessment for batch %s (status=%s, priority=%d→celery=%d)",
+				batch_id, body.status, batch.priority, celery_priority,
+			)
 		except Exception as exc:
 			_log.warning("Failed to queue quality assessment for batch %s: %s", batch_id, exc)
 
 	return {"id": batch_id, "status": body.status}
+
+
+class _BatchPriorityUpdate(BaseModel):
+	priority: int = Field(..., ge=0, le=2, description="0=Normal, 1=High, 2=Urgent")
+
+
+@router.patch("/batches/{batch_id}/priority")
+async def update_batch_priority(
+	batch_id: str,
+	body: _BatchPriorityUpdate,
+	user: Annotated[User, Depends(require_scopes(scopes.NODE_UPDATE))],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+	"""Set batch processing priority: 0=Normal, 1=High, 2=Urgent.
+
+	Higher priority batches are dispatched to Celery with higher task priority
+	(maps 0→0, 1→3, 2→6 on the 0-9 Celery scale).
+	"""
+	row = await db.execute(select(ScanningBatchModel).where(ScanningBatchModel.id == batch_id))
+	batch = row.scalar_one_or_none()
+	if not batch:
+		raise HTTPException(status_code=404, detail="Batch not found")
+
+	batch.priority = body.priority
+	await db.commit()
+
+	_log.info(
+		"Batch %s priority updated to %d (user=%s)",
+		batch_id, body.priority, user.id,
+	)
+
+	return {"id": batch_id, "priority": body.priority}
+
+
+@router.get("/batches")
+async def list_all_batches_by_priority(
+	user: Annotated[User, Depends(require_scopes(scopes.NODE_VIEW))],
+	db: Annotated[AsyncSession, Depends(get_db)],
+	priority_gte: int | None = Query(default=None, ge=0, le=2, description="Filter batches with priority >= this value"),
+) -> list[dict]:
+	"""List batches across all projects, optionally filtered by minimum priority."""
+	stmt = select(ScanningBatchModel)
+	if priority_gte is not None:
+		stmt = stmt.where(ScanningBatchModel.priority >= priority_gte)
+	stmt = stmt.order_by(ScanningBatchModel.priority.desc(), ScanningBatchModel.created_at.asc())
+	rows = await db.execute(stmt)
+	batches = rows.scalars().all()
+	return [
+		{
+			"id": str(b.id),
+			"project_id": str(b.project_id),
+			"batch_number": b.batch_number,
+			"status": b.status.value if hasattr(b.status, "value") else b.status,
+			"priority": b.priority,
+			"estimated_pages": b.estimated_pages,
+			"scanned_pages": b.scanned_pages,
+		}
+		for b in batches
+	]
 
 
 class _MergeBatchesBody(BaseModel):
