@@ -61,6 +61,8 @@ class Settings(BaseSettings):
 	# LiteLLM / AI gateway settings
 	litellm_base_url: str = 'http://84.247.181.100:4000/v1'
 	litellm_api_key: str = 'sk-pjs-litellm-master-key'
+	litellm_ner_model: str = 'qwen2.5-VL'
+	embedding_base_url: str = 'http://localhost:11434'
 	litellm_default_model: str = 'gpt-4o'
 	litellm_ocr_model: str = 'gpt-4o'
 	litellm_extraction_model: str = 'claude-sonnet'

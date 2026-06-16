@@ -352,17 +352,19 @@ async def _load_agent_config(session: AsyncSession, user_id: str) -> dict:
 	# scanner_settings is keyed per-tenant, not per-user; agent config is
 	# lightweight enough that we store it in the tenant row's `options` column.
 	# For now the options column doesn't exist — we keep the config in a
-	# simple in-process dict keyed by user_id (survives the request).  A
-	# proper migration adding a JSONB column is tracked separately.
-	# In the meantime we return defaults so the endpoints are functional.
-	return _default_agent_config()
+	# Read from process-level cache; fall back to defaults on first access.
+	return dict(_agent_config_store.get(user_id, _default_agent_config()))
+
+
+# Module-level cache: persists across requests within the same worker process.
+# A proper DB-backed store (user_preferences JSONB column) should be added via
+# migration for multi-worker deployments; this covers single-process setups.
+_agent_config_store: dict[str, dict] = {}
 
 
 async def _save_agent_config(session: AsyncSession, user_id: str, config: dict) -> None:
-	"""Persist per-user agent config.  Stub until migration adds the column."""
-	# TODO: persist to DB once options/agent_config column is added to
-	# scanner_settings or a dedicated user_preferences table.
-	pass
+	"""Persist per-user agent config to process-level cache."""
+	_agent_config_store[user_id] = config
 
 
 @router.get("/agent/config", response_model=ScanAgentConfig)
@@ -489,6 +491,23 @@ async def get_scanner_usage_stats(
 
 # === Scanner CRUD — dynamic /{scanner_id} routes MUST come after all static paths ===
 
+
+@router.get("/jobs/recent", response_model=list[ScanJobResponse])
+async def get_recent_scan_jobs(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_session)],
+	limit: int = Query(default=10, ge=1, le=50),
+) -> list[ScanJobResponse]:
+	"""Get most recent scan jobs across all scanners."""
+	return await service.get_scan_jobs(
+		session=session,
+		tenant_id=str(user.tenant_id),
+		user_id=str(user.id),
+		scanner_id=None,
+		status=None,
+		limit=limit,
+	)
+
 @router.get("/{scanner_id}", response_model=ScannerResponse)
 async def get_scanner(
 	scanner_id: str,
@@ -608,19 +627,3 @@ async def refresh_scanner_capabilities(
 		raise HTTPException(status_code=404, detail="Scanner not found or unreachable")
 	return capabilities
 
-
-@router.get("/jobs/recent", response_model=list[ScanJobResponse])
-async def get_recent_scan_jobs(
-	user: Annotated[User, Depends(get_current_user)],
-	session: Annotated[AsyncSession, Depends(get_session)],
-	limit: int = Query(default=10, ge=1, le=50),
-) -> list[ScanJobResponse]:
-	"""Get most recent scan jobs across all scanners."""
-	return await service.get_scan_jobs(
-		session=session,
-		tenant_id=str(user.tenant_id),
-		user_id=str(user.id),
-		scanner_id=None,
-		status=None,
-		limit=limit,
-	)

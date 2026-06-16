@@ -87,6 +87,10 @@ app.conf.task_routes = {
     "papermerge.core.tasks.sync_email_account": {"queue": prefixed("core")},
     "papermerge.core.tasks.sync_all_email_accounts": {"queue": prefixed("core")},
     "papermerge.core.tasks.process_email_attachments": {"queue": prefixed("core")},
+    # Document intelligence tasks (embeddings, NER, re-scan)
+    "darchiva.documents.index_embeddings": {"queue": prefixed("core")},
+    "darchiva.documents.extract_entities": {"queue": prefixed("core")},
+    "darchiva.scanning.rescan_requested": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks

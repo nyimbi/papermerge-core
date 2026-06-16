@@ -99,6 +99,68 @@ async def get_document_thumbnail(
 
 
 @router.get(
+    "/{document_id}/page/{page_number}",
+    response_class=JPEGFileResponse,
+    responses={
+        309: {"description": "Document not ready for preview yet", "content": OPEN_API_GENERIC_JSON_DETAIL},
+        404: {"description": "Document not found", "content": OPEN_API_GENERIC_JSON_DETAIL},
+    },
+)
+@utils.docstring_parameter(scope=scopes.NODE_VIEW)
+async def get_document_page_thumbnail(
+    document_id: uuid.UUID,
+    page_number: int,
+    user: Annotated[
+        usr_schema.User, Security(get_current_user, scopes=[scopes.NODE_VIEW])
+    ],
+    db_session: AsyncSession = Depends(get_db),
+):
+    """Retrieves thumbnail for a specific page of the document's last version.
+
+    Required scope: `{scope}`
+    """
+    ok = await has_node_perm(
+        db_session, user_id=user.id, codename=scopes.NODE_VIEW, node_id=document_id
+    )
+    if not ok:
+        raise HTTP403Forbidden()
+
+    try:
+        doc_ver = await dbapi.get_last_doc_ver(db_session, doc_id=document_id)
+    except NoResultFound:
+        raise HTTP404NotFound
+
+    from sqlalchemy import select
+    from papermerge.core.features.document.db.orm import Page
+    stmt = (
+        select(Page)
+        .where(Page.document_version_id == doc_ver.id)
+        .where(Page.number == page_number)
+    )
+    result = await db_session.execute(stmt)
+    page = result.scalar_one_or_none()
+
+    if page is None:
+        # Fall back to first page when page_number is out of range
+        try:
+            page = await dbapi.get_first_page(db_session, doc_ver_id=doc_ver.id)
+        except NoResultFound:
+            raise HTTPException(status_code=309, detail="Not ready for preview yet")
+
+    jpg_abs_path = rel2abs(thumbnail_path(page.id))
+
+    if not os.path.exists(jpg_abs_path):
+        image.gen_doc_thumbnail(
+            page_id=page.id,
+            doc_ver_id=doc_ver.id,
+            page_number=page_number,
+            file_name=doc_ver.file_name,
+        )
+
+    return JPEGFileResponse(jpg_abs_path)
+
+
+@router.get(
     "/{document_id}/full",
     responses={
         200: {

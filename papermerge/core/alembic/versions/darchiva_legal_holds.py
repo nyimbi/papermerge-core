@@ -8,6 +8,7 @@ from typing import Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "darchiva_legal_holds"
 down_revision: Union[str, None] = "darchiva_scan_agents"
@@ -28,6 +29,10 @@ def upgrade() -> None:
 		"documents",
 		sa.Column("retention_policy", sa.String(100), nullable=True),
 	)
+	op.add_column(
+		"documents",
+		sa.Column("document_metadata", JSONB(), nullable=True),
+	)
 	op.create_index("idx_documents_legal_hold", "documents", ["legal_hold"])
 	op.create_index("idx_documents_retention_date", "documents", ["retention_date"])
 
@@ -35,6 +40,7 @@ def upgrade() -> None:
 def downgrade() -> None:
 	op.drop_index("idx_documents_retention_date", table_name="documents")
 	op.drop_index("idx_documents_legal_hold", table_name="documents")
+	op.drop_column("documents", "document_metadata")
 	op.drop_column("documents", "retention_policy")
 	op.drop_column("documents", "retention_date")
 	op.drop_column("documents", "legal_hold")

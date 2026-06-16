@@ -14,9 +14,30 @@ from pathlib import Path
 from typing import Any
 
 from .base import (
-	Scanner, ScannerInfo, ScanOptions, ScanResult, ScanJob,
-	ScannerProtocol, ScannerStatus, ColorMode, InputSource, ImageFormat,
+	Scanner, ScanOptions, ScanResult, ScanJob,
+	ScannerProtocol,
 )
+from .capabilities import ColorMode, InputSource, ImageFormat
+
+# Inline status enum — base.py has no ScannerStatus
+from enum import Enum
+
+class ScannerStatus(str, Enum):
+	ONLINE = "online"
+	OFFLINE = "offline"
+	ERROR = "error"
+	BUSY = "busy"
+
+# Inline info dataclass — not in base.py
+from dataclasses import dataclass, field as _field
+
+@dataclass
+class ScannerInfo:
+	name: str
+	manufacturer: str | None = None
+	model: str | None = None
+	device_id: str | None = None
+	supported_protocols: list[str] = _field(default_factory=list)
 from .capabilities import ScannerCapabilities
 
 logger = logging.getLogger(__name__)
@@ -206,7 +227,7 @@ class TWAINScanner(Scanner):
 
 	async def disconnect(self) -> None:
 		"""Close TWAIN connection."""
-		await asyncio.get_event_loop().run_in_executor(
+		await asyncio.new_event_loop().run_in_executor(
 			None, self._disconnect_sync
 		)
 
@@ -249,7 +270,7 @@ class TWAINScanner(Scanner):
 		if not self._is_open:
 			return ScannerStatus.OFFLINE
 
-		return await asyncio.get_event_loop().run_in_executor(
+		return await asyncio.new_event_loop().run_in_executor(
 			None, self._get_status_sync
 		)
 
@@ -276,7 +297,7 @@ class TWAINScanner(Scanner):
 		if self._capabilities:
 			return self._capabilities
 
-		caps = await asyncio.get_event_loop().run_in_executor(
+		caps = await asyncio.new_event_loop().run_in_executor(
 			None, self._get_capabilities_sync
 		)
 		self._capabilities = caps
@@ -313,9 +334,11 @@ class TWAINScanner(Scanner):
 		return caps
 
 	def _query_capability(self, cap_id: int) -> Any:
-		"""Query a specific TWAIN capability."""
-		# This is a simplified version of capability negotiation
-		# In a real implementation, this would handle TW_CAPABILITY, TW_ONEVALUE, etc.
+		"""Query a TWAIN capability.
+
+		Full TW_CAPABILITY negotiation (TW_ONEVALUE, TW_ENUMERATION, TW_RANGE)
+		requires platform ctypes bindings not yet implemented. Returns empty list.
+		"""
 		return []
 
 	def _map_pixel_types(self, pixel_types: list[int]) -> list[ColorMode]:
@@ -332,7 +355,7 @@ class TWAINScanner(Scanner):
 		if not self._is_open:
 			raise RuntimeError("Scanner not connected")
 
-		return await asyncio.get_event_loop().run_in_executor(
+		return await asyncio.new_event_loop().run_in_executor(
 			None, self._scan_sync, options
 		)
 
@@ -398,8 +421,14 @@ class TWAINScanner(Scanner):
 		return True
 
 	def _transfer_image(self) -> bytes:
-		"""Transfer scanned image from TWAIN."""
-		# Simplified: would use TwainDG.IMAGE, TwainDAT.IMAGENATIVEXFER, TwainMSG.GET
+		"""Transfer scanned image from TWAIN.
+
+		Real TWAIN image transfer (IMAGENATIVEXFER) requires platform-specific
+		ctypes calls. This implementation returns empty bytes; use the eSCL or
+		SANE driver for production scanning. TWAIN support is tracked for a
+		future release.
+		"""
+		logger.warning("TWAIN image transfer not yet implemented; returning empty scan.")
 		return b""
 
 	async def scan_stream(self, options: ScanOptions):
@@ -509,7 +538,7 @@ async def discover_twain_scanners() -> list[TwainIdentity]:
 	if sys.platform != 'win32':
 		return []
 
-	return await asyncio.get_event_loop().run_in_executor(
+	return await asyncio.new_event_loop().run_in_executor(
 		None, _discover_twain_sync
 	)
 

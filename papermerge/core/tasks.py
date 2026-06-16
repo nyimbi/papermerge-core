@@ -389,10 +389,39 @@ def process_form_extraction(document_id: str, template_id: str | None, tenant_id
 			await session.commit()
 
 			try:
-				extraction.status = "completed"
+				from uuid import UUID as _UUID
+				from papermerge.core.services.form_recognition import FormRecognitionService
+				from papermerge.core.features.document.db.orm import DocumentVersion
+				from sqlalchemy import select as _select
+
+				# Fetch latest version text + page images for extraction
+				ver_stmt = (
+					_select(DocumentVersion)
+					.where(DocumentVersion.document_id == document_id)
+					.order_by(DocumentVersion.number.desc())
+					.limit(1)
+				)
+				ver = (await session.execute(ver_stmt)).scalar_one_or_none()
+				ocr_results = [{"text": ver.text or ""}] if ver else []
+
+				svc = FormRecognitionService(session)
+				result = await svc.recognize_and_extract(
+					document_id=_UUID(document_id),
+					tenant_id=_UUID(tenant_id),
+					page_images=[],
+					ocr_results=ocr_results,
+				)
+				extraction.status = "completed" if result.success else "failed"
 				extraction.extracted_at = datetime.now(timezone.utc)
+				if result.success:
+					extraction.extracted_data = {
+						"template_id": str(result.template_id) if result.template_id else None,
+						"template_name": result.template_name,
+						"confidence": result.confidence,
+						"fields": [f.__dict__ if hasattr(f, "__dict__") else f for f in (result.fields or [])],
+					}
 				await session.commit()
-				logger.info(f"Form extraction completed for document {document_id}")
+				logger.info(f"Form extraction {'succeeded' if result.success else 'failed'} for {document_id}: {result.message}")
 			except Exception as e:
 				extraction.status = "failed"
 				await session.commit()
@@ -508,6 +537,7 @@ def handle_rescan_requested(
 
 	async def _run():
 		from papermerge.core.db.engine import get_async_session_maker
+		from uuid import UUID as UUID
 		from papermerge.core.features.scanning_projects.models import ScanningBatchModel
 		from papermerge.core.features.audit.db.orm import AuditLog
 
@@ -518,15 +548,18 @@ def handle_rescan_requested(
 				batch.status = "rescan_requested"
 				batch.notes = f"Re-scan requested: {reason}"
 			log = AuditLog(
-				object_id=batch_id,
-				object_type="scanning_batch",
-				action="rescan_requested",
-				detail={
+				table_name="scanning_batches",
+				record_id=UUID(batch_id),
+				operation="UPDATE",
+				reason=f"rescan_requested: {reason}",
+				new_values={
+					"status": "rescan_requested",
 					"sample_id": sample_id,
 					"project_id": project_id,
 					"reason": reason,
 					"reviewer_id": reviewer_id,
 				},
+				application="scanner",
 			)
 			session.add(log)
 			await session.commit()
@@ -549,21 +582,36 @@ def index_document_embeddings(document_id: str, user_id: str | None = None):
 		from papermerge.core.config import get_settings
 		from papermerge.core.search.semantic import SemanticSearch
 		from papermerge.core.search.embeddings.ollama import OllamaEmbeddings
+		from papermerge.core.features.document.db.orm import DocumentVersion
+		from sqlalchemy import select
 		from uuid import UUID
 
 		cfg = get_settings()
 		if not cfg.semantic_search_enabled:
 			return
 
-		base_url = getattr(cfg, "embedding_base_url", "http://localhost:11434")
-		model = getattr(cfg, "embedding_model", "nomic-embed-text")
-		embedding_svc = OllamaEmbeddings(base_url=base_url, model=model)
 		session_maker = get_async_session_maker()
-		searcher = SemanticSearch(
-			embedding_service=embedding_svc,
-			session_factory=session_maker,
-		)
-		await searcher.index_document(UUID(document_id))
+		async with session_maker() as session:
+			stmt = (
+				select(DocumentVersion)
+				.where(DocumentVersion.document_id == document_id)
+				.order_by(DocumentVersion.number.desc())
+				.limit(1)
+			)
+			ver = (await session.execute(stmt)).scalar_one_or_none()
+			if not ver or not ver.text:
+				logger.info(f"index_embeddings: no text yet for {document_id[:8]}, skipping")
+				return
+
+			base_url = getattr(cfg, "embedding_base_url", cfg.litellm_base_url)
+			model = getattr(cfg, "embedding_model", "nomic-embed-text")
+			embedding_svc = OllamaEmbeddings(base_url=base_url, model=model)
+			searcher = SemanticSearch(
+				embedding_service=embedding_svc,
+				session_factory=get_async_session_maker(),
+			)
+			count = await searcher.index_document(UUID(document_id), ver.id, ver.text)
+			logger.info(f"index_embeddings: indexed {count} chunks for {document_id[:8]}")
 
 	asyncio.run(_run())
 
@@ -601,7 +649,7 @@ def extract_document_entities(document_id: str, user_id: str | None = None):
 			try:
 				import httpx
 				payload = {
-					"model": "qwen2.5-VL",
+					"model": getattr(_get_settings(), "litellm_ner_model", "qwen2.5-VL"),
 					"messages": [
 						{
 							"role": "system",
@@ -621,12 +669,14 @@ def extract_document_entities(document_id: str, user_id: str | None = None):
 					"max_tokens": 512,
 					"response_format": {"type": "json_object"},
 				}
+				from papermerge.core.config import get_settings as _get_settings
+				_cfg = _get_settings()
 				async with httpx.AsyncClient(timeout=30) as client:
 					resp = await client.post(
-						"http://84.247.181.100:4000/v1/chat/completions",
+						f"{_cfg.litellm_base_url}/chat/completions",
 						json=payload,
 						headers={
-							"Authorization": "Bearer sk-pjs-litellm-master-key",
+							"Authorization": f"Bearer {_cfg.litellm_api_key}",
 							"Content-Type": "application/json",
 						},
 					)
@@ -637,10 +687,11 @@ def extract_document_entities(document_id: str, user_id: str | None = None):
 
 				doc = await session.get(Document, document_id)
 				if doc:
-					# Store on node metadata (extend existing or create new)
-					existing = getattr(doc, "document_metadata", None) or {}
+					existing = doc.document_metadata or {}
 					existing.update({"entities": entities})
 					doc.document_metadata = existing
+					from sqlalchemy.orm.attributes import flag_modified
+					flag_modified(doc, "document_metadata")
 					await session.commit()
 					logger.info(f"Entities extracted for {document_id}: {list(entities.keys())}")
 
