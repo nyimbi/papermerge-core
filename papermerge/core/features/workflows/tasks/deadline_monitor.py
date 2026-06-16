@@ -35,7 +35,10 @@ def check_approval_deadlines() -> dict:
 	- Send reminders at configured thresholds (50%, 75%, 90%)
 	- Trigger escalation when deadlines pass
 	- Create SLA alerts for breached deadlines
+	- Check scanning-project SLA breaches and deadline proximity
 	"""
+	import asyncio
+
 	logger.info("Starting deadline monitor check")
 	stats = {
 		"checked": 0,
@@ -68,6 +71,32 @@ def check_approval_deadlines() -> dict:
 		session.commit()
 
 	logger.info(f"Deadline monitor complete: {stats}")
+
+	# ── Scanning-project SLA breach detection (async) ──────────────────────
+	async def _run_sla_monitor() -> None:
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.scanning_projects.sla_monitor import (
+			check_project_sla_breaches,
+		)
+
+		async_session = get_async_session_maker()
+		async with async_session() as session:
+			try:
+				sla_stats = await check_project_sla_breaches(session)
+				await session.commit()
+				stats["alerts_created"] += sla_stats["alerts_created"]
+				logger.info(
+					"SLA monitor complete: projects_checked=%d slas_evaluated=%d alerts_created=%d",
+					sla_stats["projects_checked"],
+					sla_stats["slas_evaluated"],
+					sla_stats["alerts_created"],
+				)
+			except Exception as exc:
+				await session.rollback()
+				logger.exception("SLA monitor failed: %s", exc)
+
+	asyncio.run(_run_sla_monitor())
+
 	return stats
 
 

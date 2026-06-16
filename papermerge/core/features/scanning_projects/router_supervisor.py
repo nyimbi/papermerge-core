@@ -8,7 +8,11 @@ router.py which use pre-aggregated OperatorDailyMetricsModel tables.
 from datetime import datetime, date, timedelta, timezone
 from typing import Annotated
 
+import csv
+import io
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, and_, case, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -348,6 +352,176 @@ async def get_operator_kpis(
 
 
 
+
+
+@router.get("/operator-kpis/export")
+async def export_operator_kpis(
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+	format: str = Query("csv", pattern="^(csv|pdf)$"),
+	days: int = Query(30, ge=1, le=365),
+	project_id: str | None = Query(None),
+	operator_id: str | None = Query(None),
+) -> Response:
+	"""Export operator KPIs as CSV or printable HTML.
+
+	CSV: attachment download with standard KPI columns.
+	PDF: HTML table with print stylesheet — open in new tab and use browser print.
+	"""
+	from datetime import date as date_type
+
+	date_from = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+	tenant_id = str(user.tenant_id)
+
+	filters = [PageScanEventModel.tenant_id == tenant_id]
+	if project_id:
+		filters.append(PageScanEventModel.project_id == project_id)
+	if operator_id:
+		filters.append(PageScanEventModel.operator_id == operator_id)
+	filters.append(
+		PageScanEventModel.occurred_at >= datetime(date_from.year, date_from.month, date_from.day)
+	)
+
+	event_stmt = (
+		select(
+			PageScanEventModel.operator_id,
+			PageScanEventModel.event_type,
+			func.count(PageScanEventModel.id).label("cnt"),
+			func.sum(PageScanEventModel.duration_ms).label("dur_sum"),
+			func.avg(PageScanEventModel.quality_score).label("avg_quality"),
+		)
+		.where(and_(*filters))
+		.where(PageScanEventModel.operator_id.isnot(None))
+		.group_by(PageScanEventModel.operator_id, PageScanEventModel.event_type)
+	)
+	result = await session.execute(event_stmt)
+	rows = result.all()
+
+	by_operator: dict[str, list] = {}
+	for row in rows:
+		op_id = str(row.operator_id)
+		by_operator.setdefault(op_id, []).append(
+			(row.event_type, row.cnt, row.dur_sum, row.avg_quality)
+		)
+
+	shift_stmt = select(
+		ShiftAssignmentModel.operator_id,
+		func.sum(
+			func.extract("epoch", ShiftAssignmentModel.actual_end) -
+			func.extract("epoch", ShiftAssignmentModel.actual_start)
+		).label("total_seconds"),
+	).where(
+		and_(
+			ShiftAssignmentModel.actual_start.isnot(None),
+			ShiftAssignmentModel.actual_end.isnot(None),
+			ShiftAssignmentModel.assignment_date >= datetime(date_from.year, date_from.month, date_from.day),
+		)
+	).group_by(ShiftAssignmentModel.operator_id)
+
+	shift_result = await session.execute(shift_stmt)
+	session_hours_map: dict[str, float] = {
+		str(r.operator_id): (r.total_seconds or 0) / 3600
+		for r in shift_result.all()
+	}
+
+	kpis = [
+		_compute_operator_kpi(op_id, op_rows, session_hours_map.get(op_id, 0.0))
+		for op_id, op_rows in by_operator.items()
+	]
+
+	today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+	if format == "csv":
+		buf = io.StringIO()
+		writer = csv.writer(buf)
+		writer.writerow([
+			"Operator", "Project", "Shift Hours", "Pages Scanned",
+			"Pages Accepted", "Pages Rescanned", "Pages/hr",
+			"Rescan%", "First-Pass Yield%", "SLA Compliance%",
+		])
+		for k in kpis:
+			writer.writerow([
+				k.operator_name or k.operator_id,
+				k.project_name,
+				f"{k.shift_hours:.2f}",
+				k.pages_scanned,
+				k.pages_accepted,
+				k.pages_rescanned,
+				f"{k.pages_per_hour:.1f}",
+				f"{k.rescan_rate * 100:.1f}",
+				f"{k.first_pass_yield * 100:.1f}",
+				f"{k.sla_compliance_rate * 100:.1f}",
+			])
+		return Response(
+			content=buf.getvalue(),
+			media_type="text/csv",
+			headers={
+				"Content-Disposition": f"attachment; filename=operator-kpis-{today_str}.csv",
+			},
+		)
+
+	# format == "pdf" — styled HTML table for browser print
+	rows_html = ""
+	for k in kpis:
+		rows_html += f"""
+		<tr>
+			<td>{k.operator_name or k.operator_id}</td>
+			<td>{k.project_name}</td>
+			<td class="num">{k.shift_hours:.2f}</td>
+			<td class="num">{k.pages_scanned}</td>
+			<td class="num">{k.pages_accepted}</td>
+			<td class="num">{k.pages_rescanned}</td>
+			<td class="num">{k.pages_per_hour:.1f}</td>
+			<td class="num">{k.rescan_rate * 100:.1f}%</td>
+			<td class="num">{k.first_pass_yield * 100:.1f}%</td>
+			<td class="num">{k.sla_compliance_rate * 100:.1f}%</td>
+		</tr>"""
+
+	html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Operator KPIs — {today_str}</title>
+<style>
+  body {{ font-family: Arial, sans-serif; font-size: 11px; color: #111; margin: 1.5cm; }}
+  h1 {{ font-size: 16px; margin-bottom: 4px; }}
+  p.meta {{ color: #555; font-size: 10px; margin-bottom: 16px; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ border: 1px solid #ccc; padding: 5px 8px; white-space: nowrap; }}
+  th {{ background: #f0f0f0; font-weight: 600; text-align: left; }}
+  td.num {{ text-align: right; }}
+  tr:nth-child(even) {{ background: #fafafa; }}
+  @media print {{
+    body {{ margin: 1cm; }}
+    button {{ display: none; }}
+  }}
+</style>
+</head>
+<body>
+<h1>Operator KPIs Report</h1>
+<p class="meta">Generated: {today_str} &nbsp;|&nbsp; Period: last {days} days</p>
+<button onclick="window.print()" style="margin-bottom:12px;padding:6px 14px;cursor:pointer;">Print / Save as PDF</button>
+<table>
+<thead>
+  <tr>
+    <th>Operator</th><th>Project</th><th>Shift Hrs</th>
+    <th>Scanned</th><th>Accepted</th><th>Rescanned</th>
+    <th>Pages/hr</th><th>Rescan%</th><th>FPY%</th><th>SLA%</th>
+  </tr>
+</thead>
+<tbody>{rows_html}
+</tbody>
+</table>
+</body>
+</html>"""
+
+	return Response(
+		content=html,
+		media_type="text/html",
+		headers={
+			"Content-Disposition": f"inline; filename=operator-kpis-{today_str}.html",
+		},
+	)
 
 
 @router.get("/team-summary", response_model=TeamSummaryResponse)
