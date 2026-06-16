@@ -137,6 +137,84 @@ def _rotate_image(img: np.ndarray, angle: float) -> np.ndarray:
 	)
 
 
+def adaptive_deskew(
+	image: np.ndarray,
+	max_angle_deg: float = 45.0,
+) -> tuple[np.ndarray, float]:
+	"""Adaptive deskewing using projection profile analysis.
+
+	97.6% accuracy vs 72.2% for Hough (per Sensors/MDPI 2022 benchmark).
+
+	Algorithm:
+	1. Convert to grayscale + binarise with Otsu threshold.
+	2. Coarse search: rotate image by candidate angles in 1° steps over
+	   [-max_angle_deg, +max_angle_deg] and compute the variance of each
+	   row's foreground-pixel sum.  Maximum variance = best alignment of
+	   text lines.
+	3. Fine search: repeat in 0.1° steps around the coarse best candidate
+	   (±2° window).
+	4. Apply final rotation with BORDER_REPLICATE.
+	5. If detected |skew| < 0.5° return the original image unchanged.
+
+	Args:
+		image: BGR or grayscale numpy array.
+		max_angle_deg: Search range in degrees (symmetric around 0).
+
+	Returns:
+		(corrected_image, skew_angle_degrees)
+	"""
+	try:
+		import cv2  # lazy import — cv2 may not be installed
+
+		# --- grayscale + binary (Otsu, text = white) ---
+		if len(image.shape) == 3:
+			gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+		else:
+			gray = image
+
+		_, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+
+		def _row_variance(angle_deg: float) -> float:
+			"""Rotate *binary* by *angle_deg* and return variance of row sums."""
+			h, w = binary.shape
+			cx, cy = w / 2.0, h / 2.0
+			M = cv2.getRotationMatrix2D((cx, cy), angle_deg, 1.0)
+			rotated = cv2.warpAffine(
+				binary, M, (w, h),
+				flags=cv2.INTER_NEAREST,
+				borderMode=cv2.BORDER_CONSTANT,
+				borderValue=0,
+			)
+			row_sums = rotated.sum(axis=1).astype(np.float64)
+			return float(row_sums.var())
+
+		# --- coarse pass: 1° steps ---
+		coarse_angles = np.arange(-max_angle_deg, max_angle_deg + 1.0, 1.0)
+		coarse_variances = np.array([_row_variance(a) for a in coarse_angles])
+		best_coarse_idx = int(np.argmax(coarse_variances))
+		best_coarse = float(coarse_angles[best_coarse_idx])
+
+		# --- fine pass: 0.1° steps within ±2° of coarse best ---
+		fine_lo = max(-max_angle_deg, best_coarse - 2.0)
+		fine_hi = min(max_angle_deg, best_coarse + 2.0)
+		fine_angles = np.arange(fine_lo, fine_hi + 0.1, 0.1)
+		fine_variances = np.array([_row_variance(a) for a in fine_angles])
+		best_fine_idx = int(np.argmax(fine_variances))
+		skew_angle = float(fine_angles[best_fine_idx])
+
+		# --- skip trivial skew ---
+		if abs(skew_angle) < 0.5:
+			return image, skew_angle
+
+		corrected = _rotate_image(image, skew_angle)
+		logger.debug("projection-profile deskew: angle=%.2f°", skew_angle)
+		return corrected, skew_angle
+
+	except Exception as exc:
+		logger.warning("adaptive_deskew failed (%s); returning original image", exc)
+		return image, 0.0
+
+
 def deskew_image(
 	img: np.ndarray,
 	angle: float | None = None,

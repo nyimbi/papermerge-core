@@ -2465,6 +2465,79 @@ async def camera_capture_to_document(
 		)
 	# ── End dedup ────────────────────────────────────────────────────────────
 
+	# ── Barcode detection ─────────────────────────────────────────────────────
+	# Run before storage upload; creates an ExceptionEvent if the barcode
+	# matches a known batch (re-scan of an already-scanned physical document).
+	try:
+		import logging as _bc_log
+		_bclog = _bc_log.getLogger(__name__)
+		from papermerge.core.features.ingestion.barcode import detect_barcodes
+		_bc_results = detect_barcodes(data)
+		if _bc_results:
+			_bclog.info(
+				"camera_capture: detected %d barcode(s): %s",
+				len(_bc_results),
+				[r.value for r in _bc_results],
+			)
+			# Look up each barcode value against known batch barcodes for this tenant
+			from sqlalchemy import select as _sa_select
+			from papermerge.core.db.engine import get_async_session_maker as _bc_gsm
+			from .models import ScanningBatchModel, ScanningProjectModel
+			from papermerge.core.features.exceptions.db.orm import (
+				ExceptionEvent,
+				ExceptionType,
+				ExceptionSeverity,
+			)
+			from papermerge.core.utils.uuid_compat import uuid7str as _uuid7str
+
+			_bc_session_maker = _bc_gsm()
+			async with _bc_session_maker() as _bc_session:
+				for _bc_result in _bc_results:
+					# Find a batch whose barcode column matches this value,
+					# scoped to the tenant via the parent project.
+					_batch_row = await _bc_session.execute(
+						_sa_select(ScanningBatchModel)
+						.join(
+							ScanningProjectModel,
+							ScanningBatchModel.project_id == ScanningProjectModel.id,
+						)
+						.where(
+							ScanningBatchModel.barcode == _bc_result.value,
+							ScanningProjectModel.tenant_id == user.tenant_id,
+						)
+						.limit(1)
+					)
+					_matched_batch = _batch_row.scalar_one_or_none()
+					if _matched_batch:
+						_bclog.warning(
+							"camera_capture: barcode %r matches batch %s — raising BARCODE_UNREADABLE exception",
+							_bc_result.value,
+							str(_matched_batch.id),
+						)
+						_exc_event = ExceptionEvent(
+							id=_uuid7str(),
+							exception_type=ExceptionType.BARCODE_UNREADABLE.value,
+							severity=ExceptionSeverity.ERROR.value,
+							batch_id=str(_matched_batch.id),
+							tenant_id=str(user.tenant_id),
+							description=(
+								f"Document already scanned — barcode {_bc_result.value!r} "
+								f"matches existing batch {str(_matched_batch.id)}"
+							),
+							auto_fixable=False,
+						)
+						_bc_session.add(_exc_event)
+				await _bc_session.commit()
+		else:
+			import logging as _bc_log2
+			_bc_log2.getLogger(__name__).debug("camera_capture: no barcodes detected in image")
+	except Exception as _bc_err:
+		import logging as _bc_log3
+		_bc_log3.getLogger(__name__).warning(
+			"camera_capture: barcode detection failed (non-fatal): %s", _bc_err
+		)
+	# ── End barcode detection ─────────────────────────────────────────────────
+
 	doc_id = _uuid.uuid4()
 	doc_ver_id = _uuid.uuid4()
 	safe_title = title or (image.filename or f"camera_{doc_id.hex[:8]}")
@@ -2535,6 +2608,180 @@ async def camera_capture_to_document(
 	}
 
 
+# =====================================================
+# Operator Clock-In / Clock-Out Endpoints
+# =====================================================
+
+
+class ClockInRequest(BaseModel):
+	project_id: str
+	location_id: str | None = None
+
+
+class ClockInResponse(BaseModel):
+	session_id: str
+	started_at: str
+	project_name: str
+
+
+class ClockOutResponse(BaseModel):
+	session_id: str
+	started_at: str
+	ended_at: str
+	duration_minutes: float
+
+
+class ActiveSessionResponse(BaseModel):
+	session_id: str
+	project_id: str
+	project_name: str
+	started_at: str
+	duration_minutes: float
+
+
+@router.post("/sessions/clock-in", response_model=ClockInResponse, status_code=status.HTTP_200_OK)
+async def clock_in(
+	body: ClockInRequest,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> ClockInResponse:
+	"""Clock the current operator into a scanning session.
+
+	Idempotent: if an active session already exists for this operator it is
+	returned unchanged rather than creating a duplicate.
+	"""
+	from datetime import datetime, timezone
+	from uuid6 import uuid7
+	from .models import ScanningSesssionModel
+
+	# Check for an existing active session (started_at set, ended_at null)
+	existing_stmt = (
+		select(ScanningSesssionModel)
+		.where(
+			ScanningSesssionModel.operator_id == str(user.id),
+			ScanningSesssionModel.ended_at.is_(None),
+		)
+		.order_by(ScanningSesssionModel.started_at.desc())
+		.limit(1)
+	)
+	existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+
+	if existing:
+		# Resolve project name
+		proj_stmt = select(ScanningProjectModel).where(ScanningProjectModel.id == existing.project_id)
+		proj = (await db.execute(proj_stmt)).scalar_one_or_none()
+		return ClockInResponse(
+			session_id=existing.id,
+			started_at=existing.started_at.isoformat(),
+			project_name=proj.name if proj else existing.project_id,
+		)
+
+	# Resolve project name for new session
+	proj_stmt = select(ScanningProjectModel).where(ScanningProjectModel.id == body.project_id)
+	proj = (await db.execute(proj_stmt)).scalar_one_or_none()
+	if not proj:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+	now = datetime.now(timezone.utc).replace(tzinfo=None)
+	session_record = ScanningSesssionModel(
+		id=str(uuid7()),
+		project_id=body.project_id,
+		location_id=body.location_id,
+		operator_id=str(user.id),
+		operator_name=user.username,
+		started_at=now,
+	)
+	db.add(session_record)
+	await db.commit()
+
+	return ClockInResponse(
+		session_id=session_record.id,
+		started_at=now.isoformat(),
+		project_name=proj.name,
+	)
+
+
+@router.post("/sessions/{session_id}/clock-out", response_model=ClockOutResponse)
+async def clock_out(
+	session_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> ClockOutResponse:
+	"""Clock the current operator out of a session."""
+	from datetime import datetime, timezone
+	from .models import ScanningSesssionModel
+
+	stmt = (
+		select(ScanningSesssionModel)
+		.where(
+			ScanningSesssionModel.id == session_id,
+			ScanningSesssionModel.operator_id == str(user.id),
+		)
+	)
+	session_record = (await db.execute(stmt)).scalar_one_or_none()
+	if not session_record:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+	if session_record.ended_at:
+		# Already clocked out — return existing data
+		duration = (session_record.ended_at - session_record.started_at).total_seconds() / 60
+		return ClockOutResponse(
+			session_id=session_record.id,
+			started_at=session_record.started_at.isoformat(),
+			ended_at=session_record.ended_at.isoformat(),
+			duration_minutes=round(duration, 2),
+		)
+
+	now = datetime.now(timezone.utc).replace(tzinfo=None)
+	session_record.ended_at = now
+	await db.commit()
+
+	duration = (now - session_record.started_at).total_seconds() / 60
+	return ClockOutResponse(
+		session_id=session_record.id,
+		started_at=session_record.started_at.isoformat(),
+		ended_at=now.isoformat(),
+		duration_minutes=round(duration, 2),
+	)
+
+
+@router.get("/sessions/my-active", response_model=ActiveSessionResponse | None)
+async def get_my_active_session(
+	user: Annotated[User, Depends(get_current_user)],
+	db: Annotated[AsyncSession, Depends(get_db)],
+) -> ActiveSessionResponse | None:
+	"""Return the caller's active session (no ended_at), or null if not clocked in."""
+	from datetime import datetime, timezone
+	from .models import ScanningSesssionModel
+
+	stmt = (
+		select(ScanningSesssionModel)
+		.where(
+			ScanningSesssionModel.operator_id == str(user.id),
+			ScanningSesssionModel.ended_at.is_(None),
+		)
+		.order_by(ScanningSesssionModel.started_at.desc())
+		.limit(1)
+	)
+	session_record = (await db.execute(stmt)).scalar_one_or_none()
+	if not session_record:
+		return None
+
+	proj_stmt = select(ScanningProjectModel).where(ScanningProjectModel.id == session_record.project_id)
+	proj = (await db.execute(proj_stmt)).scalar_one_or_none()
+
+	now = datetime.now(timezone.utc).replace(tzinfo=None)
+	duration = (now - session_record.started_at).total_seconds() / 60
+
+	return ActiveSessionResponse(
+		session_id=session_record.id,
+		project_id=session_record.project_id,
+		project_name=proj.name if proj else session_record.project_id,
+		started_at=session_record.started_at.isoformat(),
+		duration_minutes=round(duration, 2),
+	)
+
+
 # Route ordering fix: static collection paths (/resources, /locations, /shifts,
 # /shift-assignments, /gamification, /batch-priority) must precede /{project_id}
 # so FastAPI doesn't match them as project ID values.
@@ -2554,6 +2801,7 @@ _STATIC_PREFIXES = (
 	"/scanning-projects/batches",
 	"/scanning-projects/supervisor",
 	"/scanning-projects/camera",
+	"/scanning-projects/sessions",
 )
 _static_routes = [
 	r for r in router.routes
