@@ -94,6 +94,9 @@ app.conf.task_routes = {
     "darchiva.scanning.rescan_requested": {"queue": prefixed("core")},
     # Quality pipeline
     "darchiva.quality.assess_batch": {"queue": prefixed("core")},
+    # Outbound webhooks
+    "darchiva.webhooks.deliver": {"queue": prefixed("core")},
+    "darchiva.webhooks.deliver_ocr_complete": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks

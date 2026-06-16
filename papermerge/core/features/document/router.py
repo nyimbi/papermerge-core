@@ -343,6 +343,33 @@ async def upload_document(
         countdown=130,
     )
 
+    # Dispatch document.created webhook event
+    try:
+        from papermerge.core.tasks import dispatch_webhook_event
+        _tid = str(getattr(user, "tenant_id", None) or user.id)
+        dispatch_webhook_event(
+            "document.created",
+            {
+                "document_id": str(doc.id),
+                "tenant_id": _tid,
+                "title": doc.title,
+                "user_id": str(user.id),
+            },
+            tenant_id=_tid,
+        )
+        # ocr_complete fires after a delay matching the embedding/entity countdown
+        send_task(
+            "darchiva.webhooks.deliver_ocr_complete",
+            kwargs={
+                "document_id": str(doc.id),
+                "tenant_id": _tid,
+                "user_id": str(user.id),
+            },
+            countdown=135,
+        )
+    except Exception as _wh_err:
+        logger.warning(f"webhook dispatch failed (non-fatal): {_wh_err}")
+
     logger.info(f"Document {doc.id} uploaded, queued for processing")
 
     return doc

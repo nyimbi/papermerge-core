@@ -882,3 +882,189 @@ def extract_document_entities(document_id: str, user_id: str | None = None):
 				logger.warning(f"Entity extraction failed for {document_id}: {e}")
 
 	asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Outbound webhook delivery
+# ---------------------------------------------------------------------------
+
+@shared_task(name="darchiva.webhooks.deliver", bind=True, max_retries=3, default_retry_delay=30)
+def deliver_webhook(self, webhook_id: str, event_type: str, payload: dict):
+	"""
+	POST a signed webhook event to the configured URL.
+
+	Headers sent:
+	  X-Webhook-Event:     <event_type>
+	  X-Webhook-Signature: sha256=<HMAC-SHA256 hex>
+	  X-Webhook-Delivery:  <delivery_id>
+
+	Retries up to 3 times on 5xx or network timeout.
+	Records a WebhookDelivery row with the outcome.
+	"""
+	logger.info(_log_task(f"deliver_webhook:{webhook_id[:8]} event={event_type}"))
+
+	import hashlib
+	import hmac
+	import json
+	import uuid as _uuid
+	from datetime import datetime, timezone
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.webhooks.db.orm import OutboundWebhook, WebhookDelivery
+		from sqlalchemy import select
+
+		session_maker = get_async_session_maker()
+		async with session_maker() as session:
+			wh = await session.get(OutboundWebhook, _uuid.UUID(webhook_id))
+			if not wh or not wh.is_active:
+				logger.info(f"deliver_webhook: webhook {webhook_id[:8]} inactive or missing, skipping")
+				return
+
+			delivery_id = str(_uuid.uuid4())
+			body_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+			sig = hmac.new(wh.secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+
+			delivery = WebhookDelivery(
+				id=_uuid.UUID(delivery_id),
+				webhook_id=wh.id,
+				event_type=event_type,
+				payload=payload,
+			)
+			session.add(delivery)
+			await session.flush()  # get the row persisted before network call
+
+			response_status: int | None = None
+			response_body: str | None = None
+			delivered_at: datetime | None = None
+
+			try:
+				import httpx
+				headers = {
+					"Content-Type": "application/json",
+					"X-Webhook-Event": event_type,
+					"X-Webhook-Signature": f"sha256={sig}",
+					"X-Webhook-Delivery": delivery_id,
+				}
+				async with httpx.AsyncClient(timeout=15) as client:
+					resp = await client.post(wh.url, content=body_bytes, headers=headers)
+				response_status = resp.status_code
+				response_body = resp.text[:4096]
+				delivered_at = datetime.now(timezone.utc)
+				logger.info(
+					f"deliver_webhook: {webhook_id[:8]} event={event_type} "
+					f"status={response_status}"
+				)
+
+				# Non-2xx 5xx triggers retry; 4xx is a caller error — don't retry
+				if response_status >= 500:
+					raise ValueError(f"server error {response_status}")
+
+			except Exception as exc:
+				logger.warning(f"deliver_webhook: attempt failed for {webhook_id[:8]}: {exc}")
+				delivery.response_status = response_status
+				delivery.response_body = str(exc)[:4096] if response_body is None else response_body
+				await session.commit()
+				# Celery retry — propagates as Retry exception, not re-raised here
+				self.retry(exc=exc)
+				return
+
+			finally:
+				# Always write the outcome we know so far
+				delivery.response_status = response_status
+				delivery.response_body = response_body
+				delivery.delivered_at = delivered_at
+				wh.last_delivery_at = delivered_at or datetime.now(timezone.utc)
+				wh.last_delivery_status = response_status
+				await session.commit()
+
+	asyncio.run(_run())
+
+
+@shared_task(name="darchiva.webhooks.deliver_ocr_complete")
+def deliver_ocr_complete_webhook(document_id: str, tenant_id: str, user_id: str | None = None):
+	"""
+	Fetch the finished document's page_count from the latest version and
+	dispatch a document.ocr_complete webhook event.
+	"""
+	logger.info(_log_task(f"deliver_ocr_complete:{document_id[:8]}"))
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.document.db.orm import DocumentVersion
+		from sqlalchemy import select
+
+		session_maker = get_async_session_maker()
+		async with session_maker() as session:
+			stmt = (
+				select(DocumentVersion)
+				.where(DocumentVersion.document_id == document_id)
+				.order_by(DocumentVersion.number.desc())
+				.limit(1)
+			)
+			ver = (await session.execute(stmt)).scalar_one_or_none()
+			page_count = ver.page_count if ver else 0
+
+		dispatch_webhook_event(
+			"document.ocr_complete",
+			{
+				"document_id": document_id,
+				"tenant_id": tenant_id,
+				"page_count": page_count,
+				"user_id": user_id,
+			},
+			tenant_id=tenant_id,
+		)
+
+	asyncio.run(_run())
+
+
+def dispatch_webhook_event(event_type: str, payload: dict, tenant_id: str) -> None:
+	"""
+	Query active webhooks subscribed to event_type for the given tenant and
+	enqueue a deliver_webhook task for each.
+
+	Safe to call from any async or sync context — uses send_task which is a
+	no-op when Redis is absent.
+	"""
+	import asyncio as _asyncio
+
+	async def _query_and_dispatch():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.webhooks.db.orm import OutboundWebhook
+		from sqlalchemy import select
+		import uuid as _uuid
+
+		session_maker = get_async_session_maker()
+		async with session_maker() as session:
+			result = await session.execute(
+				select(OutboundWebhook).where(
+					OutboundWebhook.tenant_id == _uuid.UUID(tenant_id),
+					OutboundWebhook.is_active == True,  # noqa: E712
+				)
+			)
+			webhooks = result.scalars().all()
+
+		for wh in webhooks:
+			if event_type in (wh.events or []):
+				send_task(
+					"darchiva.webhooks.deliver",
+					kwargs={
+						"webhook_id": str(wh.id),
+						"event_type": event_type,
+						"payload": payload,
+					},
+				)
+				logger.debug(
+					f"dispatch_webhook_event: queued {event_type} -> webhook {str(wh.id)[:8]}"
+				)
+
+	try:
+		loop = _asyncio.get_event_loop()
+		if loop.is_running():
+			# We're inside an async context — schedule as a fire-and-forget
+			loop.create_task(_query_and_dispatch())
+		else:
+			loop.run_until_complete(_query_and_dispatch())
+	except RuntimeError:
+		_asyncio.run(_query_and_dispatch())

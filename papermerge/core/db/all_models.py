@@ -51,4 +51,5 @@ from papermerge.core.features.tenants.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.users.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.webauthn.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.user_home.models import *  # noqa: F401, F403
+from papermerge.core.features.webhooks.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.workflows.db.orm import *  # noqa: F401, F403

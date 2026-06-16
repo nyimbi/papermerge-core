@@ -1,15 +1,16 @@
 import logging
 import uuid
-from typing import Iterable, Union
+from typing import Iterable, Literal, Union
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select, update, delete
 from sqlalchemy.exc import NoResultFound, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.exceptions import HTTP404NotFound, EntityNotFound
-from papermerge.core import schema, config
+from papermerge.core import schema, config, orm
 from papermerge.core.features.auth import scopes
 from papermerge.core.features.nodes.db import api as nodes_dbapi
 from papermerge.core.features.auth.dependencies import require_scopes
@@ -714,3 +715,278 @@ async def remove_node_tags(
         return schema.FolderShort.model_validate(node)
 
     return schema.DocumentShort.model_validate(node)
+
+
+# ---------------------------------------------------------------------------
+# Bulk operation request/response models
+# ---------------------------------------------------------------------------
+
+class BulkMoveRequest(BaseModel):
+    node_ids: list[UUID]
+    target_folder_id: UUID
+
+
+class BulkMoveResponse(BaseModel):
+    moved: int
+    failed: int
+    errors: list[str] = []
+
+
+class BulkDeleteRequest(BaseModel):
+    node_ids: list[UUID]
+
+
+class BulkDeleteResponse(BaseModel):
+    deleted: int
+    failed: int
+
+
+class BulkTagRequest(BaseModel):
+    node_ids: list[UUID]
+    tag_ids: list[UUID]
+    action: Literal["add", "remove", "replace"]
+
+
+class BulkTagResponse(BaseModel):
+    updated: int
+
+
+class BulkAssignTypeRequest(BaseModel):
+    node_ids: list[UUID]
+    document_type_id: UUID
+
+
+class BulkAssignTypeResponse(BaseModel):
+    updated: int
+
+
+# ---------------------------------------------------------------------------
+# POST /nodes/bulk/move
+# ---------------------------------------------------------------------------
+
+@router.post("/bulk/move", status_code=200)
+async def bulk_move_nodes(
+    body: BulkMoveRequest,
+    user: require_scopes(scopes.NODE_MOVE),
+    db_session: AsyncSession = Depends(get_db),
+) -> BulkMoveResponse:
+    """Move multiple nodes to a target folder.
+
+    Validates NODE_MOVE on each source and NODE_UPDATE on the target.
+    Each node is processed independently — failures are collected rather
+    than aborting the entire batch.
+    """
+    if not body.node_ids:
+        return BulkMoveResponse(moved=0, failed=0)
+
+    # Validate target once
+    if not await dbapi_common.has_node_perm(
+        db_session,
+        node_id=body.target_folder_id,
+        codename=scopes.NODE_UPDATE,
+        user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    moved = 0
+    failed = 0
+    errors: list[str] = []
+
+    async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+        for node_id in body.node_ids:
+            # Use a SAVEPOINT so a single failure doesn't kill the session
+            async with db_session.begin_nested():
+                try:
+                    if not await dbapi_common.has_node_perm(
+                        db_session,
+                        node_id=node_id,
+                        codename=scopes.NODE_MOVE,
+                        user_id=user.id,
+                    ):
+                        failed += 1
+                        errors.append(f"{node_id}: permission denied")
+                        continue
+
+                    count = await nodes_dbapi.move_nodes(
+                        db_session,
+                        source_ids=[node_id],
+                        target_id=body.target_folder_id,
+                    )
+                    if count > 0:
+                        moved += 1
+                    else:
+                        failed += 1
+                        errors.append(f"{node_id}: not found or already at target")
+                except (EntityNotFound, NoResultFound):
+                    failed += 1
+                    errors.append(f"{node_id}: not found")
+                except IntegrityError as e:
+                    failed += 1
+                    errors.append(f"{node_id}: integrity error — {e.orig}")
+                except Exception as e:
+                    failed += 1
+                    errors.append(f"{node_id}: {e}")
+
+    await db_session.commit()
+    return BulkMoveResponse(moved=moved, failed=failed, errors=errors)
+
+
+# ---------------------------------------------------------------------------
+# POST /nodes/bulk/delete
+# ---------------------------------------------------------------------------
+
+@router.post("/bulk/delete", status_code=200)
+async def bulk_delete_nodes(
+    body: BulkDeleteRequest,
+    user: require_scopes(scopes.NODE_DELETE),
+    db_session: AsyncSession = Depends(get_db),
+) -> BulkDeleteResponse:
+    """Soft-delete (hard-delete) multiple nodes.
+
+    Validates NODE_DELETE on each node individually.  Each node is processed
+    under its own savepoint so a single failure does not abort others.
+    """
+    if not body.node_ids:
+        return BulkDeleteResponse(deleted=0, failed=0)
+
+    deleted = 0
+    failed = 0
+
+    async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+        for node_id in body.node_ids:
+            async with db_session.begin_nested():
+                try:
+                    if not await dbapi_common.has_node_perm(
+                        db_session,
+                        node_id=node_id,
+                        codename=scopes.NODE_DELETE,
+                        user_id=user.id,
+                    ):
+                        failed += 1
+                        continue
+
+                    error = await nodes_dbapi.delete_nodes(
+                        db_session, node_ids=[node_id], user_id=user.id
+                    )
+                    if error:
+                        failed += 1
+                    else:
+                        deleted += 1
+                except Exception:
+                    failed += 1
+
+    await db_session.commit()
+    return BulkDeleteResponse(deleted=deleted, failed=failed)
+
+
+# ---------------------------------------------------------------------------
+# POST /nodes/bulk/tag
+# ---------------------------------------------------------------------------
+
+@router.post("/bulk/tag", status_code=200)
+async def bulk_tag_nodes(
+    body: BulkTagRequest,
+    user: require_scopes(scopes.NODE_UPDATE),
+    db_session: AsyncSession = Depends(get_db),
+) -> BulkTagResponse:
+    """Add, remove, or replace tags on multiple nodes.
+
+    `action` is one of:
+    - `add`     — append supplied tag_ids (no-op for already-present tags)
+    - `remove`  — dissociate supplied tag_ids
+    - `replace` — replace all existing tags with supplied tag_ids
+    """
+    if not body.node_ids or not body.tag_ids:
+        return BulkTagResponse(updated=0)
+
+    # Resolve tag ORM objects once
+    tag_stmt = select(orm.Tag).where(orm.Tag.id.in_(body.tag_ids))
+    tags: list[orm.Tag] = list((await db_session.scalars(tag_stmt)).all())
+
+    if not tags and body.action in ("add", "replace"):
+        raise HTTPException(status_code=404, detail="None of the supplied tag_ids found")
+
+    updated = 0
+
+    async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+        for node_id in body.node_ids:
+            async with db_session.begin_nested():
+                try:
+                    if not await dbapi_common.has_node_perm(
+                        db_session,
+                        node_id=node_id,
+                        codename=scopes.NODE_UPDATE,
+                        user_id=user.id,
+                    ):
+                        continue
+
+                    node_stmt = select(orm.Node).where(orm.Node.id == node_id)
+                    node = (await db_session.scalars(node_stmt)).one_or_none()
+                    if node is None:
+                        continue
+
+                    # Ensure tags relationship is loaded
+                    await db_session.refresh(node, ["tags"])
+
+                    if body.action == "replace":
+                        node.tags = tags
+                    elif body.action == "add":
+                        existing_ids = {t.id for t in node.tags}
+                        node.tags = list(node.tags) + [t for t in tags if t.id not in existing_ids]
+                    else:  # remove
+                        remove_ids = {t.id for t in tags}
+                        node.tags = [t for t in node.tags if t.id not in remove_ids]
+
+                    await db_session.flush()
+                    updated += 1
+                except Exception as e:
+                    logger.warning(f"bulk_tag_nodes: node {node_id} failed: {e}")
+
+    await db_session.commit()
+    return BulkTagResponse(updated=updated)
+
+
+# ---------------------------------------------------------------------------
+# POST /nodes/bulk/assign-document-type
+# ---------------------------------------------------------------------------
+
+@router.post("/bulk/assign-document-type", status_code=200)
+async def bulk_assign_document_type(
+    body: BulkAssignTypeRequest,
+    user: require_scopes(scopes.NODE_UPDATE),
+    db_session: AsyncSession = Depends(get_db),
+) -> BulkAssignTypeResponse:
+    """Set document_type_id on multiple document nodes.
+
+    Silently skips folder nodes.  Validates NODE_UPDATE on each node.
+    """
+    if not body.node_ids:
+        return BulkAssignTypeResponse(updated=0)
+
+    updated = 0
+
+    async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+        for node_id in body.node_ids:
+            async with db_session.begin_nested():
+                try:
+                    if not await dbapi_common.has_node_perm(
+                        db_session,
+                        node_id=node_id,
+                        codename=scopes.NODE_UPDATE,
+                        user_id=user.id,
+                    ):
+                        continue
+
+                    # Only update document nodes (Document table has document_type_id)
+                    result = await db_session.execute(
+                        update(orm.Document)
+                        .where(orm.Document.id == node_id)
+                        .values(document_type_id=body.document_type_id)
+                    )
+                    if result.rowcount > 0:
+                        updated += 1
+                except Exception as e:
+                    logger.warning(f"bulk_assign_document_type: node {node_id} failed: {e}")
+
+    await db_session.commit()
+    return BulkAssignTypeResponse(updated=updated)
