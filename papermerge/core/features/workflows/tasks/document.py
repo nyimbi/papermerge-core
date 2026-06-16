@@ -381,12 +381,8 @@ async def index_task(ctx: dict, config: dict) -> dict:
 				from papermerge.core.tasks import send_task as _send_task
 
 				_send_task(
-					"generate_embeddings",
-					kwargs={
-						"document_id": document_id,
-						"chunks": chunks,
-						"embedding_model": embedding_model,
-					},
+					"darchiva.documents.index_embeddings",
+					kwargs={"document_id": document_id},
 				)
 				indexing_results["semantic_indexed"] = True
 				logger.info(f"Queued embedding generation for document {document_id} ({len(chunks)} chunks)")

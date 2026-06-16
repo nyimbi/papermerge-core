@@ -353,6 +353,67 @@ def process_ingestion_file(source_id: str, file_path: str):
 	asyncio.run(_run())
 
 
+@shared_task(name="darchiva.ingestion.process_batch")
+def process_ingestion_batch(batch_id: str, file_paths: list[str], template_id: str | None = None):
+	"""Process a batch of file uploads, fanning out a process_upload per file."""
+	logger.info(_log_task(f"process_batch:{batch_id[:8]} files={len(file_paths)}"))
+
+	import os
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.ingestion.db.orm import IngestionBatch
+		from datetime import datetime, timezone
+
+		async_session = get_async_session_maker()
+
+		async with async_session() as session:
+			batch = await session.get(IngestionBatch, batch_id)
+			if not batch:
+				logger.warning(f"process_batch: batch {batch_id} not found")
+				return
+
+			batch.status = "processing"
+			batch.started_at = datetime.now(timezone.utc)
+			await session.commit()
+
+			processed = 0
+			failed = 0
+
+			for file_path in file_paths:
+				try:
+					if not os.path.isfile(file_path):
+						raise FileNotFoundError(f"File not found: {file_path}")
+
+					file_name = os.path.basename(file_path)
+					file_size = os.path.getsize(file_path)
+
+					send_task(
+						"process_upload",
+						kwargs={
+							"file_path": file_path,
+							"file_name": file_name,
+							"file_size": file_size,
+							"source_id": None,
+							"apply_ocr": True,
+						},
+					)
+					processed += 1
+
+				except Exception as e:
+					logger.error(f"process_batch: failed to queue {file_path}: {e}")
+					failed += 1
+
+			batch.processed_files = processed
+			batch.failed_files = failed
+			batch.status = "completed" if failed == 0 else "partial"
+			batch.completed_at = datetime.now(timezone.utc)
+			await session.commit()
+			logger.info(f"process_batch:{batch_id[:8]} done processed={processed} failed={failed}")
+
+	asyncio.run(_run())
+
+
 @shared_task(name="darchiva.form.process")
 def process_form_extraction(document_id: str, template_id: str | None, tenant_id: str):
 	"""Extract form data from a document using OCR + LLM."""

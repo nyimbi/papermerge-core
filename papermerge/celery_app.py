@@ -78,6 +78,7 @@ app.conf.task_routes = {
     # Ingestion and form tasks run on the core worker
     "darchiva.ingestion.start_watcher": {"queue": prefixed("core")},
     "darchiva.ingestion.process_file": {"queue": prefixed("core")},
+    "darchiva.ingestion.process_batch": {"queue": prefixed("core")},
     "darchiva.ingestion.process_email": {"queue": prefixed("core")},
     "darchiva.form.process": {"queue": prefixed("core")},
     # Email polling tasks run on the core worker
