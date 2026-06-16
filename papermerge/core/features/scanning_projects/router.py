@@ -2417,6 +2417,54 @@ async def camera_capture_to_document(
 		ext = "pdf"
 
 	data = await image.read()
+
+	# ── Perceptual-hash dedup check ──────────────────────────────────────────
+	# Reuses the existing ingestion dedup pipeline (SHA-256 + pHash).
+	# Runs before storage upload so duplicates never cost a write.
+	_dedup_exception: dict | None = None
+	_dedup_sha256: str | None = None
+	_dedup_phash: str | None = None
+	try:
+		from papermerge.core.features.ingestion.dedup import (
+			DedupVerdict,
+			check_duplicate,
+			record_fingerprint,
+		)
+		from papermerge.core.db.engine import get_async_session_maker as _gsm
+
+		_session_maker_dedup = _gsm()
+		async with _session_maker_dedup() as _dedup_session:
+			dedup_result = await check_duplicate(
+				_dedup_session, data, str(user.tenant_id)
+			)
+			_dedup_sha256 = dedup_result.sha256
+			_dedup_phash = dedup_result.phash
+
+			if dedup_result.verdict != DedupVerdict.UNIQUE:
+				_dedup_exception = {
+					"verdict": dedup_result.verdict.value,
+					"existing_document_id": dedup_result.existing_document_id,
+					"hamming_distance": dedup_result.hamming_distance,
+				}
+	except Exception as _dedup_err:
+		import logging as _logging
+		_logging.getLogger(__name__).warning(
+			"camera_capture: dedup check failed: %s", _dedup_err
+		)
+
+	if _dedup_exception:
+		# Raise HTTP 409 so the frontend can prompt the operator
+		from fastapi import HTTPException as _HTTPException
+		raise _HTTPException(
+			status_code=409,
+			detail={
+				"error": "duplicate_page",
+				"description": "Duplicate page detected (hash match)",
+				**_dedup_exception,
+			},
+		)
+	# ── End dedup ────────────────────────────────────────────────────────────
+
 	doc_id = _uuid.uuid4()
 	doc_ver_id = _uuid.uuid4()
 	safe_title = title or (image.filename or f"camera_{doc_id.hex[:8]}")
@@ -2445,6 +2493,26 @@ async def camera_capture_to_document(
 			document_version_id=doc_ver_id,
 		)
 		await session.commit()
+
+		# Record fingerprint for future dedup checks
+		if _dedup_sha256:
+			try:
+				from papermerge.core.features.ingestion.dedup import record_fingerprint as _rf
+				await _rf(
+					session,
+					document_id=str(doc_id),
+					tenant_id=str(user.tenant_id),
+					sha256=_dedup_sha256,
+					phash=_dedup_phash,
+					batch_id=None,
+				)
+				await session.commit()
+			except Exception as _fp_err:
+				import logging as _logging
+				_logging.getLogger(__name__).warning(
+					"camera_capture: failed to record fingerprint for %s: %s",
+					str(doc_id)[:8], _fp_err,
+				)
 
 	send_task(
 		"process_upload",

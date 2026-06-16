@@ -274,13 +274,13 @@ async def export_audit_logs(
     from fastapi.responses import Response
     from papermerge.core.features.audit.db.orm import AuditLog
 
-    stmt = sa_select(AuditLog).order_by(AuditLog.created_at.desc()).limit(10000)
+    stmt = sa_select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(10000)
     if user_id:
         stmt = stmt.where(AuditLog.user_id == user_id)
     if start_date:
-        stmt = stmt.where(AuditLog.created_at >= start_date)
+        stmt = stmt.where(AuditLog.timestamp >= start_date)
     if end_date:
-        stmt = stmt.where(AuditLog.created_at <= end_date)
+        stmt = stmt.where(AuditLog.timestamp <= end_date)
 
     result = await db_session.execute(stmt)
     logs = result.scalars().all()
@@ -289,9 +289,9 @@ async def export_audit_logs(
             "id": str(log.id),
             "user_id": str(log.user_id) if log.user_id else None,
             "operation": log.operation,
-            "object_type": log.object_type,
-            "object_id": str(log.object_id) if log.object_id else None,
-            "created_at": log.created_at.isoformat() if log.created_at else None,
+            "table_name": log.table_name,
+            "record_id": str(log.record_id) if log.record_id else None,
+            "created_at": log.timestamp.isoformat() if log.timestamp else None,
         }
         for log in logs
     ]

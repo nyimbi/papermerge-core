@@ -677,6 +677,128 @@ def index_document_embeddings(document_id: str, user_id: str | None = None):
 	asyncio.run(_run())
 
 
+@shared_task(name="darchiva.quality.assess_batch")
+def assess_batch_quality(batch_id: str):
+	"""Run quality assessment on all pages in a completed scan batch."""
+	logger.info(_log_task(f"assess_batch_quality:{batch_id[:8]}"))
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.scanning_projects.models import (
+			ScanningBatchDocumentModel,
+			ScanningBatchModel,
+		)
+		from sqlalchemy import select
+
+		session_maker = get_async_session_maker()
+		async with session_maker() as session:
+			# Fetch all documents in this batch
+			stmt = select(ScanningBatchDocumentModel).where(
+				ScanningBatchDocumentModel.batch_id == batch_id
+			)
+			result = await session.execute(stmt)
+			docs = result.scalars().all()
+
+			if not docs:
+				logger.info(f"assess_batch_quality: no documents in batch {batch_id[:8]}")
+				return
+
+			logger.info(
+				f"assess_batch_quality: assessing {len(docs)} documents in batch {batch_id[:8]}"
+			)
+
+			try:
+				from papermerge.core.features.quality.assessment import QualityAssessor
+				assessor = QualityAssessor()
+			except ImportError:
+				logger.warning(
+					"assess_batch_quality: QualityAssessor unavailable, skipping assessment"
+				)
+				return
+
+			QUALITY_THRESHOLD = 60.0
+			rejected_count = 0
+
+			for doc in docs:
+				# Locate the scanned image file via storage
+				try:
+					from papermerge.storage.base import get_storage_backend
+					from papermerge.core import pathlib as plib
+
+					storage = get_storage_backend()
+					doc_id = str(doc.document_id)
+
+					# Attempt to find the latest version image path
+					from papermerge.core.features.document.db.orm import DocumentVersion
+					ver_stmt = (
+						select(DocumentVersion)
+						.where(DocumentVersion.document_id == doc_id)
+						.order_by(DocumentVersion.number.desc())
+						.limit(1)
+					)
+					ver = (await session.execute(ver_stmt)).scalar_one_or_none()
+					if not ver:
+						logger.debug(f"assess_batch_quality: no version for doc {doc_id[:8]}")
+						continue
+
+					# Build file path and assess if accessible
+					file_path = plib.docver_path(ver.id, file_name=getattr(ver, "file_name", "doc"))
+					try:
+						import tempfile, os
+						local_bytes = await storage.download_file(str(file_path))
+						with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+							tmp.write(local_bytes)
+							tmp_path = tmp.name
+						try:
+							metrics = assessor.assess_image(tmp_path)
+						finally:
+							os.unlink(tmp_path)
+					except Exception as dl_err:
+						logger.debug(f"assess_batch_quality: cannot download {doc_id[:8]}: {dl_err}")
+						continue
+
+					quality_score = metrics.quality_score
+
+					if quality_score < QUALITY_THRESHOLD:
+						rejected_count += 1
+						doc.has_issues = True
+						doc.issue_details = {
+							"quality_score": quality_score,
+							"grade": metrics.grade.value,
+							"issues": [
+								{"metric": i.metric, "severity": i.severity, "message": i.message}
+								for i in metrics.issues
+							],
+						}
+						logger.info(
+							f"assess_batch_quality: doc {doc_id[:8]} quality={quality_score:.1f} → rejected"
+						)
+					else:
+						doc.quality_score = int(quality_score)
+
+				except Exception as doc_err:
+					logger.warning(
+						f"assess_batch_quality: error assessing doc {doc.document_id}: {doc_err}"
+					)
+
+			# Update batch QC status
+			batch = await session.get(ScanningBatchModel, batch_id)
+			if batch:
+				if rejected_count > 0:
+					batch.notes = (
+						(batch.notes or "")
+						+ f" | QC: {rejected_count}/{len(docs)} pages failed quality check."
+					)
+				logger.info(
+					f"assess_batch_quality: batch {batch_id[:8]} done "
+					f"assessed={len(docs)} rejected={rejected_count}"
+				)
+
+			await session.commit()
+
+	asyncio.run(_run())
+
+
 @shared_task(name="darchiva.documents.extract_entities")
 def extract_document_entities(document_id: str, user_id: str | None = None):
 	"""

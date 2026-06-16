@@ -754,3 +754,180 @@ initContainers:
 - Workers: scale by queue — `ocr` queue separately from `default`
 - DB: read replicas not supported by default (all queries use primary)
 - Redis: single-instance or Sentinel; Cluster not tested
+
+---
+
+## Scan Agent Fleet Management
+
+### Overview
+
+Scan agents are lightweight Python processes that run on scan stations (Raspberry Pi, desktop PCs, or any Linux host). Each agent:
+
+1. Registers itself with the central server via `POST /scan-agents/register` using a provisioning key
+2. Receives an API key back; all subsequent calls use `Authorization: Bearer <api_key>`
+3. Polls for scanning jobs, captures pages via eSCL/TWAIN/camera, runs OpenCV quality check, hashes each page with BLAKE3, and uploads to the server
+
+### Agent Registration API
+
+```
+POST /scan-agents/register
+  { "station_name": "station-01", "provisioning_key": "..." }
+  → { "agent_id": "...", "api_key": "sk-agent-..." }
+
+GET  /scan-agents/              # list all registered agents
+GET  /scan-agents/{id}/status   # health and last-seen
+POST /scan-agents/{id}/config   # push config to agent
+DELETE /scan-agents/{id}        # deregister
+```
+
+### Quality Pipeline
+
+```
+Raw JPEG from scanner
+    │
+    ▼ OpenCV QualityAssessor (primary — always runs)
+    │   blur detection (Laplacian variance)
+    │   brightness + contrast checks
+    │   skew angle estimation
+    │   noise level estimation
+    │
+    ├── PASS → create QualityAssessment record (status=passed)
+    │          queue process_upload → OCR → embed → NER
+    │
+    └── FAIL → create QualityAssessment (status=failed)
+               queue darchiva.scanning.rescan_requested
+               (operator notified, page re-scanned)
+
+Optional second pass (VLM, only if enabled):
+    └── Qwen2.5-VL via local LiteLLM proxy
+        Prompt: "Rate scan quality 1-10 with issues"
+        Result appended to QualityAssessment.vlm_feedback
+```
+
+### BLAKE3 Content Deduplication
+
+Every scanned page is hashed with BLAKE3 before upload. The hash is stored in `ScanProvenance.blake3_hash`. If an identical hash already exists for the same tenant, the page is skipped — no duplicate stored.
+
+```python
+from blake3 import blake3
+page_hash = blake3(page_bytes).hexdigest()
+```
+
+### Adding a New Scanner Protocol
+
+1. Create `papermerge/core/scanner/<protocol>.py` inheriting from `scanner/base.py::Scanner`
+2. Implement `scan(options: ScanOptions) -> ScanResult`
+3. Register it in `papermerge/core/features/scanners/service.py::ScannerService._get_driver()`
+
+---
+
+## Document Intelligence Pipeline
+
+After a document upload completes (`process_upload` Celery task finishes), two downstream tasks are queued:
+
+### Semantic Embeddings
+
+Task: `darchiva.documents.index_embeddings`
+
+```python
+# Fetches latest DocumentVersion.text (from OCR)
+# Calls SemanticSearch.index_document(document_id, version_id, text)
+# Uses Ollama nomic-embed-text via embedding_base_url setting
+# Stores vectors in pgvector
+```
+
+Enable semantic search: `PM_SEMANTIC_SEARCH_ENABLED=true`
+
+Query endpoint: `GET /search/semantic?q=<query>&limit=<n>`
+
+### Named Entity Recognition
+
+Task: `darchiva.documents.extract_entities`
+
+```python
+# Calls LiteLLM proxy (qwen2.5-VL) with OCR text
+# Extracts: persons, organizations, dates, amounts, locations
+# Stores in Document.document_metadata (JSONB)
+# Uses PM_LITELLM_NER_MODEL (default: qwen2.5-VL)
+```
+
+The extracted entities appear in `GET /nodes/{id}` response under `document_metadata.entities`.
+
+---
+
+## Legal Holds & Retention
+
+### Endpoints
+
+```
+PUT    /legal-holds/{document_id}           # place hold
+DELETE /legal-holds/{document_id}           # release hold
+GET    /legal-holds/{document_id}           # hold status
+PUT    /legal-holds/{document_id}/retention # set retention date/policy
+POST   /legal-holds/expire                  # auto-expire past-date holds
+```
+
+### ORM Fields (Document model)
+
+```python
+legal_hold: bool           # True = document cannot be deleted
+retention_date: datetime   # Auto-expires hold on this date
+retention_policy: str      # e.g. "7yr-financial", "3yr-hr"
+document_metadata: dict    # JSONB — entities, custom fields, tags
+```
+
+### Enforcement
+
+Deletion endpoints check `legal_hold` before proceeding. If `True`, a 409 is returned. The `POST /legal-holds/expire` endpoint (designed for a nightly cron) releases holds where `retention_date < now()`.
+
+---
+
+## Form Recognition Pipeline
+
+1. Operator submits document for extraction: `POST /forms/extractions`
+2. Celery task `darchiva.form.process` runs:
+   - Calls `FormRecognitionService.recognize_and_extract(document_id, tenant_id, page_images, ocr_results)`
+   - Service identifies template from `DocumentType` tag, extracts field values, detects signatures
+   - Stores in `FormExtraction` + `ExtractedField` ORM records
+3. Result is queryable at `GET /forms/extractions/{id}`
+4. If `confidence < 0.75`, status is set to `needs_review` → appears in review queue
+5. Operator reviews in UI, corrects low-confidence fields, confirms → `POST /forms/extractions/{id}/confirm`
+6. Confirmed fields written back to `Document.document_metadata`
+
+---
+
+## Frontend Architecture
+
+See [frontend-guide.md](frontend-guide.md) for the complete React developer guide. Key integration points from the backend perspective:
+
+### Thumbnail Endpoints
+
+```
+GET /thumbnails/{document_id}              → first-page JPEG (auth required)
+GET /thumbnails/{document_id}/page/{n}    → page N JPEG (generated on demand)
+GET /thumbnails/{document_id}/full        → full document file (inline)
+```
+
+These are served by `router_thumbnails.py` and require `NODE_VIEW` scope. Preview generation is synchronous on first request; subsequent requests return the cached JPEG.
+
+### Celery Task Routes
+
+| Task name | Queue |
+|---|---|
+| `process_upload` | `s3` (or `PM_S3_QUEUE_NAME`) |
+| `s3preview` | `s3preview` (or `PM_S3_PREVIEW_QUEUE_NAME`) |
+| `ocr` | `ocr` |
+| `darchiva.documents.index_embeddings` | `core` |
+| `darchiva.documents.extract_entities` | `core` |
+| `darchiva.scanning.rescan_requested` | `core` |
+| `darchiva.form.process` | `core` |
+| `darchiva.ingestion.*` | `core` |
+| `darchiva.email.*` | `core` |
+
+Run separate worker processes per queue for isolation:
+
+```bash
+celery -A config worker -Q core -c 4 --loglevel=info
+celery -A config worker -Q ocr -c 2 --loglevel=info
+celery -A config worker -Q s3,s3preview -c 4 --loglevel=info
+```

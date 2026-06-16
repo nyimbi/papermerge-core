@@ -92,6 +92,8 @@ app.conf.task_routes = {
     "darchiva.documents.index_embeddings": {"queue": prefixed("core")},
     "darchiva.documents.extract_entities": {"queue": prefixed("core")},
     "darchiva.scanning.rescan_requested": {"queue": prefixed("core")},
+    # Quality pipeline
+    "darchiva.quality.assess_batch": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks

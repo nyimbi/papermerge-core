@@ -50,6 +50,18 @@ async def update_batch_status(
 
 	batch.status = body.status
 	await db.commit()
+
+	if body.status in ("quality_check", "complete"):
+		try:
+			from papermerge.core.tasks import send_task
+			send_task(
+				"darchiva.quality.assess_batch",
+				kwargs={"batch_id": batch_id},
+			)
+			_log.info("Queued quality assessment for batch %s (status=%s)", batch_id, body.status)
+		except Exception as exc:
+			_log.warning("Failed to queue quality assessment for batch %s: %s", batch_id, exc)
+
 	return {"id": batch_id, "status": body.status}
 
 
