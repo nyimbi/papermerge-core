@@ -12,6 +12,7 @@ from papermerge.core.features.annotations.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.api_keys.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.api_tokens.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.audit.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.auto_routing.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.batches.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.billing.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.bundles.db.orm import *  # noqa: F401, F403
@@ -24,6 +25,7 @@ from papermerge.core.features.document.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.emails.models import *  # noqa: F401, F403
 from papermerge.core.features.encryption.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.exceptions.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.expiry.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.form_recognition.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.groups.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.iam.db.orm import *  # noqa: F401, F403

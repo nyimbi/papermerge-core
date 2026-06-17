@@ -101,6 +101,8 @@ app.conf.task_routes = {
     # Retention policies
     "darchiva.retention.sweep": {"queue": prefixed("core")},
     "darchiva.retention.run_policy": {"queue": prefixed("core")},
+    # Document expiry reminders
+    "darchiva.expiry.check_reminders": {"queue": prefixed("core")},
     # Bulk export
     "darchiva.export.bulk_export": {"queue": prefixed("core")},
     # Email notifications
@@ -132,6 +134,10 @@ app.conf.beat_schedule = {
     },
     "retention-policy-sweep": {
         "task": "darchiva.retention.sweep",
+        "schedule": 86400.0,  # Daily
+    },
+    "expiry-reminders": {
+        "task": "darchiva.expiry.check_reminders",
         "schedule": 86400.0,  # Daily
     },
     "weekly-kpi-reports": {

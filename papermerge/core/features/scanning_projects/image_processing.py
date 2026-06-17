@@ -51,18 +51,122 @@ def perspective_correct(
 	return _encode(corrected)
 
 
+def detect_rotation(image: np.ndarray) -> int:
+	"""Detect if an image is rotated 90, 180, or 270 degrees (not minor skew — major rotation).
+
+	Returns 0, 90, 180, or 270 (degrees to rotate CCW to correct).
+
+	Strategy: projection profile analysis.
+	For each candidate rotation (0, 90, 180, 270): rotate the image, compute the
+	horizontal text-line projection profile (row sums on binarised image).
+	The correct orientation has the highest variance in the horizontal projection
+	because text lines form distinct dense rows separated by whitespace.
+	Returns the rotation angle with maximum projection variance.
+	"""
+	try:
+		# Grayscale + binarise (Otsu, text = white on black)
+		if len(image.shape) == 3:
+			gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+		else:
+			gray = image.copy()
+		_, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+
+		def _projection_variance(rot_code: int | None) -> float:
+			"""Return row-sum variance of binary after optional 90° rotation."""
+			if rot_code is None:
+				rotated = binary
+			else:
+				rotated = cv2.rotate(binary, rot_code)
+			row_sums = rotated.sum(axis=1).astype(np.float64)
+			return float(row_sums.var())
+
+		# cv2.rotate codes for CCW corrections:
+		#   to correct a 90° CW scan  → rotate 90° CCW  → ROTATE_90_COUNTERCLOCKWISE
+		#   to correct a 180° scan    → rotate 180°      → ROTATE_180
+		#   to correct a 270° CW scan → rotate 90° CW    → ROTATE_90_CLOCKWISE
+		candidates: list[tuple[int, int | None]] = [
+			(0,   None),
+			(90,  cv2.ROTATE_90_COUNTERCLOCKWISE),
+			(180, cv2.ROTATE_180),
+			(270, cv2.ROTATE_90_CLOCKWISE),
+		]
+
+		best_angle = 0
+		best_var = -1.0
+		for angle, rot_code in candidates:
+			var = _projection_variance(rot_code)
+			if var > best_var:
+				best_var = var
+				best_angle = angle
+
+		return best_angle
+
+	except Exception as exc:
+		_log.warning("detect_rotation failed (%s); assuming 0°", exc)
+		return 0
+
+
+def correct_rotation(image: np.ndarray) -> tuple[np.ndarray, int]:
+	"""Detect and apply major rotation correction (90 / 180 / 270 degrees only).
+
+	Returns (corrected_image, degrees_rotated).
+	Returns the original image unchanged when no rotation is needed (0°).
+	"""
+	angle = detect_rotation(image)
+	if angle == 0:
+		return image, 0
+
+	rot_map = {
+		90:  cv2.ROTATE_90_COUNTERCLOCKWISE,
+		180: cv2.ROTATE_180,
+		270: cv2.ROTATE_90_CLOCKWISE,
+	}
+	corrected = cv2.rotate(image, rot_map[angle])
+	_log.info("auto-rotation: corrected %d° CCW", angle)
+	return corrected, angle
+
+
+def get_rotation_info(image_data: bytes) -> dict:
+	"""Return rotation detection metadata for raw image bytes.
+
+	Returns::
+
+		{"detected_rotation": int, "corrected": bool}
+
+	``detected_rotation`` is one of 0 / 90 / 180 / 270 (CCW degrees needed to
+	correct the image).  ``corrected`` is False when rotation is 0°.
+	"""
+	try:
+		img = _decode(image_data)
+		angle = detect_rotation(img)
+		return {"detected_rotation": angle, "corrected": angle != 0}
+	except Exception as exc:
+		_log.warning("get_rotation_info failed (%s)", exc)
+		return {"detected_rotation": 0, "corrected": False}
+
+
 def adaptive_deskew(image_bytes: bytes) -> bytes:
 	"""Deskew using projection profile analysis (97.6% accuracy).
 
-	Delegates to :func:`papermerge.core.features.scanning_projects.deskew.adaptive_deskew`
-	which uses horizontal projection profile variance maximisation instead of the
-	legacy probabilistic Hough transform.
+	Pipeline:
+	1. Correct major rotation (90 / 180 / 270°) via projection-profile analysis.
+	2. Run fine deskew on the rotation-corrected image.
+
+	Delegates fine deskew to
+	:func:`papermerge.core.features.scanning_projects.deskew.adaptive_deskew`.
 	"""
 	try:
 		from papermerge.core.features.scanning_projects.deskew import (
 			adaptive_deskew as _proj_deskew,
 		)
 		img = _decode(image_bytes)
+
+		# Step 1: major rotation correction (before fine deskew)
+		img, rotation_applied = correct_rotation(img)
+		if rotation_applied:
+			_log.info("adaptive_deskew: rotation correction applied (%d°)", rotation_applied)
+
+		# Step 2: fine deskew
 		corrected, _angle = _proj_deskew(img)
 		return _encode(corrected)
 	except Exception as exc:

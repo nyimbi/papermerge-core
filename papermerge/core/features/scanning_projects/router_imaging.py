@@ -16,7 +16,14 @@ from papermerge.core.db.engine import get_db
 from papermerge.core.features.auth.dependencies import require_scopes
 from papermerge.core.features.auth import scopes
 from papermerge.core.features.users.schema import User
-from .image_processing import adaptive_deskew, autocrop_to_content, perspective_correct
+from .image_processing import (
+	adaptive_deskew,
+	autocrop_to_content,
+	correct_rotation,
+	get_rotation_info,
+	perspective_correct,
+)
+from .page_analysis import analyze_page_for_separator
 
 router = APIRouter(
 	prefix="/scanning-projects",
@@ -46,8 +53,16 @@ async def process_camera_image(
 	corners: str | None = None,
 	apply_deskew: bool = True,
 	apply_autocrop: bool = True,
+	separator_barcode_prefix: str = "",
+	blank_threshold: float = 0.97,
 ):
-	"""Apply perspective correction, deskew, and autocrop to a camera-captured image."""
+	"""Apply perspective correction, deskew, and autocrop to a camera-captured image.
+
+	Also performs blank-page and separator-sheet detection.  Pass
+	``separator_barcode_prefix`` (e.g. ``SEP-``) to enable barcode separator
+	detection.  The response includes ``is_blank``, ``blank_ratio``,
+	``is_separator``, and ``detected_barcodes`` fields.
+	"""
 	data = await file.read()
 	if len(data) > 50 * 1024 * 1024:
 		raise HTTPException(status_code=413, detail="Image too large (max 50 MB)")
@@ -59,8 +74,21 @@ async def process_camera_image(
 		except (json.JSONDecodeError, ValueError):
 			raise HTTPException(status_code=422, detail="corners must be JSON array [[x,y],...]")
 
+	rotation_applied: int = 0
 	try:
 		result = perspective_correct(data, parsed_corners)
+
+		# Rotation correction: before deskew so deskew operates on upright image
+		arr_pre = np.frombuffer(result, dtype=np.uint8)
+		img_pre = cv2.imdecode(arr_pre, cv2.IMREAD_COLOR)
+		if img_pre is not None:
+			img_corrected, rotation_applied = correct_rotation(img_pre)
+			if rotation_applied:
+				_log.info("process_camera_image: rotation_applied=%d°", rotation_applied)
+				ok, buf = cv2.imencode(".jpg", img_corrected, [cv2.IMWRITE_JPEG_QUALITY, 92])
+				if ok:
+					result = buf.tobytes()
+
 		if apply_deskew:
 			result = adaptive_deskew(result)
 		if apply_autocrop:
@@ -88,13 +116,46 @@ async def process_camera_image(
 	out_img = cv2.imdecode(arr2, cv2.IMREAD_COLOR)
 	h, w = (out_img.shape[:2] if out_img is not None else (0, 0))
 
+	# Blank / separator detection on the processed image
+	page_analysis = analyze_page_for_separator(
+		result,
+		separator_barcode_prefix=separator_barcode_prefix,
+		blank_threshold=blank_threshold,
+	)
+
 	return {
 		"processed_image_b64": base64.b64encode(result).decode(),
 		"width": w,
 		"height": h,
 		"quality_score": quality_score,
 		"defects": defects,
+		"rotation_applied": rotation_applied,
+		"is_blank": page_analysis.is_blank,
+		"blank_ratio": page_analysis.blank_ratio,
+		"is_separator": page_analysis.is_separator,
+		"separator_type": page_analysis.separator_type,
+		"detected_barcodes": page_analysis.detected_barcodes,
 	}
+
+
+@router.post("/camera/rotation-info")
+async def detect_image_rotation(
+	user: Annotated[User, Depends(require_scopes(scopes.NODE_CREATE))],
+	db: Annotated[AsyncSession, Depends(get_db)],
+	file: UploadFile = File(...),
+):
+	"""Return rotation detection metadata for an uploaded image without modifying it.
+
+	Response::
+
+		{"detected_rotation": 0|90|180|270, "corrected": bool}
+
+	``detected_rotation`` is the CCW angle needed to make the image upright.
+	"""
+	data = await file.read()
+	if len(data) > 50 * 1024 * 1024:
+		raise HTTPException(status_code=413, detail="Image too large (max 50 MB)")
+	return get_rotation_info(data)
 
 
 @router.post("/stitch-images/from-uploads")

@@ -790,6 +790,159 @@ async def get_page_ocr_words(
     )
 
 
+# ---------------------------------------------------------------------------
+# Named entity extraction endpoints
+# ---------------------------------------------------------------------------
+
+class EntityItem(BaseModel):
+    entity_type: str
+    value: str
+    confidence: float | None = None
+    page_number: int | None = None
+    bbox: dict | None = None
+
+
+class EntitiesResponse(BaseModel):
+    entities: list[EntityItem]
+
+
+class ReExtractResponse(BaseModel):
+    queued: bool
+    message: str
+
+
+@router.get(
+    "/{document_id}/entities",
+    response_model=EntitiesResponse,
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_VIEW}` permission on the node",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        }
+    },
+)
+async def get_document_entities(
+        document_id: uuid.UUID,
+        user: require_scopes(scopes.NODE_VIEW),
+        db_session: AsyncSession = Depends(get_db),
+) -> EntitiesResponse:
+    """
+    Return named entities extracted from a document.
+
+    Entities are stored in the document_metadata JSONB column under the
+    'entities' key, populated by the darchiva.documents.extract_entities
+    Celery task after OCR completes.
+
+    The raw storage shape (from the LLM extraction task) is a flat dict:
+      {vendor, invoice_number, invoice_date, due_date, total_amount, currency, document_type}
+
+    This endpoint normalises that into a list of EntityItem objects so the
+    frontend can render them uniformly regardless of document type.
+    """
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    from sqlalchemy import select as _sa_select
+    from papermerge.core.features.document.db.orm import Document as _DocORM
+
+    stmt = _sa_select(_DocORM).where(_DocORM.id == document_id)
+    result = await db_session.execute(stmt)
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise exc.HTTP404NotFound()
+
+    metadata = doc.document_metadata or {}
+    raw_entities = metadata.get("entities", {})
+
+    if not raw_entities:
+        return EntitiesResponse(entities=[])
+
+    # Normalise: the task stores a flat dict of known fields.
+    # Map each non-null field to a typed EntityItem.
+    _FIELD_TYPE_MAP: dict[str, str] = {
+        "vendor": "ORG",
+        "invoice_number": "OTHER",
+        "invoice_date": "DATE",
+        "due_date": "DATE",
+        "total_amount": "MONEY",
+        "currency": "OTHER",
+        "document_type": "OTHER",
+    }
+
+    items: list[EntityItem] = []
+
+    if isinstance(raw_entities, dict):
+        for field_name, entity_type in _FIELD_TYPE_MAP.items():
+            value = raw_entities.get(field_name)
+            if value is None:
+                continue
+            # Combine total_amount + currency into a single MONEY entity
+            if field_name == "total_amount":
+                currency = raw_entities.get("currency", "")
+                display = f"{value} {currency}".strip() if currency else str(value)
+                items.append(EntityItem(entity_type="MONEY", value=display))
+                continue
+            if field_name == "currency":
+                # Already folded into total_amount above — skip standalone
+                continue
+            items.append(EntityItem(entity_type=entity_type, value=str(value)))
+    elif isinstance(raw_entities, list):
+        # Future shape: list of {text, label, ...} dicts from SpaCy/ocrworker
+        for ent in raw_entities:
+            if not isinstance(ent, dict):
+                continue
+            label = ent.get("label") or ent.get("entity_type") or "OTHER"
+            text_val = ent.get("text") or ent.get("value") or ""
+            if not text_val:
+                continue
+            items.append(EntityItem(
+                entity_type=label,
+                value=text_val,
+                confidence=ent.get("confidence") or ent.get("score"),
+                page_number=ent.get("page_number"),
+                bbox=ent.get("bbox"),
+            ))
+
+    return EntitiesResponse(entities=items)
+
+
+@router.post(
+    "/{document_id}/re-extract-entities",
+    response_model=ReExtractResponse,
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_UPDATE}` permission on the node",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        }
+    },
+)
+async def re_extract_document_entities(
+        document_id: uuid.UUID,
+        user: require_scopes(scopes.NODE_UPDATE),
+        db_session: AsyncSession = Depends(get_db),
+) -> ReExtractResponse:
+    """Queue entity re-extraction for the given document."""
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_UPDATE,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    send_task(
+        "darchiva.documents.extract_entities",
+        kwargs={"document_id": str(document_id), "user_id": str(user.id)},
+    )
+    logger.info(f"Re-extract entities queued for document {document_id}")
+    return ReExtractResponse(queued=True, message="Entity extraction queued")
+
+
 @router.get(
     "/{document_id}/anomaly",
     response_model=AnomalyResult,

@@ -878,6 +878,29 @@ def extract_document_entities(document_id: str, user_id: str | None = None):
 					await session.commit()
 					logger.info(f"Entities extracted for {document_id}: {list(entities.keys())}")
 
+					# Attempt auto-routing based on classified document_type
+					classified_type = entities.get("document_type")
+					confidence = entities.get("classification_confidence", 1.0)
+					if classified_type and hasattr(doc, "tenant_id") and doc.tenant_id:
+						try:
+							from papermerge.core.features.auto_routing.service import apply_auto_routing
+							routed = await apply_auto_routing(
+								document_id=str(document_id),
+								document_type=str(classified_type),
+								confidence=float(confidence),
+								tenant_id=str(doc.tenant_id),
+								session=session,
+							)
+							if routed:
+								logger.info(
+									f"auto_routing: document {document_id} routed "
+									f"(type={classified_type}, confidence={confidence:.2f})"
+								)
+						except Exception as ar_exc:
+							logger.warning(
+								f"auto_routing: graceful degradation for {document_id} — {ar_exc}"
+							)
+
 			except Exception as e:
 				logger.warning(f"Entity extraction failed for {document_id}: {e}")
 

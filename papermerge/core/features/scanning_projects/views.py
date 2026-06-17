@@ -132,6 +132,28 @@ class QualityConfig(BaseModel):
 	enable_dedup: bool = Field(default=True, description="Check SHA-256 + pHash for duplicates at ingestion")
 	dedup_action: str = Field(default="block", pattern="^(block|flag|allow)$")
 
+	# ── Separator sheet / blank page detection ────────────────────────────────
+	separator_mode: str = Field(
+		default="none",
+		pattern="^(none|blank_page|barcode|both)$",
+		description="none | blank_page | barcode | both",
+	)
+	separator_barcode_prefix: str = Field(
+		default="",
+		max_length=100,
+		description="Barcode value prefix that marks a separator sheet (e.g. 'SEP-')",
+	)
+	auto_remove_blanks: bool = Field(
+		default=False,
+		description="Silently drop blank pages at ingestion time",
+	)
+	blank_threshold: float = Field(
+		default=0.97,
+		ge=0.90,
+		le=0.99,
+		description="White-pixel fraction that classifies a page as blank (0.90–0.99)",
+	)
+
 
 # =====================================================
 # Scanning Project Models
