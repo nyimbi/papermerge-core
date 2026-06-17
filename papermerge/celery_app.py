@@ -121,6 +121,8 @@ app.conf.task_routes = {
     "darchiva.email_ingest.check_all": {"queue": prefixed("core")},
     # Connector sync
     "darchiva.connectors.sync_all": {"queue": prefixed("core")},
+    # GDPR data export and document bundles
+    "darchiva.data_export.run_export": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks
