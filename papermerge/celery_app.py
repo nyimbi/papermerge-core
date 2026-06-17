@@ -1,6 +1,7 @@
 import os
 
 from celery import Celery
+from celery.schedules import crontab
 
 PREFIX = os.environ.get("PM_PREFIX", None)
 broker_url = os.environ.get("PM_REDIS_URL", None)
@@ -104,6 +105,11 @@ app.conf.task_routes = {
     "darchiva.export.bulk_export": {"queue": prefixed("core")},
     # Email notifications
     "darchiva.notifications.send_email": {"queue": prefixed("core")},
+    # KPI reports
+    "darchiva.reports.weekly_kpi": {"queue": prefixed("core")},
+    # SFTP polling
+    "darchiva.ingestion.poll_sftp_connection": {"queue": prefixed("core")},
+    "darchiva.ingestion.poll_all_sftp": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks
@@ -127,5 +133,13 @@ app.conf.beat_schedule = {
     "retention-policy-sweep": {
         "task": "darchiva.retention.sweep",
         "schedule": 86400.0,  # Daily
+    },
+    "weekly-kpi-reports": {
+        "task": "darchiva.reports.weekly_kpi",
+        "schedule": crontab(day_of_week=1, hour=8, minute=0),
+    },
+    "poll-all-sftp": {
+        "task": "darchiva.ingestion.poll_all_sftp",
+        "schedule": 300.0,
     },
 }
