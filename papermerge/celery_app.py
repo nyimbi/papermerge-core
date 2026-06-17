@@ -106,6 +106,9 @@ app.conf.task_routes = {
     "darchiva.expiry.check_reminders": {"queue": prefixed("core")},
     # Bulk export
     "darchiva.export.bulk_export": {"queue": prefixed("core")},
+    # PDF merge and watermarking
+    "darchiva.documents.merge_pdfs": {"queue": prefixed("core")},
+    "darchiva.documents.apply_watermark": {"queue": prefixed("core")},
     # Email notifications
     "darchiva.notifications.send_email": {"queue": prefixed("core")},
     # KPI reports

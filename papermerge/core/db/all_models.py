@@ -57,6 +57,7 @@ from papermerge.core.features.shared_nodes.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.sharing.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.special_folders.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.tags.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.templates.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.tenants.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.users.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.webauthn.db.orm import *  # noqa: F401, F403
