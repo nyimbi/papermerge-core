@@ -53,6 +53,10 @@ class WebhookDelivery(Base):
 	)
 	event_type: Mapped[str] = mapped_column(String(128), nullable=False)
 	payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+	# "pending" | "delivered" | "failed"
+	status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
+	attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+	last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 	response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
 	response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
 	delivered_at: Mapped[datetime | None] = mapped_column(

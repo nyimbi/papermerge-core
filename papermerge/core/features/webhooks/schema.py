@@ -6,7 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 SUPPORTED_EVENTS = [
 	"document.created",
+	"document.classified",
 	"document.ocr_complete",
+	"scan.batch_complete",
+	"routing.rule_applied",
+	"document.expiring",
 	"batch.complete",
 	"exception.raised",
 ]
@@ -49,6 +53,9 @@ class DeliveryOut(BaseModel):
 	webhook_id: UUID
 	event_type: str
 	payload: dict
+	status: str = "pending"
+	attempts: int = 0
+	last_attempt_at: datetime | None = None
 	response_status: int | None
 	response_body: str | None
 	delivered_at: datetime | None

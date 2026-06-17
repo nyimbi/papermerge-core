@@ -130,6 +130,63 @@ async def list_deliveries(
 	return [DeliveryOut.model_validate(r) for r in rows]
 
 
+@router.get("/{webhook_id}/deliveries/{delivery_id}", response_model=DeliveryOut)
+async def get_delivery(
+	webhook_id: UUID,
+	delivery_id: UUID,
+	user=Depends(get_current_user),
+	db: AsyncSession = Depends(get_db),
+) -> DeliveryOut:
+	"""Return a single delivery record."""
+	tid = _tenant_id(user)
+	await _get_owned(db, webhook_id, tid)  # ownership check
+
+	result = await db.execute(
+		select(WebhookDelivery).where(
+			WebhookDelivery.id == delivery_id,
+			WebhookDelivery.webhook_id == webhook_id,
+		)
+	)
+	delivery = result.scalar_one_or_none()
+	if delivery is None:
+		raise HTTPException(status_code=404, detail="Delivery not found")
+	return DeliveryOut.model_validate(delivery)
+
+
+@router.post(
+	"/{webhook_id}/deliveries/{delivery_id}/retry",
+	response_model=DeliveryOut,
+	status_code=202,
+)
+async def retry_delivery(
+	webhook_id: UUID,
+	delivery_id: UUID,
+	user=Depends(get_current_user),
+	db: AsyncSession = Depends(get_db),
+) -> DeliveryOut:
+	"""Re-attempt a failed delivery immediately."""
+	from papermerge.core.features.webhooks.delivery_service import retry_delivery as _retry
+
+	tid = _tenant_id(user)
+	await _get_owned(db, webhook_id, tid)  # ownership check
+
+	# Verify delivery belongs to this webhook
+	result = await db.execute(
+		select(WebhookDelivery).where(
+			WebhookDelivery.id == delivery_id,
+			WebhookDelivery.webhook_id == webhook_id,
+		)
+	)
+	if result.scalar_one_or_none() is None:
+		raise HTTPException(status_code=404, detail="Delivery not found")
+
+	try:
+		delivery = await _retry(str(delivery_id), db)
+	except ValueError as exc:
+		raise HTTPException(status_code=404, detail=str(exc))
+	return DeliveryOut.model_validate(delivery)
+
+
 @router.post("/{webhook_id}/test", response_model=DeliveryOut, status_code=202)
 async def test_webhook(
 	webhook_id: UUID,

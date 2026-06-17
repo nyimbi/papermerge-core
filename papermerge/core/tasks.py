@@ -953,6 +953,8 @@ def deliver_webhook(self, webhook_id: str, event_type: str, payload: dict):
 				webhook_id=wh.id,
 				event_type=event_type,
 				payload=payload,
+				status="pending",
+				attempts=0,
 			)
 			session.add(delivery)
 			await session.flush()  # get the row persisted before network call
@@ -960,20 +962,22 @@ def deliver_webhook(self, webhook_id: str, event_type: str, payload: dict):
 			response_status: int | None = None
 			response_body: str | None = None
 			delivered_at: datetime | None = None
+			now = datetime.now(timezone.utc)
 
 			try:
 				import httpx
 				headers = {
 					"Content-Type": "application/json",
-					"X-Webhook-Event": event_type,
-					"X-Webhook-Signature": f"sha256={sig}",
-					"X-Webhook-Delivery": delivery_id,
+					"X-dArchiva-Event": event_type,
+					"X-dArchiva-Signature": f"sha256={sig}",
+					"X-dArchiva-Delivery": delivery_id,
 				}
 				async with httpx.AsyncClient(timeout=15) as client:
 					resp = await client.post(wh.url, content=body_bytes, headers=headers)
 				response_status = resp.status_code
 				response_body = resp.text[:4096]
 				delivered_at = datetime.now(timezone.utc)
+				delivery.status = "delivered" if 200 <= response_status < 300 else "failed"
 				logger.info(
 					f"deliver_webhook: {webhook_id[:8]} event={event_type} "
 					f"status={response_status}"
@@ -981,10 +985,14 @@ def deliver_webhook(self, webhook_id: str, event_type: str, payload: dict):
 
 				# Non-2xx 5xx triggers retry; 4xx is a caller error — don't retry
 				if response_status >= 500:
+					delivery.status = "failed"
 					raise ValueError(f"server error {response_status}")
 
 			except Exception as exc:
 				logger.warning(f"deliver_webhook: attempt failed for {webhook_id[:8]}: {exc}")
+				delivery.status = "failed"
+				delivery.attempts += 1
+				delivery.last_attempt_at = now
 				delivery.response_status = response_status
 				delivery.response_body = str(exc)[:4096] if response_body is None else response_body
 				await session.commit()
@@ -994,10 +1002,12 @@ def deliver_webhook(self, webhook_id: str, event_type: str, payload: dict):
 
 			finally:
 				# Always write the outcome we know so far
+				delivery.attempts += 1
+				delivery.last_attempt_at = now
 				delivery.response_status = response_status
 				delivery.response_body = response_body
 				delivery.delivered_at = delivered_at
-				wh.last_delivery_at = delivered_at or datetime.now(timezone.utc)
+				wh.last_delivery_at = delivered_at or now
 				wh.last_delivery_status = response_status
 				await session.commit()
 

@@ -51,6 +51,7 @@ from papermerge.core.features.scanning_projects.models_templates import *  # noq
 from papermerge.core.features.scanning_projects.operations_models import *  # noqa: F401, F403
 from papermerge.core.features.sftp.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.segmentation.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.signatures.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.serial_numbers.models import *  # noqa: F401, F403
 from papermerge.core.features.settings.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.shared_nodes.db.orm import *  # noqa: F401, F403

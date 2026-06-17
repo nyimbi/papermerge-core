@@ -478,6 +478,37 @@ async def search_documents(
             base_query = base_query.where(~DocumentSearchIndex.document_id.in_(exception_doc_ids_subq))
             count_query = count_query.where(~DocumentSearchIndex.document_id.in_(exception_doc_ids_subq))
 
+    # =========================================================================
+    # Apply ocr_status filter
+    # Frontend aliases: pending -> [UNKNOWN, RECEIVED]
+    #                   processing -> [STARTED]
+    #                   completed  -> [SUCCESS]
+    #                   failed     -> [FAILURE]
+    # Raw OCRStatusEnum values are also accepted directly.
+    # =========================================================================
+    if params.filters and params.filters.ocr_status:
+        _OCR_ALIAS_MAP: dict[str, list[str]] = {
+            "pending":    ["UNKNOWN", "RECEIVED"],
+            "processing": ["STARTED"],
+            "completed":  ["SUCCESS"],
+            "failed":     ["FAILURE"],
+        }
+        raw_values: list[str] = []
+        for s in params.filters.ocr_status:
+            normalized = s.strip().lower()
+            if normalized in _OCR_ALIAS_MAP:
+                raw_values.extend(_OCR_ALIAS_MAP[normalized])
+            else:
+                # Accept raw enum strings (e.g. "SUCCESS") as-is
+                raw_values.append(s.strip().upper())
+        if raw_values:
+            ocr_subq = (
+                select(doc_orm.Document.id)
+                .where(doc_orm.Document.ocr_status.in_(raw_values))
+            )
+            base_query = base_query.where(DocumentSearchIndex.document_id.in_(ocr_subq))
+            count_query = count_query.where(DocumentSearchIndex.document_id.in_(ocr_subq))
+
     # Note: We'll apply sorting later, after getting distinct document IDs
 
     # =========================================================================

@@ -419,6 +419,17 @@ class SearchFilters(BaseModel):
         description="If true, return only documents with at least one exception event"
     )
 
+    ocr_status: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Filter by OCR status. Frontend values (pending/processing/completed/failed) "
+            "are mapped to backend OCRStatusEnum values "
+            "(UNKNOWN|RECEIVED|STARTED -> pending/processing, SUCCESS -> completed, FAILURE -> failed). "
+            "Accepts both frontend aliases and raw OCRStatusEnum string values."
+        ),
+        examples=[["completed"], ["pending", "failed"]],
+    )
+
     @field_validator('tags')
     @classmethod
     def validate_tag_values(cls, tags: Optional[TagFilter]) -> Any:
