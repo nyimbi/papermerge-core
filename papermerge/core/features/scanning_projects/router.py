@@ -2951,6 +2951,79 @@ async def list_separator_events(
 	return results
 
 
+# =====================================================
+# Cover Sheet Endpoints
+# =====================================================
+
+
+@router.get("/{project_id}/cover-sheet")
+async def get_cover_sheet(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+	batch_count: int = Query(1, ge=1, le=50, description="Number of cover sheets to generate"),
+):
+	"""Generate a PDF with cover sheets for a scanning project.
+
+	Returns a multi-page PDF (one cover sheet per page), each containing a QR
+	code encoding PROJ-{project_id}-BATCH-{n}, the project name, and batch number.
+
+	Query params:
+	    batch_count: number of sequential cover sheets to include (1–50).
+	"""
+	from fastapi.responses import Response as _Resp
+	from .cover_sheets import generate_batch_cover_sheets
+
+	project = await service.get_scanning_project(session, project_id, user.tenant_id)
+	if not project:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+	pdf_bytes = generate_batch_cover_sheets(
+		project_id=project_id,
+		project_name=project.name,
+		batch_count=batch_count,
+	)
+
+	filename = f"cover-sheet-{project_id}.pdf"
+	return _Resp(
+		content=pdf_bytes,
+		media_type="application/pdf",
+		headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+	)
+
+
+@router.get("/{project_id}/separator-sheet")
+async def get_separator_sheet(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+):
+	"""Generate an A5 separator sheet PDF for a scanning project.
+
+	The sheet contains a QR code encoding PROJ-{project_id}-SEP and a prominent
+	SEPARATOR label. Place between document stacks to trigger auto-split during
+	batch processing.
+	"""
+	from fastapi.responses import Response as _Resp
+	from .cover_sheets import generate_separator_sheet_pdf
+
+	project = await service.get_scanning_project(session, project_id, user.tenant_id)
+	if not project:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+	pdf_bytes = generate_separator_sheet_pdf(
+		project_id=project_id,
+		project_name=project.name,
+	)
+
+	filename = f"separator-sheet-{project_id}.pdf"
+	return _Resp(
+		content=pdf_bytes,
+		media_type="application/pdf",
+		headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+	)
+
+
 # Route ordering fix: static collection paths (/resources, /locations, /shifts,
 # /shift-assignments, /gamification, /batch-priority) must precede /{project_id}
 # so FastAPI doesn't match them as project ID values.

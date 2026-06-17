@@ -73,3 +73,6 @@ from papermerge.core.features.data_export.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.dedup.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.document_chat.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.legal_hold.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.acl.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.automation.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.scheduled_reports.db.orm import *  # noqa: F401, F403

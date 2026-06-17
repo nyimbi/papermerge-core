@@ -123,6 +123,8 @@ app.conf.task_routes = {
     "darchiva.connectors.sync_all": {"queue": prefixed("core")},
     # GDPR data export and document bundles
     "darchiva.data_export.run_export": {"queue": prefixed("core")},
+    # Scheduled reports
+    "darchiva.reports.run_scheduled": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks
@@ -165,6 +167,10 @@ app.conf.beat_schedule = {
     },
     "connector-sync": {
         "task": "darchiva.connectors.sync_all",
+        "schedule": 3600.0,  # Every hour
+    },
+    "scheduled-reports": {
+        "task": "darchiva.reports.run_scheduled",
         "schedule": 3600.0,  # Every hour
     },
 }
