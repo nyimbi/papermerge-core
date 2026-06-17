@@ -70,3 +70,4 @@ from papermerge.core.features.approvals.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.classification_feedback.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.connectors.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.dedup.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.legal_hold.db.orm import *  # noqa: F401, F403

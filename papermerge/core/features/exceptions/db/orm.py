@@ -19,6 +19,7 @@ class ExceptionType(str, Enum):
 	INCOMPLETE_SET = "incomplete_set"
 	BARCODE_UNREADABLE = "barcode_unreadable"
 	ORIENTATION_ERROR = "orientation_error"
+	SEPARATOR_DETECTED = "separator_detected"  # cover-sheet / project-code boundary
 
 
 class ExceptionSeverity(str, Enum):

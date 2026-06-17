@@ -40,6 +40,7 @@ from papermerge.core.db import common as dbapi_common
 from papermerge.core.routers.common import OPEN_API_GENERIC_JSON_DETAIL
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.audit.db.audit_context import AsyncAuditContext
+from papermerge.core.features.legal_hold.service import check_hold_before_delete
 from .schema import DocumentParams, AnomalyResult
 from .anomaly import AnomalyDetectionService
 from .mime_detection import (
@@ -211,6 +212,11 @@ async def batch_documents(
                             user_id=user.id,
                         ):
                             errors.append(f"{doc_id}: permission denied")
+                            continue
+                        try:
+                            await check_hold_before_delete(str(doc_id), db_session)
+                        except Exception as hold_exc:
+                            errors.append(f"{doc_id}: {hold_exc.detail}")
                             continue
                         err = await nodes_dbapi.delete_nodes(
                             db_session, node_ids=[doc_id], user_id=user.id

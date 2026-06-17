@@ -2538,6 +2538,100 @@ async def camera_capture_to_document(
 		)
 	# ── End barcode detection ─────────────────────────────────────────────────
 
+	# ── Separator / project-code detection ───────────────────────────────────
+	# If the project has a project_code_pattern in quality_config and barcodes
+	# were detected, try to extract a project code and emit a
+	# SEPARATOR_DETECTED ExceptionEvent with the extracted code.
+	if project_id:
+		try:
+			import logging as _sep_log
+			_seplog = _sep_log.getLogger(__name__)
+			from sqlalchemy import select as _sep_sa_select
+			from papermerge.core.db.engine import get_async_session_maker as _sep_gsm
+			from .models import ScanningProjectModel as _SepProjectModel, ScanningBatchModel as _SepBatchModel
+			from papermerge.core.features.exceptions.db.orm import (
+				ExceptionEvent as _SepExcEvent,
+				ExceptionType as _SepExcType,
+				ExceptionSeverity as _SepExcSev,
+			)
+			from papermerge.core.utils.uuid_compat import uuid7str as _sep_uuid7str
+			from .page_analysis import analyze_page_for_separator, extract_project_code_from_barcode
+
+			_sep_session_maker = _sep_gsm()
+			async with _sep_session_maker() as _sep_session:
+				_proj_row = await _sep_session.execute(
+					_sep_sa_select(_SepProjectModel).where(
+						_SepProjectModel.id == project_id,
+						_SepProjectModel.tenant_id == str(user.tenant_id),
+					).limit(1)
+				)
+				_sep_project = _proj_row.scalar_one_or_none()
+				if _sep_project and _sep_project.quality_config:
+					_qc = _sep_project.quality_config
+					_sep_prefix: str = _qc.get("separator_barcode_prefix", "")
+					_code_pattern: str = _qc.get("project_code_pattern", "")
+					_blank_threshold: float = float(_qc.get("blank_threshold", 0.97))
+
+					# Full page analysis (blank + barcode)
+					_pa_result = analyze_page_for_separator(
+						data,
+						separator_barcode_prefix=_sep_prefix,
+						blank_threshold=_blank_threshold,
+					)
+
+					if _pa_result.is_separator:
+						# Extract project code if pattern configured
+						_proj_code: str | None = None
+						if _code_pattern and _pa_result.detected_barcodes:
+							_proj_code = extract_project_code_from_barcode(
+								_pa_result.detected_barcodes,
+								_code_pattern,
+							)
+
+						_seplog.info(
+							"camera_capture: separator detected for project %s — "
+							"type=%s project_code=%r",
+							project_id,
+							_pa_result.separator_type,
+							_proj_code,
+						)
+
+						# Resolve batch_id for this project (most recent active batch)
+						_sep_batch_row = await _sep_session.execute(
+							_sep_sa_select(_SepBatchModel)
+							.where(_SepBatchModel.project_id == project_id)
+							.order_by(_SepBatchModel.created_at.desc())
+							.limit(1)
+						)
+						_sep_batch = _sep_batch_row.scalar_one_or_none()
+
+						_sep_evt = _SepExcEvent(
+							id=_sep_uuid7str(),
+							exception_type=_SepExcType.SEPARATOR_DETECTED.value,
+							severity=_SepExcSev.WARNING.value,
+							batch_id=str(_sep_batch.id) if _sep_batch else None,
+							tenant_id=str(user.tenant_id),
+							description=(
+								f"Separator detected: type={_pa_result.separator_type}"
+								+ (f", project_code={_proj_code}" if _proj_code else "")
+							),
+							auto_fixable=True,
+							defects={
+								"separator_type": _pa_result.separator_type,
+								"project_code": _proj_code,
+								"barcodes": _pa_result.detected_barcodes,
+							},
+						)
+						_sep_session.add(_sep_evt)
+						await _sep_session.commit()
+		except Exception as _sep_err:
+			import logging as _sep_log2
+			_sep_log2.getLogger(__name__).warning(
+				"camera_capture: separator/project-code detection failed (non-fatal): %s",
+				_sep_err,
+			)
+	# ── End separator detection ───────────────────────────────────────────────
+
 	doc_id = _uuid.uuid4()
 	doc_ver_id = _uuid.uuid4()
 	safe_title = title or (image.filename or f"camera_{doc_id.hex[:8]}")
@@ -2780,6 +2874,81 @@ async def get_my_active_session(
 		started_at=session_record.started_at.isoformat(),
 		duration_minutes=round(duration, 2),
 	)
+
+
+# =====================================================
+# Separator Events Endpoint
+# =====================================================
+
+
+class SeparatorEventResponse(BaseModel):
+	"""Single separator-detected event returned by the feed endpoint."""
+	id: str
+	batch_id: str | None
+	page_number: int | None
+	separator_type: str | None        # "blank" | "barcode"
+	project_code: str | None          # extracted project code (if any)
+	detected_at: str                  # ISO-8601 timestamp
+
+
+@router.get(
+	"/{project_id}/separator-events",
+	response_model=list[SeparatorEventResponse],
+)
+async def list_separator_events(
+	project_id: str,
+	user: Annotated[User, Depends(get_current_user)],
+	session: Annotated[AsyncSession, Depends(get_db)],
+) -> list[SeparatorEventResponse]:
+	"""List separator_detected ExceptionEvents for a project, newest first.
+
+	Used by the ScanningStation live feed to display cover-sheet / project-code
+	events as they arrive.  Polls cleanly — no websocket needed.
+	"""
+	from sqlalchemy import select as _sa_select
+	from papermerge.core.features.exceptions.db.orm import (
+		ExceptionEvent,
+		ExceptionType,
+	)
+	from .models import ScanningBatchModel
+
+	# Collect all batch IDs belonging to this project (tenant-scoped via project)
+	batch_stmt = _sa_select(ScanningBatchModel.id).where(
+		ScanningBatchModel.project_id == project_id
+	)
+	batch_ids_result = await session.execute(batch_stmt)
+	batch_ids = [str(r) for r in batch_ids_result.scalars().all()]
+
+	if not batch_ids:
+		return []
+
+	# Fetch separator events for those batches
+	evt_stmt = (
+		_sa_select(ExceptionEvent)
+		.where(
+			ExceptionEvent.exception_type == ExceptionType.SEPARATOR_DETECTED.value,
+			ExceptionEvent.batch_id.in_(batch_ids),
+		)
+		.order_by(ExceptionEvent.created_at.desc())
+		.limit(200)
+	)
+	rows = (await session.execute(evt_stmt)).scalars().all()
+
+	results: list[SeparatorEventResponse] = []
+	for row in rows:
+		# Extra data is stored as JSON in the defects column
+		extra: dict = row.defects or {}
+		results.append(
+			SeparatorEventResponse(
+				id=row.id,
+				batch_id=row.batch_id,
+				page_number=row.page_number,
+				separator_type=extra.get("separator_type"),
+				project_code=extra.get("project_code"),
+				detected_at=row.created_at.isoformat(),
+			)
+		)
+	return results
 
 
 # Route ordering fix: static collection paths (/resources, /locations, /shifts,

@@ -163,3 +163,77 @@ def _detect_zxingcpp(img: "np.ndarray") -> list[str]:
 	import zxingcpp  # type: ignore
 	results = zxingcpp.read_barcodes(img)
 	return [r.text for r in results]
+
+
+# ── Project-code extraction ───────────────────────────────────────────────────
+
+def extract_project_code_from_barcode(
+	barcodes: list[str],
+	pattern: str,
+) -> str | None:
+	"""Extract a project code from a list of detected barcode values.
+
+	Scans *barcodes* in order and returns the first match against:
+	  ``^{re.escape(pattern)}(.+?)(-SEP)?$``
+
+	The captured group (group 1) is returned; the optional trailing ``-SEP``
+	suffix is stripped.
+
+	Examples::
+
+	  extract_project_code_from_barcode(["PROJ-2024-001-SEP"], "PROJ-")
+	  # → "2024-001"
+
+	  extract_project_code_from_barcode(["PROJ-2024-001"], "PROJ-")
+	  # → "2024-001"
+
+	  extract_project_code_from_barcode(["OTHER-123"], "PROJ-")
+	  # → None
+
+	Args:
+		barcodes: Raw barcode values decoded from the page image.
+		pattern: Literal prefix to match (e.g. ``"PROJ-"``).  Empty string
+			disables extraction and returns ``None``.
+
+	Returns:
+		The extracted project code, or ``None`` if no match.
+	"""
+	if not pattern:
+		return None
+
+	import re as _re
+	rx = _re.compile(r"^" + _re.escape(pattern) + r"(.+?)(-SEP)?$")
+	for barcode in barcodes:
+		m = rx.match(barcode)
+		if m:
+			code = m.group(1)
+			_log.debug(
+				"extract_project_code_from_barcode: matched %r → code=%r",
+				barcode,
+				code,
+			)
+			return code
+
+	return None
+
+
+# ── Multi-document gap detection ──────────────────────────────────────────────
+
+def detect_multi_document_gap(
+	page_sequence: list[PageAnalysisResult],
+) -> list[int]:
+	"""Return indices where document boundaries are detected in a page sequence.
+
+	A document boundary exists at index *i* when ``page_sequence[i]`` is a
+	separator page (``is_separator=True``).  These are the points at which the
+	scan stream should be split into separate documents.
+
+	Args:
+		page_sequence: Ordered list of ``PageAnalysisResult`` objects, one per
+			scanned page in acquisition order.
+
+	Returns:
+		List of zero-based indices (within *page_sequence*) that are separator
+		pages.  The list is sorted ascending and may be empty.
+	"""
+	return [i for i, result in enumerate(page_sequence) if result.is_separator]
