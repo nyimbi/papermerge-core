@@ -22,6 +22,7 @@ from papermerge.core.features.departments.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.document_relationships.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.document_types.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.document.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.email_ingest.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.emails.models import *  # noqa: F401, F403
 from papermerge.core.features.encryption.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.exceptions.db.orm import *  # noqa: F401, F403

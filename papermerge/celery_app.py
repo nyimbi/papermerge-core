@@ -89,7 +89,8 @@ app.conf.task_routes = {
     "papermerge.core.tasks.sync_email_account": {"queue": prefixed("core")},
     "papermerge.core.tasks.sync_all_email_accounts": {"queue": prefixed("core")},
     "papermerge.core.tasks.process_email_attachments": {"queue": prefixed("core")},
-    # Document intelligence tasks (embeddings, NER, re-scan)
+    # Document intelligence tasks (embeddings, NER, re-scan, batch ops)
+    "darchiva.documents.batch_operation": {"queue": prefixed("core")},
     "darchiva.documents.index_embeddings": {"queue": prefixed("core")},
     "darchiva.documents.extract_entities": {"queue": prefixed("core")},
     "darchiva.scanning.rescan_requested": {"queue": prefixed("core")},
@@ -112,6 +113,9 @@ app.conf.task_routes = {
     # SFTP polling
     "darchiva.ingestion.poll_sftp_connection": {"queue": prefixed("core")},
     "darchiva.ingestion.poll_all_sftp": {"queue": prefixed("core")},
+    # IMAP email ingestion
+    "darchiva.email_ingest.check_mailbox": {"queue": prefixed("core")},
+    "darchiva.email_ingest.check_all": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks
@@ -147,5 +151,9 @@ app.conf.beat_schedule = {
     "poll-all-sftp": {
         "task": "darchiva.ingestion.poll_all_sftp",
         "schedule": 300.0,
+    },
+    "email-ingest": {
+        "task": "darchiva.email_ingest.check_all",
+        "schedule": 900.0,  # Every 15 minutes
     },
 }

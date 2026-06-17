@@ -57,6 +57,305 @@ logger = logging.getLogger(__name__)
 config = get_settings()
 
 
+# ---------------------------------------------------------------------------
+# Batch operation schemas
+# ---------------------------------------------------------------------------
+
+class BatchTagParams(BaseModel):
+    tag_ids: list[str]
+    action: str = "add"  # "add" | "remove" | "set"
+
+
+class BatchMoveParams(BaseModel):
+    destination_folder_id: str
+
+
+class BatchClassifyParams(BaseModel):
+    document_type_id: str
+
+
+class BatchOperationRequest(BaseModel):
+    operation: str  # "tag" | "move" | "classify" | "delete" | "export"
+    document_ids: list[str]
+    params: dict = {}
+
+
+class BatchOperationResponse(BaseModel):
+    operation_id: str
+    status: str          # "queued" | "completed"
+    affected: int
+    errors: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# POST /documents/batch
+# ---------------------------------------------------------------------------
+
+_BATCH_ASYNC_THRESHOLD = 50
+
+
+@router.post(
+    "/batch",
+    status_code=200,
+    response_model=BatchOperationResponse,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Unknown operation or missing params",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Insufficient permissions on one or more documents",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+    },
+)
+async def batch_documents(
+    body: BatchOperationRequest,
+    user: require_scopes(scopes.NODE_UPDATE),
+    db_session: AsyncSession = Depends(get_db),
+) -> BatchOperationResponse:
+    """
+    Perform a batch operation on a list of documents.
+
+    Supported operations:
+    - tag      — params: {tag_ids: [str], action: "add"|"remove"|"set"}
+    - move     — params: {destination_folder_id: str}
+    - classify — params: {document_type_id: str}
+    - delete   — params: {} (requires NODE_DELETE scope checked per-document)
+    - export   — params: {} → returns operation_id; poll /nodes/bulk-export/{operation_id}
+
+    For < 50 documents processing is synchronous (status="completed").
+    For >= 50 documents the work is queued as a Celery task (status="queued").
+    """
+    from uuid import UUID as _UUID
+    from sqlalchemy import update as _update, select as _select
+    from papermerge.core import orm as _orm
+    from papermerge.core.features.nodes.db import api as nodes_dbapi
+    from papermerge.core.db import common as _dbapi_common
+
+    allowed_ops = {"tag", "move", "classify", "delete", "export"}
+    if body.operation not in allowed_ops:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown operation '{body.operation}'. Must be one of: {sorted(allowed_ops)}",
+        )
+
+    if not body.document_ids:
+        return BatchOperationResponse(
+            operation_id=str(uuid.uuid4()),
+            status="completed",
+            affected=0,
+        )
+
+    # Large batch — hand off to Celery and return immediately
+    if len(body.document_ids) >= _BATCH_ASYNC_THRESHOLD:
+        operation_id = str(uuid.uuid4())
+        export_params = dict(body.params)
+        if body.operation == "export":
+            export_params["job_id"] = operation_id
+        send_task(
+            "darchiva.documents.batch_operation",
+            kwargs={
+                "operation": body.operation,
+                "document_ids": body.document_ids,
+                "params": export_params,
+                "user_id": str(user.id),
+            },
+        )
+        return BatchOperationResponse(
+            operation_id=operation_id,
+            status="queued",
+            affected=len(body.document_ids),
+        )
+
+    # ----------------------------------------------------------------
+    # Synchronous path (< 50 docs)
+    # ----------------------------------------------------------------
+    operation_id = str(uuid.uuid4())
+    errors: list[str] = []
+    affected = 0
+
+    doc_uuids = []
+    for raw_id in body.document_ids:
+        try:
+            doc_uuids.append(_UUID(raw_id))
+        except ValueError:
+            errors.append(f"{raw_id}: invalid UUID")
+
+    if body.operation == "export":
+        # Delegate to the existing bulk-export Celery task
+        send_task(
+            "darchiva.export.bulk_export",
+            kwargs={
+                "job_id": operation_id,
+                "document_ids": body.document_ids,
+                "include_metadata": body.params.get("include_metadata", True),
+                "include_original": body.params.get("include_original", True),
+            },
+        )
+        return BatchOperationResponse(
+            operation_id=operation_id,
+            status="queued",
+            affected=len(doc_uuids),
+        )
+
+    elif body.operation == "delete":
+        async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+            for doc_id in doc_uuids:
+                async with db_session.begin_nested():
+                    try:
+                        if not await _dbapi_common.has_node_perm(
+                            db_session,
+                            node_id=doc_id,
+                            codename=scopes.NODE_DELETE,
+                            user_id=user.id,
+                        ):
+                            errors.append(f"{doc_id}: permission denied")
+                            continue
+                        err = await nodes_dbapi.delete_nodes(
+                            db_session, node_ids=[doc_id], user_id=user.id
+                        )
+                        if err:
+                            errors.append(f"{doc_id}: {err}")
+                        else:
+                            affected += 1
+                    except Exception as e:
+                        errors.append(f"{doc_id}: {e}")
+        await db_session.commit()
+
+    elif body.operation == "move":
+        dest_raw = body.params.get("destination_folder_id")
+        if not dest_raw:
+            raise HTTPException(status_code=400, detail="params.destination_folder_id required for move")
+        try:
+            dest_id = _UUID(dest_raw)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="params.destination_folder_id is not a valid UUID")
+
+        if not await _dbapi_common.has_node_perm(
+            db_session,
+            node_id=dest_id,
+            codename=scopes.NODE_UPDATE,
+            user_id=user.id,
+        ):
+            raise exc.HTTP403Forbidden()
+
+        async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+            for doc_id in doc_uuids:
+                async with db_session.begin_nested():
+                    try:
+                        if not await _dbapi_common.has_node_perm(
+                            db_session,
+                            node_id=doc_id,
+                            codename=scopes.NODE_MOVE,
+                            user_id=user.id,
+                        ):
+                            errors.append(f"{doc_id}: permission denied")
+                            continue
+                        count = await nodes_dbapi.move_nodes(
+                            db_session, source_ids=[doc_id], target_id=dest_id
+                        )
+                        if count > 0:
+                            affected += 1
+                        else:
+                            errors.append(f"{doc_id}: not found or already at target")
+                    except Exception as e:
+                        errors.append(f"{doc_id}: {e}")
+        await db_session.commit()
+
+    elif body.operation == "tag":
+        raw_tag_ids = body.params.get("tag_ids", [])
+        tag_action = body.params.get("action", "add")
+        if tag_action not in ("add", "remove", "set"):
+            raise HTTPException(status_code=400, detail="params.action must be 'add', 'remove', or 'set'")
+
+        tag_uuids = []
+        for t in raw_tag_ids:
+            try:
+                tag_uuids.append(_UUID(t))
+            except ValueError:
+                errors.append(f"tag {t}: invalid UUID")
+
+        tag_stmt = _select(_orm.Tag).where(_orm.Tag.id.in_(tag_uuids))
+        tags = list((await db_session.scalars(tag_stmt)).all())
+
+        async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+            for doc_id in doc_uuids:
+                async with db_session.begin_nested():
+                    try:
+                        if not await _dbapi_common.has_node_perm(
+                            db_session,
+                            node_id=doc_id,
+                            codename=scopes.NODE_UPDATE,
+                            user_id=user.id,
+                        ):
+                            errors.append(f"{doc_id}: permission denied")
+                            continue
+                        node_stmt = _select(_orm.Node).where(_orm.Node.id == doc_id)
+                        node = (await db_session.scalars(node_stmt)).one_or_none()
+                        if node is None:
+                            errors.append(f"{doc_id}: not found")
+                            continue
+                        await db_session.refresh(node, ["tags"])
+                        if tag_action == "set":
+                            node.tags = tags
+                        elif tag_action == "add":
+                            existing_ids = {t.id for t in node.tags}
+                            node.tags = list(node.tags) + [
+                                t for t in tags if t.id not in existing_ids
+                            ]
+                        else:  # remove
+                            remove_ids = {t.id for t in tags}
+                            node.tags = [t for t in node.tags if t.id not in remove_ids]
+                        await db_session.flush()
+                        affected += 1
+                    except Exception as e:
+                        errors.append(f"{doc_id}: {e}")
+        await db_session.commit()
+
+    elif body.operation == "classify":
+        dt_raw = body.params.get("document_type_id")
+        if not dt_raw:
+            raise HTTPException(status_code=400, detail="params.document_type_id required for classify")
+        try:
+            dt_id = _UUID(dt_raw)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="params.document_type_id is not a valid UUID")
+
+        # Verify update perm on each document individually
+        async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+            for doc_id in doc_uuids:
+                async with db_session.begin_nested():
+                    try:
+                        if not await _dbapi_common.has_node_perm(
+                            db_session,
+                            node_id=doc_id,
+                            codename=scopes.NODE_UPDATE,
+                            user_id=user.id,
+                        ):
+                            errors.append(f"{doc_id}: permission denied")
+                            continue
+                        result = await db_session.execute(
+                            _update(_orm.Document)
+                            .where(_orm.Document.id == doc_id)
+                            .values(document_type_id=dt_id)
+                        )
+                        if result.rowcount > 0:
+                            affected += 1
+                        else:
+                            errors.append(f"{doc_id}: not a document or not found")
+                    except Exception as e:
+                        errors.append(f"{doc_id}: {e}")
+        await db_session.commit()
+
+    return BatchOperationResponse(
+        operation_id=operation_id,
+        status="completed",
+        affected=affected,
+        errors=errors,
+    )
+
+
 @router.get("/")
 async def get_documents(
         user: require_scopes(scopes.NODE_VIEW),
