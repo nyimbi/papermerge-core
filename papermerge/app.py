@@ -138,6 +138,48 @@ app.include_router(version_router, prefix=prefix)
 app.include_router(scopes_router, prefix=prefix)
 
 
+@app.websocket("/ws/notifications")
+async def ws_notifications(
+    websocket: WebSocket,
+    token: str | None = Query(default=None),
+):
+    """Real-time WebSocket endpoint for dArchiva notifications.
+
+    Clients connect with: ws://host/ws/notifications?token=<bearer_token>
+    Messages are pushed from Redis pub/sub channel darchiva:notifications:{tenant_id}.
+    """
+    from fastapi.security import SecurityScopes
+    from papermerge.core.db.engine import AsyncSessionLocal
+    from papermerge.core.features.api_tokens.db.api import is_pat_token
+    from papermerge.core.features.auth import (
+        _authenticate_with_pat,
+        _authenticate_with_jwt,
+    )
+    from papermerge.core.features.notifications.websocket import notifications_handler
+
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    async with AsyncSessionLocal() as db_session:
+        security_scopes = SecurityScopes(scopes=[])
+        try:
+            if is_pat_token(token):
+                user = await _authenticate_with_pat(token, db_session, security_scopes)
+            else:
+                user = await _authenticate_with_jwt(token, db_session, security_scopes)
+        except Exception:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        if not user:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        tenant_id = str(user.tenant_id) if user.tenant_id else str(user.id)
+        await notifications_handler(websocket, tenant_id)
+
+
 @app.websocket("/ws/workflows/notifications")
 async def ws_workflow_notifications(
     websocket: WebSocket,

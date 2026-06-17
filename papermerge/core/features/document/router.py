@@ -1,7 +1,15 @@
 import difflib
 import logging
+import os
 import uuid
 from typing import Any
+
+try:
+    import pikepdf
+    from pikepdf import Pdf as _Pdf
+    _PIKEPDF_AVAILABLE = True
+except ImportError:
+    _PIKEPDF_AVAILABLE = False
 
 from fastapi import (
     APIRouter,
@@ -1080,4 +1088,440 @@ async def get_document_version_diff(
         deletions=deletions,
         unchanged=unchanged,
         diff=chunks,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Merge request / response models
+# ---------------------------------------------------------------------------
+
+class MergeDocumentsRequest(BaseModel):
+    source_document_ids: list[uuid.UUID]
+    title: str
+    destination_folder_id: uuid.UUID | None = None
+
+
+class MergeDocumentsResponse(BaseModel):
+    document_id: uuid.UUID
+    title: str
+    page_count: int
+    version_id: uuid.UUID
+
+
+# ---------------------------------------------------------------------------
+# Split request / response models
+# ---------------------------------------------------------------------------
+
+class SplitDocumentRequest(BaseModel):
+    at_page: int
+    title_part1: str | None = None
+    title_part2: str | None = None
+
+
+class SplitPartInfo(BaseModel):
+    document_id: uuid.UUID
+    title: str
+    page_count: int
+    version_id: uuid.UUID
+
+
+class SplitDocumentResponse(BaseModel):
+    part1: SplitPartInfo
+    part2: SplitPartInfo
+
+
+# ---------------------------------------------------------------------------
+# POST /documents/merge
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/merge",
+    status_code=201,
+    response_model=MergeDocumentsResponse,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "pypdf not installed or invalid source documents",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_CREATE}` or `{scopes.NODE_VIEW}` permission",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+    },
+)
+async def merge_documents(
+    body: MergeDocumentsRequest,
+    user: require_scopes(scopes.NODE_CREATE, scopes.NODE_VIEW),
+    db_session: AsyncSession = Depends(get_db),
+) -> MergeDocumentsResponse:
+    """
+    Merge multiple PDFs into a single new document.
+
+    Source documents are merged in the order specified by source_document_ids.
+    The merged document is placed in destination_folder_id (defaults to user inbox).
+    """
+    if not _PIKEPDF_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="PDF merge requires pikepdf which is not installed",
+        )
+
+    if len(body.source_document_ids) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least two source documents are required for merge",
+        )
+
+    parent_id = body.destination_folder_id or user.inbox_folder_id
+
+    # Verify read permission on parent destination
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=parent_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    # Resolve latest version for each source document and verify read access
+    from sqlalchemy import select as _sa_select
+    from papermerge.core import orm as _orm
+    from sqlalchemy.orm import selectinload as _sil
+
+    source_versions: list[_orm.DocumentVersion] = []
+    for doc_id in body.source_document_ids:
+        if not await dbapi_common.has_node_perm(
+                db_session,
+                node_id=doc_id,
+                codename=scopes.NODE_VIEW,
+                user_id=user.id,
+        ):
+            raise exc.HTTP403Forbidden()
+
+        stmt = (
+            _sa_select(_orm.DocumentVersion)
+            .options(_sil(_orm.DocumentVersion.pages))
+            .where(_orm.DocumentVersion.document_id == doc_id)
+            .order_by(_orm.DocumentVersion.number.desc())
+            .limit(1)
+        )
+        result = await db_session.execute(stmt)
+        doc_ver = result.scalar_one_or_none()
+        if doc_ver is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Document {doc_id} not found or has no versions",
+            )
+        if not doc_ver.file_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Document {doc_id} file not available locally (still processing?)",
+            )
+        source_versions.append(doc_ver)
+
+    # Perform merge with pikepdf
+    new_doc_id = uuid.uuid4()
+    new_ver_id = uuid.uuid4()
+    merged_file_name = f"{body.title.replace(' ', '_')}.pdf"
+
+    from papermerge.core.pathlib import abs_docver_path as _abs_docver_path
+
+    merged_path = _abs_docver_path(new_ver_id, merged_file_name)
+    os.makedirs(merged_path.parent, exist_ok=True)
+
+    total_pages = 0
+    try:
+        merged_pdf = _Pdf.new()
+        for doc_ver in source_versions:
+            src_pdf = _Pdf.open(doc_ver.file_path)
+            for page in src_pdf.pages:
+                merged_pdf.pages.append(page)
+                total_pages += 1
+            src_pdf.close()
+        merged_pdf.save(merged_path)
+        merged_pdf.close()
+    except Exception as e:
+        logger.error(f"PDF merge failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PDF merge failed: {e}",
+        )
+
+    merged_size = os.path.getsize(merged_path)
+    lang = user.preferences.document_default_lang or config.default_lang
+
+    new_document = schema.NewDocument(
+        id=new_doc_id,
+        title=body.title,
+        lang=lang,
+        parent_id=parent_id,
+        size=merged_size,
+        page_count=total_pages,
+        ocr=False,
+        file_name=merged_file_name,
+        ctype="document",
+        created_by=user.id,
+        updated_by=user.id,
+    )
+
+    async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+        result = await doc_dbapi.create_document(
+            db_session,
+            new_document,
+            mime_type="application/pdf",
+            document_version_id=new_ver_id,
+        )
+        if isinstance(result, tuple):
+            doc, error = result
+        else:
+            doc, error = result, None
+
+        if error:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+
+    # Upload merged PDF to storage (for non-local backends)
+    from papermerge.storage.base import get_storage_backend
+    from papermerge.core.pathlib import docver_path as _docver_path
+    storage = get_storage_backend()
+    object_key = str(_docver_path(new_ver_id, file_name=merged_file_name))
+    try:
+        with open(merged_path, "rb") as _f:
+            merged_bytes = _f.read()
+        await storage.upload_bytes(
+            data=merged_bytes,
+            object_key=object_key,
+            content_type="application/pdf",
+        )
+    except Exception as upload_err:
+        logger.warning(f"Storage upload of merged PDF failed (non-fatal for local): {upload_err}")
+
+    logger.info(f"Merged {len(source_versions)} documents into {doc.id} ({total_pages} pages)")
+
+    return MergeDocumentsResponse(
+        document_id=doc.id,
+        title=doc.title,
+        page_count=total_pages,
+        version_id=new_ver_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /documents/{document_id}/split
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/{document_id}/split",
+    status_code=201,
+    response_model=SplitDocumentResponse,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Invalid split point or missing pikepdf",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_CREATE}` or `{scopes.NODE_VIEW}` permission",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        },
+    },
+)
+async def split_document(
+    document_id: uuid.UUID,
+    body: SplitDocumentRequest,
+    user: require_scopes(scopes.NODE_CREATE, scopes.NODE_VIEW),
+    db_session: AsyncSession = Depends(get_db),
+) -> SplitDocumentResponse:
+    """
+    Split a PDF document into two parts at the given page boundary.
+
+    Pages 1..at_page become part 1; pages at_page+1..end become part 2.
+    Both new documents are placed in the same folder as the original.
+    """
+    if not _PIKEPDF_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="PDF split requires pikepdf which is not installed",
+        )
+
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    from sqlalchemy import select as _sa_select
+    from papermerge.core import orm as _orm
+    from sqlalchemy.orm import selectinload as _sil
+
+    # Load source document and its latest version
+    stmt = (
+        _sa_select(_orm.Document)
+        .options(_sil(_orm.Document.versions))
+        .where(_orm.Document.id == document_id)
+    )
+    result = await db_session.execute(stmt)
+    src_doc = result.scalar_one_or_none()
+    if src_doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    stmt2 = (
+        _sa_select(_orm.DocumentVersion)
+        .where(_orm.DocumentVersion.document_id == document_id)
+        .order_by(_orm.DocumentVersion.number.desc())
+        .limit(1)
+    )
+    r2 = await db_session.execute(stmt2)
+    src_ver = r2.scalar_one_or_none()
+    if src_ver is None or not src_ver.file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Source document file not available locally",
+        )
+
+    # Open source PDF and validate split point
+    try:
+        src_pdf = _Pdf.open(src_ver.file_path)
+        total_pages = len(src_pdf.pages)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not open source PDF: {e}",
+        )
+
+    at_page = body.at_page
+    if at_page < 1 or at_page >= total_pages:
+        src_pdf.close()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"at_page must be between 1 and {total_pages - 1} (document has {total_pages} pages)",
+        )
+
+    parent_id = src_doc.parent_id
+    lang = user.preferences.document_default_lang or config.default_lang
+
+    base_title = src_ver.file_name or src_doc.title or "document"
+    stem = base_title.rsplit(".", 1)[0] if "." in base_title else base_title
+
+    title1 = body.title_part1 or f"{stem} (part 1)"
+    title2 = body.title_part2 or f"{stem} (part 2)"
+    file1 = f"{title1.replace(' ', '_')}.pdf"
+    file2 = f"{title2.replace(' ', '_')}.pdf"
+
+    from papermerge.core.pathlib import abs_docver_path as _adp, docver_path as _dp
+
+    ver1_id = uuid.uuid4()
+    ver2_id = uuid.uuid4()
+    path1 = _adp(ver1_id, file1)
+    path2 = _adp(ver2_id, file2)
+    os.makedirs(path1.parent, exist_ok=True)
+    os.makedirs(path2.parent, exist_ok=True)
+
+    page_count1 = at_page
+    page_count2 = total_pages - at_page
+
+    try:
+        pdf1 = _Pdf.new()
+        for i in range(page_count1):
+            pdf1.pages.append(src_pdf.pages[i])
+        pdf1.save(path1)
+        pdf1.close()
+
+        pdf2 = _Pdf.new()
+        for i in range(at_page, total_pages):
+            pdf2.pages.append(src_pdf.pages[i])
+        pdf2.save(path2)
+        pdf2.close()
+    except Exception as e:
+        logger.error(f"PDF split failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PDF split failed: {e}",
+        )
+    finally:
+        src_pdf.close()
+
+    size1 = os.path.getsize(path1)
+    size2 = os.path.getsize(path2)
+
+    doc1_id = uuid.uuid4()
+    doc2_id = uuid.uuid4()
+
+    async with AsyncAuditContext(db_session, user_id=user.id, username=user.username):
+        nd1 = schema.NewDocument(
+            id=doc1_id,
+            title=title1,
+            lang=lang,
+            parent_id=parent_id,
+            size=size1,
+            page_count=page_count1,
+            ocr=False,
+            file_name=file1,
+            ctype="document",
+            created_by=user.id,
+            updated_by=user.id,
+        )
+        r1 = await doc_dbapi.create_document(
+            db_session, nd1, mime_type="application/pdf", document_version_id=ver1_id
+        )
+        doc1, err1 = r1 if isinstance(r1, tuple) else (r1, None)
+        if err1:
+            raise HTTPException(status_code=400, detail=str(err1))
+
+        nd2 = schema.NewDocument(
+            id=doc2_id,
+            title=title2,
+            lang=lang,
+            parent_id=parent_id,
+            size=size2,
+            page_count=page_count2,
+            ocr=False,
+            file_name=file2,
+            ctype="document",
+            created_by=user.id,
+            updated_by=user.id,
+        )
+        r2 = await doc_dbapi.create_document(
+            db_session, nd2, mime_type="application/pdf", document_version_id=ver2_id
+        )
+        doc2, err2 = r2 if isinstance(r2, tuple) else (r2, None)
+        if err2:
+            raise HTTPException(status_code=400, detail=str(err2))
+
+    # Upload both parts to storage
+    from papermerge.storage.base import get_storage_backend
+    storage = get_storage_backend()
+    for _path, _ver_id, _fname in [
+        (path1, ver1_id, file1),
+        (path2, ver2_id, file2),
+    ]:
+        try:
+            with open(_path, "rb") as _f:
+                _bytes = _f.read()
+            await storage.upload_bytes(
+                data=_bytes,
+                object_key=str(_dp(_ver_id, _fname)),
+                content_type="application/pdf",
+            )
+        except Exception as _ue:
+            logger.warning(f"Storage upload of split PDF failed (non-fatal for local): {_ue}")
+
+    logger.info(
+        f"Split document {document_id} at page {at_page}: "
+        f"part1={doc1.id}({page_count1}pp) part2={doc2.id}({page_count2}pp)"
+    )
+
+    return SplitDocumentResponse(
+        part1=SplitPartInfo(
+            document_id=doc1.id,
+            title=title1,
+            page_count=page_count1,
+            version_id=ver1_id,
+        ),
+        part2=SplitPartInfo(
+            document_id=doc2.id,
+            title=title2,
+            page_count=page_count2,
+            version_id=ver2_id,
+        ),
     )

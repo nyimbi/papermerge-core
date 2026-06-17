@@ -100,6 +100,10 @@ app.conf.task_routes = {
     # Retention policies
     "darchiva.retention.sweep": {"queue": prefixed("core")},
     "darchiva.retention.run_policy": {"queue": prefixed("core")},
+    # Bulk export
+    "darchiva.export.bulk_export": {"queue": prefixed("core")},
+    # Email notifications
+    "darchiva.notifications.send_email": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks

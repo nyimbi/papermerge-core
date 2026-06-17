@@ -72,6 +72,40 @@ async def update_batch_status(
 		except Exception as exc:
 			_log.warning("Failed to queue quality assessment for batch %s: %s", batch_id, exc)
 
+	# Email notification on batch complete
+	if body.status == "complete":
+		try:
+			from papermerge.core.features.email_notifications.preferences import get_email_prefs
+			from papermerge.core.features.email_notifications import service as email_svc
+			from papermerge.core.features.email_notifications.tasks import send_email_notification
+
+			prefs = await get_email_prefs(db, str(user.id))
+			if prefs.get("batch_complete"):
+				recipient = prefs.get("notification_email") or str(user.email)
+				project_name = ""
+				if batch.project_id:
+					proj_row = await db.execute(
+						select(ScanningProjectModel).where(ScanningProjectModel.id == batch.project_id)
+					)
+					proj = proj_row.scalar_one_or_none()
+					project_name = proj.name if proj else str(batch.project_id)
+				from datetime import datetime, timezone
+				scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+				page_count = getattr(batch, "page_count", 0) or 0
+				html = email_svc.batch_complete(
+					batch_name=getattr(batch, "name", batch_id),
+					page_count=page_count,
+					scan_date=scan_date,
+					project_name=project_name,
+				)
+				send_email_notification.delay(
+					recipient,
+					f"Batch Complete: {getattr(batch, 'name', batch_id)}",
+					html,
+				)
+		except Exception as _exc:
+			_log.warning("Failed to queue batch_complete email for batch %s: %s", batch_id, _exc)
+
 	return {"id": batch_id, "status": body.status}
 
 

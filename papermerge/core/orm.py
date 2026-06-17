@@ -33,6 +33,7 @@ from .features.api_tokens.db.orm import APIToken
 from .features.departments.db.orm import Department, UserDepartment, DepartmentAccessRule
 from .features.inventory.db.orm import PhysicalManifest
 from .features.provenance.db.orm import DocumentProvenance, ProvenanceEvent
+from .features.api_keys.db.orm import ApiKey
 
 __all__ = [
 	# Existing models
@@ -105,4 +106,6 @@ __all__ = [
 	# Provenance
 	'DocumentProvenance',
 	'ProvenanceEvent',
+	# API Keys
+	'ApiKey',
 ]

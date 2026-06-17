@@ -1162,6 +1162,152 @@ def sweep_retention_policies():
 	asyncio.run(_run())
 
 
+@shared_task(name="darchiva.export.bulk_export")
+def bulk_export_documents(
+	job_id: str,
+	document_ids: list[str],
+	include_metadata: bool = True,
+	include_original: bool = True,
+):
+	"""Build a ZIP archive of the requested documents and upload it to storage.
+
+	Progress and final download URL are written to Redis under the key
+	``bulk_export:{job_id}`` as a hash with fields:
+	  status      – queued | processing | complete | failed
+	  progress    – float 0.0–1.0
+	  download_url – presigned URL (set when complete)
+	  error       – error message (set when failed)
+	"""
+	logger.info(_log_task(f"bulk_export:{job_id[:8]} docs={len(document_ids)}"))
+
+	import asyncio as _asyncio
+	import csv
+	import io
+	import zipfile
+
+	async def _run():
+		from papermerge.core.db.engine import get_async_session_maker
+		from papermerge.core.features.document.db.orm import Document, DocumentVersion
+		from papermerge.core.features.document_types.db.orm import DocumentType
+		from papermerge.storage.base import get_storage_backend
+		from papermerge.core import pathlib as plib
+		from papermerge.core.config import get_settings as _get_settings
+		from sqlalchemy import select
+		import redis as _redis
+
+		cfg = _get_settings()
+		redis_url = getattr(cfg, "redis_url", None) or getattr(cfg, "pm_redis_url", None)
+
+		def _redis_update(fields: dict):
+			if not redis_url:
+				return
+			try:
+				r = _redis.from_url(redis_url, decode_responses=True)
+				r.hset(f"bulk_export:{job_id}", mapping=fields)
+				r.expire(f"bulk_export:{job_id}", 7200)  # keep for 2 h
+			except Exception as re:
+				logger.warning(f"bulk_export Redis write failed: {re}")
+
+		_redis_update({"status": "processing", "progress": "0.0"})
+
+		session_maker = get_async_session_maker()
+		storage = get_storage_backend()
+
+		try:
+			async with session_maker() as session:
+				zip_buf = io.BytesIO()
+				metadata_rows: list[dict] = []
+				total = len(document_ids)
+
+				with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+					for idx, doc_id in enumerate(document_ids):
+						try:
+							doc_stmt = select(Document).where(Document.id == doc_id)
+							doc = (await session.execute(doc_stmt)).scalar_one_or_none()
+							if doc is None:
+								logger.warning(f"bulk_export: document {doc_id} not found, skipping")
+								continue
+
+							ver_stmt = (
+								select(DocumentVersion)
+								.where(DocumentVersion.document_id == doc_id)
+								.order_by(DocumentVersion.number.desc())
+								.limit(1)
+							)
+							ver = (await session.execute(ver_stmt)).scalar_one_or_none()
+
+							doc_type_name = ""
+							if doc.document_type_id:
+								dt = await session.get(DocumentType, doc.document_type_id)
+								doc_type_name = dt.name if dt else str(doc.document_type_id)
+
+							quality = None
+							if doc.document_metadata:
+								quality = doc.document_metadata.get("quality_score")
+
+							metadata_rows.append({
+								"id": doc_id,
+								"title": doc.title,
+								"document_type": doc_type_name,
+								"created_at": doc.created_at.isoformat() if doc.created_at else "",
+								"page_count": ver.page_count if ver else 0,
+								"quality_score": quality if quality is not None else "",
+							})
+
+							if include_original and ver:
+								try:
+									file_name = getattr(ver, "file_name", None) or f"{doc_id}.pdf"
+									object_key = str(plib.docver_path(ver.id, file_name=file_name))
+									file_bytes = storage.download_file(object_key)
+									safe_title = doc.title.replace("/", "_").replace("\\", "_")[:100]
+									zip_entry = f"{safe_title}_{doc_id[:8]}/{file_name}"
+									zf.writestr(zip_entry, file_bytes)
+								except Exception as fe:
+									logger.warning(f"bulk_export: could not fetch file for {doc_id}: {fe}")
+
+						except Exception as de:
+							logger.warning(f"bulk_export: error processing doc {doc_id}: {de}")
+
+						# Reserve last 10% for upload step
+						progress = 0.9 * (idx + 1) / total
+						_redis_update({"progress": str(round(progress, 3))})
+
+					if include_metadata and metadata_rows:
+						csv_buf = io.StringIO()
+						writer = csv.DictWriter(
+							csv_buf,
+							fieldnames=["id", "title", "document_type", "created_at", "page_count", "quality_score"],
+						)
+						writer.writeheader()
+						writer.writerows(metadata_rows)
+						zf.writestr("metadata.csv", csv_buf.getvalue())
+
+				zip_bytes = zip_buf.getvalue()
+				export_key = f"exports/{job_id}/export.zip"
+				await storage.upload_bytes(zip_bytes, export_key, "application/zip")
+
+				_redis_update({"progress": "0.95"})
+
+				try:
+					download_url = storage.sign_url(export_key, valid_for=3600)
+				except Exception:
+					download_url = f"/api/v1/storage/exports/{job_id}/export.zip"
+
+				_redis_update({
+					"status": "complete",
+					"progress": "1.0",
+					"download_url": download_url,
+				})
+				logger.info(f"bulk_export:{job_id[:8]} complete url={download_url[:80]}")
+
+		except Exception as e:
+			logger.error(f"bulk_export:{job_id[:8]} failed: {e}", exc_info=True)
+			_redis_update({"status": "failed", "error": str(e)[:500]})
+			raise
+
+	_asyncio.run(_run())
+
+
 @shared_task(name="darchiva.retention.run_policy")
 def run_retention_policy_task(policy_id: str, dry_run: bool = False):
 	"""Run a single retention policy by ID (triggered manually or from the API)."""
@@ -1216,3 +1362,123 @@ def run_retention_policy_task(policy_id: str, dry_run: bool = False):
 			)
 
 	_asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# ZIP bulk import — per-file worker task
+# ---------------------------------------------------------------------------
+
+@shared_task(name="darchiva.ingestion.process_bulk_file")
+def process_bulk_file(
+	job_id: str,
+	file_path: str,
+	file_name: str,
+	file_size: int,
+	total_files: int,
+	destination_folder_id: str | None = None,
+	project_id: str | None = None,
+	tenant_id: str | None = None,
+	user_id: str | None = None,
+):
+	"""Process one file extracted from a bulk ZIP upload.
+
+	Updates the Redis job counters atomically.  Cleans up the extracted temp
+	file after it has been handed off to the storage/OCR pipeline.
+	"""
+	logger.info(_log_task(f"process_bulk_file:job={job_id[:8]} file={file_name}"))
+
+	import json
+	import os
+	from pathlib import Path
+
+	# ── Redis helpers (inline, no circular import) ───────────────────────────
+	def _redis_client():
+		try:
+			from papermerge.core.config import get_settings
+			settings = get_settings()
+			broker_url = getattr(settings, "broker_url", None) or os.environ.get("CELERY_BROKER_URL", "")
+			if not broker_url or not broker_url.startswith("redis"):
+				return None
+			import redis as _redis
+			c = _redis.from_url(broker_url, decode_responses=True)
+			c.ping()
+			return c
+		except Exception:
+			return None
+
+	def _job_key(jid: str) -> str:
+		return f"bulk_upload:{jid}"
+
+	def _mark_done(r, jid: str, success: bool, error_detail: str | None = None):
+		if r is None:
+			return
+		key = _job_key(jid)
+		pipe = r.pipeline()
+		if success:
+			pipe.hincrby(key, "processed", 1)
+		else:
+			pipe.hincrby(key, "failed", 1)
+			if error_detail:
+				raw = r.hget(key, "failures") or "[]"
+				try:
+					failures = json.loads(raw)
+				except (json.JSONDecodeError, ValueError):
+					failures = []
+				failures.append({"file": error_detail, "error": error_detail})
+				pipe.hset(key, "failures", json.dumps(failures[-200:]))  # cap list
+		pipe.execute()
+
+		# Check if job is fully done
+		data = r.hgetall(key)
+		total = int(data.get("total_files", 0))
+		processed = int(data.get("processed", 0))
+		failed = int(data.get("failed", 0))
+		if processed + failed >= total and total > 0:
+			from datetime import datetime, timezone
+			final_status = "completed" if failed == 0 else "partial"
+			r.hset(key, mapping={
+				"status": final_status,
+				"completed_at": datetime.now(timezone.utc).isoformat(),
+			})
+
+	# ── Main processing ──────────────────────────────────────────────────────
+	r = _redis_client()
+
+	# Mark job as processing on first file processed
+	if r:
+		r.hsetnx(_job_key(job_id), "status", "processing")
+
+	fp = Path(file_path)
+
+	try:
+		if not fp.is_file():
+			raise FileNotFoundError(f"Extracted file missing: {file_path}")
+
+		# Queue through the standard OCR pipeline
+		send_task(
+			"process_upload",
+			kwargs={
+				"file_path": str(fp),
+				"file_name": file_name,
+				"file_size": file_size,
+				"source_id": None,
+				"apply_ocr": True,
+				"destination_folder_id": destination_folder_id,
+				"project_id": project_id,
+				"tenant_id": tenant_id,
+				"user_id": user_id,
+			},
+		)
+		_mark_done(r, job_id, success=True)
+		logger.info("process_bulk_file: queued %s for OCR", file_name)
+
+	except Exception as exc:
+		_mark_done(r, job_id, success=False, error_detail=f"{file_name}: {exc}")
+		logger.error("process_bulk_file: failed %s: %s", file_name, exc)
+		# Do not re-raise — one failure must not abort sibling tasks
+	finally:
+		# Remove the extracted temp file to free disk space
+		try:
+			fp.unlink(missing_ok=True)
+		except Exception:
+			pass

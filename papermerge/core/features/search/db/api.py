@@ -1440,3 +1440,216 @@ async def get_search_facets(
     )
 
     return unindexed_ids
+
+
+# ============================================================================
+# Semantic & Hybrid Search DB helpers
+# ============================================================================
+
+async def semantic_search_db(
+    db_session: AsyncSession,
+    *,
+    user_id: UUID,
+    query_vector: list[float],
+    limit: int = 20,
+    threshold: float = 0.0,
+) -> list[dict]:
+    """
+    Vector similarity search using pgvector cosine distance (<=>).
+
+    Returns dicts with keys: document_id, title, score, snippet.
+    Access-controlled to documents owned by user_id.
+    """
+    from sqlalchemy import text as sa_text
+
+    # We use raw SQL for the <=> operator; pgvector doesn't expose it through
+    # the ORM column operator at query-build time without a registered type.
+    vector_literal = "[" + ",".join(str(v) for v in query_vector) + "]"
+
+    stmt = sa_text("""
+        SELECT DISTINCT ON (de.document_id)
+               de.document_id,
+               dsi.title,
+               de.chunk_text                          AS snippet,
+               1 - (de.embedding <=> :vec ::vector)   AS score
+        FROM   document_embeddings de
+        JOIN   document_search_index dsi ON dsi.document_id = de.document_id
+        JOIN   nodes n                   ON n.id = de.document_id
+        JOIN   ownerships o              ON o.resource_id = n.id
+                                        AND o.resource_type = 'node'
+        WHERE  o.owner_id = :user_id
+          AND  1 - (de.embedding <=> :vec ::vector) >= :threshold
+        ORDER  BY de.document_id,
+                  de.embedding <=> :vec ::vector
+        LIMIT  :limit
+    """)
+
+    result = await db_session.execute(stmt, {
+        "vec": vector_literal,
+        "user_id": str(user_id),
+        "threshold": threshold,
+        "limit": limit,
+    })
+    rows = result.mappings().all()
+
+    return [
+        {
+            "document_id": str(r["document_id"]),
+            "title": r["title"] or "",
+            "snippet": r["snippet"] or "",
+            "score": float(r["score"]),
+        }
+        for r in rows
+    ]
+
+
+async def hybrid_search_db(
+    db_session: AsyncSession,
+    *,
+    user_id: UUID,
+    query_text: str,
+    query_vector: list[float],
+    limit: int = 20,
+    lang: str = "eng",
+    rrf_k: int = 60,
+) -> list[dict]:
+    """
+    Reciprocal Rank Fusion of BM25 (tsvector @@) + cosine similarity ranks.
+
+    RRF score = 1/(k + rank_bm25) + 1/(k + rank_semantic)
+    """
+    from sqlalchemy import text as sa_text
+
+    lang_map = {
+        "eng": "english", "deu": "german", "fra": "french",
+        "spa": "spanish", "ita": "italian", "por": "portuguese",
+    }
+    pg_lang = lang_map.get(lang, "simple")
+    vector_literal = "[" + ",".join(str(v) for v in query_vector) + "]"
+
+    stmt = sa_text(f"""
+        WITH bm25 AS (
+            SELECT dsi.document_id,
+                   dsi.title,
+                   ROW_NUMBER() OVER (
+                       ORDER BY ts_rank_cd(dsi.search_vector,
+                                          plainto_tsquery('{pg_lang}', :query)) DESC
+                   ) AS rk
+            FROM   document_search_index dsi
+            JOIN   nodes n       ON n.id = dsi.document_id
+            JOIN   ownerships o  ON o.resource_id = n.id
+                                AND o.resource_type = 'node'
+            WHERE  o.owner_id = :user_id
+              AND  dsi.search_vector @@ plainto_tsquery('{pg_lang}', :query)
+            LIMIT  100
+        ),
+        sem AS (
+            SELECT DISTINCT ON (de.document_id)
+                   de.document_id,
+                   dsi2.title,
+                   de.chunk_text AS snippet,
+                   ROW_NUMBER() OVER (
+                       ORDER BY de.embedding <=> :vec ::vector
+                   ) AS rk
+            FROM   document_embeddings de
+            JOIN   document_search_index dsi2 ON dsi2.document_id = de.document_id
+            JOIN   nodes n2      ON n2.id = de.document_id
+            JOIN   ownerships o2 ON o2.resource_id = n2.id
+                                 AND o2.resource_type = 'node'
+            WHERE  o2.owner_id = :user_id
+            ORDER  BY de.document_id, de.embedding <=> :vec ::vector
+            LIMIT  100
+        ),
+        fused AS (
+            SELECT COALESCE(b.document_id, s.document_id) AS document_id,
+                   COALESCE(b.title, s.title)             AS title,
+                   s.snippet,
+                   COALESCE(1.0 / (:rrf_k + b.rk), 0)
+                   + COALESCE(1.0 / (:rrf_k + s.rk), 0)  AS rrf_score
+            FROM   bm25 b
+            FULL OUTER JOIN sem s ON s.document_id = b.document_id
+        )
+        SELECT document_id, title, snippet,
+               rrf_score AS score
+        FROM   fused
+        ORDER  BY rrf_score DESC
+        LIMIT  :limit
+    """)
+
+    result = await db_session.execute(stmt, {
+        "query": query_text,
+        "vec": vector_literal,
+        "user_id": str(user_id),
+        "rrf_k": rrf_k,
+        "limit": limit,
+    })
+    rows = result.mappings().all()
+
+    return [
+        {
+            "document_id": str(r["document_id"]),
+            "title": r["title"] or "",
+            "snippet": r["snippet"] or "",
+            "score": float(r["score"]),
+        }
+        for r in rows
+    ]
+
+
+async def get_similar_documents_db(
+    db_session: AsyncSession,
+    *,
+    document_id: UUID,
+    user_id: UUID,
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Return top-N documents most similar to document_id by cosine distance,
+    averaged across all embedding chunks of the source document.
+    """
+    from sqlalchemy import text as sa_text
+
+    stmt = sa_text("""
+        WITH source_avg AS (
+            SELECT AVG(embedding) AS avg_vec
+            FROM   document_embeddings
+            WHERE  document_id = :doc_id
+        ),
+        candidates AS (
+            SELECT DISTINCT ON (de.document_id)
+                   de.document_id,
+                   dsi.title,
+                   de.chunk_text AS snippet,
+                   1 - (de.embedding <=> (SELECT avg_vec FROM source_avg)::vector) AS score
+            FROM   document_embeddings de
+            JOIN   document_search_index dsi ON dsi.document_id = de.document_id
+            JOIN   nodes n       ON n.id = de.document_id
+            JOIN   ownerships o  ON o.resource_id = n.id
+                                AND o.resource_type = 'node'
+            WHERE  de.document_id <> :doc_id
+              AND  o.owner_id = :user_id
+            ORDER  BY de.document_id,
+                      de.embedding <=> (SELECT avg_vec FROM source_avg)::vector
+        )
+        SELECT document_id, title, snippet, score
+        FROM   candidates
+        ORDER  BY score DESC
+        LIMIT  :limit
+    """)
+
+    result = await db_session.execute(stmt, {
+        "doc_id": str(document_id),
+        "user_id": str(user_id),
+        "limit": limit,
+    })
+    rows = result.mappings().all()
+
+    return [
+        {
+            "document_id": str(r["document_id"]),
+            "title": r["title"] or "",
+            "snippet": r["snippet"] or "",
+            "score": float(r["score"]),
+        }
+        for r in rows
+    ]

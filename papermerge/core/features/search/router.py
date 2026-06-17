@@ -1,5 +1,7 @@
 import logging
+import time
 import uuid
+from enum import Enum
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, delete as sa_delete
@@ -13,7 +15,33 @@ from papermerge.core.db.engine import get_db
 from papermerge.core import schema as core_schema
 from .schema import SearchQueryParams, SearchDocumentsResponse, SearchFacetsResponse
 from .db.orm import SavedSearch, DocumentSearchIndex
-from .db.api import get_search_facets
+from .db.api import get_search_facets, semantic_search_db, hybrid_search_db, get_similar_documents_db
+
+
+LITELLM_BASE_URL = "http://84.247.181.100:4000/v1"
+LITELLM_API_KEY = "sk-pjs-litellm-master-key"
+EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+class SearchMode(str, Enum):
+    keyword = "keyword"
+    semantic = "semantic"
+    hybrid = "hybrid"
+
+
+def _embed_query(query_text: str) -> list[float]:
+    """Synchronous call to LiteLLM embedding endpoint. Called in a thread pool."""
+    from openai import OpenAI
+    client = OpenAI(base_url=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
+    resp = client.embeddings.create(model=EMBEDDING_MODEL, input=query_text)
+    return resp.data[0].embedding
+
+
+async def _get_query_vector(query_text: str) -> list[float]:
+    """Async wrapper — runs the blocking OpenAI SDK call in threadpool."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _embed_query, query_text)
 
 router = APIRouter(
     prefix="/search",
@@ -43,10 +71,16 @@ logger = logging.getLogger(__name__)
 async def documents_search(
     user: scopes.ViewNode,
     params: SearchQueryParams,
+    mode: SearchMode = Query(default=SearchMode.keyword, description="Search mode: keyword | semantic | hybrid"),
     db_session: AsyncSession = Depends(db.get_db)
 ):
     """
     Advanced document search and filtering.
+
+    **Search modes** (query param `mode`):
+    - `keyword` (default) — BM25 full-text search via tsvector @@
+    - `semantic` — vector cosine similarity via pgvector
+    - `hybrid` — reciprocal rank fusion of BM25 + cosine ranks
 
     **Search capabilities:**
     - Full-text search across document titles and content
@@ -55,15 +89,9 @@ async def documents_search(
     - Sort by relevance, date, title, or custom field values
     - Paginated results
 
-    **Custom Fields in Response:**
-    The response includes custom field metadata and values based on:
-    1. Document types specified in category filters → all their custom fields
-    2. Custom fields referenced in custom_field filters → those specific fields
-
-    The custom_fields in response is the union of all relevant fields (deduplicated).
-
     **Parameters:**
-    - `filters.fts`: Full-text search terms
+    - `filters.fts`: Full-text search terms (also used as semantic query text)
+    - `mode`: keyword | semantic | hybrid (default: keyword)
     - `filters.categories`: Filter by category/document type
     - `filters.tags`: Filter by tags
     - `filters.custom_fields`: Filter by custom field values
@@ -71,21 +99,93 @@ async def documents_search(
     - `page_size`: Results per page (default: 20, max: 100)
     - `sort_by`: Field to sort by (can be custom field name)
     - `sort_direction`: asc or desc (default: desc)
-
-    **Response:**
-    - `items`: List of documents with their custom field values
-    - `custom_fields`: Metadata about custom fields included in response
-    - `document_type_id`: Set when filtering by exactly one document type
     """
     try:
         logger.info(
-            f"User {user.id} searching documents",
+            f"User {user.id} searching documents mode={mode}",
             extra={
                 "filters": params.filters.model_dump() if params.filters else None,
-                "page": params.page_number
+                "page": params.page_number,
+                "mode": mode,
             }
         )
-        # Use unified search function
+
+        # ------------------------------------------------------------------
+        # Semantic / hybrid: extract query text, embed, then search
+        # ------------------------------------------------------------------
+        if mode in (SearchMode.semantic, SearchMode.hybrid):
+            query_text = ""
+            if params.filters and params.filters.fts and params.filters.fts.terms:
+                query_text = " ".join(params.filters.fts.terms)
+
+            if not query_text:
+                raise ValueError("semantic/hybrid search requires filters.fts.terms")
+
+            t0 = time.monotonic()
+            query_vector = await _get_query_vector(query_text)
+            embed_ms = (time.monotonic() - t0) * 1000
+
+            t1 = time.monotonic()
+            if mode == SearchMode.semantic:
+                hits = await semantic_search_db(
+                    db_session,
+                    user_id=user.id,
+                    query_vector=query_vector,
+                    limit=params.page_size,
+                    threshold=0.0,
+                )
+            else:
+                hits = await hybrid_search_db(
+                    db_session,
+                    user_id=user.id,
+                    query_text=query_text,
+                    query_vector=query_vector,
+                    limit=params.page_size,
+                    lang=params.lang or "eng",
+                )
+            search_ms = (time.monotonic() - t1) * 1000
+
+            logger.info(
+                f"Vector search returned {len(hits)} hits "
+                f"(embed={embed_ms:.1f}ms search={search_ms:.1f}ms)"
+            )
+
+            # Wrap into SearchDocumentsResponse format so the frontend stays uniform
+            from .schema import DocumentCFV, SearchDocumentsResponse, Category
+            from papermerge.core.schemas.common import OwnedBy
+            import math
+
+            items = []
+            for h in hits:
+                items.append(
+                    DocumentCFV(
+                        id=uuid.UUID(h["document_id"]),
+                        title=h["title"] or "(untitled)",
+                        category=None,
+                        tags=[],
+                        custom_fields=[],
+                        lang="eng",
+                        owned_by=OwnedBy(id=user.id, name="", type="user"),
+                        created_at=__import__("datetime").datetime.utcnow(),
+                        updated_at=__import__("datetime").datetime.utcnow(),
+                        created_by=None,
+                        updated_by=None,
+                    )
+                )
+
+            return SearchDocumentsResponse(
+                items=items,
+                page_number=params.page_number,
+                page_size=params.page_size,
+                num_pages=1,
+                total_items=len(hits),
+                custom_fields=[],
+                document_type_id=None,
+            )
+
+        # ------------------------------------------------------------------
+        # Keyword (default) — existing path
+        # ------------------------------------------------------------------
         result = await db.search_documents(
             db_session=db_session,
             user_id=user.id,
@@ -286,3 +386,70 @@ async def semantic_search(
 			"totalMs": round(result.total_time_ms, 1),
 		},
 	}
+
+
+# ---------------------------------------------------------------------------
+# GET /documents/{document_id}/similar
+# Mounted under a separate prefix so the path becomes /documents/{id}/similar.
+# We attach it to `router` via include_router at module load time below.
+# ---------------------------------------------------------------------------
+
+similar_router = APIRouter(
+    prefix="/documents",
+    tags=["search"],
+)
+
+
+@similar_router.get(
+    "/{document_id}/similar",
+    responses={
+        404: {"description": "Document has no embeddings yet"},
+        403: {"description": "Insufficient permissions"},
+    },
+)
+async def get_similar_documents(
+    document_id: uuid.UUID,
+    user: Annotated[core_schema.User, Depends(get_current_user)],
+    limit: int = Query(default=5, ge=1, le=20),
+    db_session: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Return up to `limit` documents most similar to `document_id` by cosine
+    distance, computed across the document's stored embedding chunks.
+
+    Requires the document to have been embedded (document_embeddings table).
+    Returns similarity scores as 0–100 percentages.
+    """
+    try:
+        hits = await get_similar_documents_db(
+            db_session,
+            document_id=document_id,
+            user_id=user.id,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.error(f"Similar-documents query failed for {document_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Similar documents query failed.",
+        )
+
+    if not hits:
+        return {"similar": []}
+
+    return {
+        "similar": [
+            {
+                "document_id": h["document_id"],
+                "title": h["title"],
+                "score": round(h["score"] * 100, 1),   # 0-100 %
+                "snippet": h["snippet"],
+            }
+            for h in hits
+        ]
+    }
+
+
+# Register similar_router into the main search router so it is auto-discovered
+# by discover_routers() which looks for module.router.
+router.include_router(similar_router)

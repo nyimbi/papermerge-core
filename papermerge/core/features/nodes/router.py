@@ -990,3 +990,108 @@ async def bulk_assign_document_type(
 
     await db_session.commit()
     return BulkAssignTypeResponse(updated=updated)
+
+
+# ---------------------------------------------------------------------------
+# POST /nodes/bulk-export  &  GET /nodes/bulk-export/{job_id}
+# ---------------------------------------------------------------------------
+
+class BulkExportRequest(BaseModel):
+    document_ids: list[UUID]
+    include_metadata: bool = True
+    include_original: bool = True
+
+
+class BulkExportResponse(BaseModel):
+    job_id: str
+    status_url: str
+
+
+class BulkExportStatusResponse(BaseModel):
+    status: str  # queued | processing | complete | failed
+    progress: float  # 0.0 – 1.0
+    download_url: str | None = None
+    error: str | None = None
+
+
+@router.post("/bulk-export", status_code=202, response_model=BulkExportResponse)
+async def start_bulk_export(
+    body: BulkExportRequest,
+    user: require_scopes(scopes.NODE_VIEW),
+    db_session: AsyncSession = Depends(get_db),
+) -> BulkExportResponse:
+    """Enqueue a background ZIP export for the given document IDs.
+
+    Returns immediately with a job_id; poll GET /nodes/bulk-export/{job_id}
+    for status and the eventual download URL.
+
+    Required scope: `node.view`
+    """
+    if not body.document_ids:
+        raise HTTPException(status_code=400, detail="document_ids must not be empty")
+
+    # Verify the caller has VIEW permission on every requested document
+    for doc_id in body.document_ids:
+        if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=doc_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+        ):
+            raise exc.HTTP403Forbidden()
+
+    import uuid as _uuid
+    job_id = str(_uuid.uuid4())
+
+    from papermerge.core.tasks import send_task
+    send_task(
+        "darchiva.export.bulk_export",
+        kwargs={
+            "job_id": job_id,
+            "document_ids": [str(d) for d in body.document_ids],
+            "include_metadata": body.include_metadata,
+            "include_original": body.include_original,
+        },
+    )
+
+    return BulkExportResponse(
+        job_id=job_id,
+        status_url=f"/api/v1/nodes/bulk-export/{job_id}",
+    )
+
+
+@router.get("/bulk-export/{job_id}", response_model=BulkExportStatusResponse)
+async def get_bulk_export_status(
+    job_id: str,
+    user: require_scopes(scopes.NODE_VIEW),
+) -> BulkExportStatusResponse:
+    """Poll the status of a bulk-export job.
+
+    Returns status, progress (0.0–1.0), and download_url once complete.
+    """
+    try:
+        from papermerge.core.config import get_settings as _get_settings
+        import redis as _redis
+
+        cfg = _get_settings()
+        redis_url = getattr(cfg, "redis_url", None) or getattr(cfg, "pm_redis_url", None)
+        if not redis_url:
+            # Redis unavailable — return a polite unknown
+            return BulkExportStatusResponse(status="queued", progress=0.0)
+
+        r = _redis.from_url(redis_url, decode_responses=True)
+        data = r.hgetall(f"bulk_export:{job_id}")
+    except Exception as e:
+        logger.warning(f"bulk_export status: Redis error for job {job_id}: {e}")
+        return BulkExportStatusResponse(status="queued", progress=0.0)
+
+    if not data:
+        # Job not yet picked up by worker, or job_id unknown
+        return BulkExportStatusResponse(status="queued", progress=0.0)
+
+    return BulkExportStatusResponse(
+        status=data.get("status", "queued"),
+        progress=float(data.get("progress", 0.0)),
+        download_url=data.get("download_url") or None,
+        error=data.get("error") or None,
+    )

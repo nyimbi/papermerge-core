@@ -122,6 +122,51 @@ async def _notify_project_creator(
 		logger.warning("sla_monitor: failed to create notification for project %s: %s", project.id, exc)
 
 
+async def _email_sla_alert(
+	session: AsyncSession,
+	project: ScanningProjectModel,
+	batch_name: str,
+	deadline: str,
+	breach_type: str,
+) -> None:
+	"""Dispatch a send_email_notification Celery task if the project creator wants SLA emails."""
+	try:
+		from papermerge.core.features.email_notifications.preferences import get_email_prefs
+		from papermerge.core.features.email_notifications import service as email_svc
+		from papermerge.core.features.email_notifications.tasks import send_email_notification
+
+		user_id = str(project.created_by)
+		prefs = await get_email_prefs(session, user_id)
+		if not prefs.get("sla_breach"):
+			return
+
+		# Resolve recipient: prefer override address, else look up user.email
+		recipient = prefs.get("notification_email", "")
+		if not recipient:
+			from papermerge.core.features.users.db.orm import User as UserORM
+			from sqlalchemy import select as _select
+			row = await session.execute(_select(UserORM).where(UserORM.id == user_id))
+			u = row.scalar_one_or_none()
+			recipient = u.email if u else ""
+
+		if not recipient:
+			return
+
+		html = email_svc.sla_breach(
+			project_name=project.name,
+			batch_name=batch_name,
+			deadline=deadline,
+			breach_type=breach_type,
+		)
+		send_email_notification.delay(
+			recipient,
+			f"SLA {breach_type.capitalize()} Breach: {project.name}",
+			html,
+		)
+	except Exception as exc:  # noqa: BLE001
+		logger.warning("sla_monitor: failed to queue SLA email for project %s: %s", project.id, exc)
+
+
 async def _get_or_create_completion_sla(
 	session: AsyncSession,
 	project: ScanningProjectModel,
@@ -250,6 +295,13 @@ async def check_project_sla_breaches(session: AsyncSession) -> dict[str, int]:
 				message=msg,
 				alert_type=alert_type,
 			)
+			await _email_sla_alert(
+				session,
+				project=project,
+				batch_name=sla.name,
+				deadline=sla.end_date.strftime("%Y-%m-%d %H:%M UTC") if sla.end_date else "N/A",
+				breach_type=alert_type,
+			)
 
 	# ── 2. Check project-level target_end_date deadlines ────────────────────
 
@@ -314,6 +366,13 @@ async def check_project_sla_breaches(session: AsyncSession) -> dict[str, int]:
 			),
 			message=msg,
 			alert_type=alert_type,
+		)
+		await _email_sla_alert(
+			session,
+			project=project,
+			batch_name="Project Deadline",
+			deadline=due.strftime("%Y-%m-%d %H:%M UTC"),
+			breach_type=alert_type,
 		)
 
 		logger.info("sla_monitor: %s alert for project %s (%s)", alert_type, project.id, project.name)
