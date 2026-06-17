@@ -66,3 +66,7 @@ from papermerge.core.features.user_home.models import *  # noqa: F401, F403
 from papermerge.core.features.retention.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.webhooks.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.workflows.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.approvals.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.classification_feedback.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.connectors.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.dedup.db.orm import *  # noqa: F401, F403

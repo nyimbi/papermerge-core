@@ -119,6 +119,8 @@ app.conf.task_routes = {
     # IMAP email ingestion
     "darchiva.email_ingest.check_mailbox": {"queue": prefixed("core")},
     "darchiva.email_ingest.check_all": {"queue": prefixed("core")},
+    # Connector sync
+    "darchiva.connectors.sync_all": {"queue": prefixed("core")},
 }
 
 # Celery beat schedule for periodic tasks
@@ -158,5 +160,9 @@ app.conf.beat_schedule = {
     "email-ingest": {
         "task": "darchiva.email_ingest.check_all",
         "schedule": 900.0,  # Every 15 minutes
+    },
+    "connector-sync": {
+        "task": "darchiva.connectors.sync_all",
+        "schedule": 3600.0,  # Every hour
     },
 }
