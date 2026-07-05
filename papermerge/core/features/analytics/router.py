@@ -37,6 +37,14 @@ def _window_start(days: int) -> datetime:
 	return _utc_now() - timedelta(days=days)
 
 
+def _window_bounds(
+	days: int,
+	date_from: datetime | None = None,
+	date_to: datetime | None = None,
+) -> tuple[datetime, datetime | None]:
+	return date_from or _window_start(days), date_to
+
+
 def _trunc_expr(col, granularity: str):
 	"""Return a SQLAlchemy date_trunc expression for the given granularity."""
 	return func.date_trunc(granularity, col)
@@ -101,12 +109,26 @@ async def get_throughput(
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_db)],
 	days: int = Query(default=30, ge=1, le=365),
+	date_from: datetime | None = Query(default=None),
+	date_to: datetime | None = Query(default=None),
 	granularity: Literal["hour", "day", "week", "month"] = Query(default="day"),
 ):
 	"""Pages scanned and batches completed grouped by time bucket."""
 	tenant_id = str(user.tenant_id)
-	since = _window_start(days)
+	since, until = _window_bounds(days, date_from, date_to)
 	trunc = _trunc_expr(PageScanEventModel.occurred_at, granularity)
+	page_filters = [
+		PageScanEventModel.tenant_id == tenant_id,
+		PageScanEventModel.occurred_at >= since,
+		PageScanEventModel.event_type == "scanned",
+	]
+	batch_filters = [
+		ScanningBatchModel.completed_at.isnot(None),
+		ScanningBatchModel.completed_at >= since,
+	]
+	if until:
+		page_filters.append(PageScanEventModel.occurred_at <= until)
+		batch_filters.append(ScanningBatchModel.completed_at <= until)
 
 	# Pages scanned — count "scanned" events
 	pages_q = (
@@ -114,13 +136,7 @@ async def get_throughput(
 			trunc.label("bucket"),
 			func.count(PageScanEventModel.id).label("pages_scanned"),
 		)
-		.where(
-			and_(
-				PageScanEventModel.tenant_id == tenant_id,
-				PageScanEventModel.occurred_at >= since,
-				PageScanEventModel.event_type == "scanned",
-			)
-		)
+		.where(and_(*page_filters))
 		.group_by("bucket")
 		.order_by("bucket")
 	)
@@ -135,12 +151,7 @@ async def get_throughput(
 			_trunc_expr(ScanningBatchModel.completed_at, granularity).label("bucket"),
 			func.count(ScanningBatchModel.id).label("batches_completed"),
 		)
-		.where(
-			and_(
-				ScanningBatchModel.completed_at.isnot(None),
-				ScanningBatchModel.completed_at >= since,
-			)
-		)
+		.where(and_(*batch_filters))
 		.group_by("bucket")
 		.order_by("bucket")
 	)
@@ -170,13 +181,22 @@ async def get_quality_trend(
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_db)],
 	days: int = Query(default=30, ge=1, le=365),
+	date_from: datetime | None = Query(default=None),
+	date_to: datetime | None = Query(default=None),
 	granularity: Literal["hour", "day", "week", "month"] = Query(default="day"),
 	quality_threshold: float = Query(default=70.0, ge=0, le=100),
 ):
 	"""Average quality score and % of pages below threshold per time bucket."""
 	tenant_id = str(user.tenant_id)
-	since = _window_start(days)
+	since, until = _window_bounds(days, date_from, date_to)
 	trunc = _trunc_expr(PageScanEventModel.occurred_at, granularity)
+	filters = [
+		PageScanEventModel.tenant_id == tenant_id,
+		PageScanEventModel.occurred_at >= since,
+		PageScanEventModel.quality_score.isnot(None),
+	]
+	if until:
+		filters.append(PageScanEventModel.occurred_at <= until)
 
 	q = (
 		select(
@@ -190,13 +210,7 @@ async def get_quality_trend(
 				)
 			).label("below_threshold"),
 		)
-		.where(
-			and_(
-				PageScanEventModel.tenant_id == tenant_id,
-				PageScanEventModel.occurred_at >= since,
-				PageScanEventModel.quality_score.isnot(None),
-			)
-		)
+		.where(and_(*filters))
 		.group_by("bucket")
 		.order_by("bucket")
 	)
@@ -224,10 +238,18 @@ async def get_operator_performance(
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_db)],
 	days: int = Query(default=30, ge=1, le=365),
+	date_from: datetime | None = Query(default=None),
+	date_to: datetime | None = Query(default=None),
 ):
 	"""Per-operator aggregated metrics for the given window."""
 	tenant_id = str(user.tenant_id)
-	since = _window_start(days)
+	since, until = _window_bounds(days, date_from, date_to)
+	filters = [
+		OperatorDailyMetricsModel.project_id.isnot(None),
+		OperatorDailyMetricsModel.metric_date >= since,
+	]
+	if until:
+		filters.append(OperatorDailyMetricsModel.metric_date <= until)
 
 	q = (
 		select(
@@ -239,12 +261,7 @@ async def get_operator_performance(
 			func.sum(OperatorDailyMetricsModel.pages_scanned).label("total_scanned"),
 			func.sum(OperatorDailyMetricsModel.pages_verified).label("total_verified"),
 		)
-		.where(
-			and_(
-				OperatorDailyMetricsModel.project_id.isnot(None),
-				OperatorDailyMetricsModel.metric_date >= since,
-			)
-		)
+		.where(and_(*filters))
 		.group_by(
 			OperatorDailyMetricsModel.operator_id,
 			OperatorDailyMetricsModel.operator_name,
@@ -354,11 +371,33 @@ async def get_summary(
 	user: Annotated[User, Depends(get_current_user)],
 	session: Annotated[AsyncSession, Depends(get_db)],
 	days: int = Query(default=7, ge=1, le=365),
+	date_from: datetime | None = Query(default=None),
+	date_to: datetime | None = Query(default=None),
 ):
 	"""Combined analytics summary — one call for the dashboard overview."""
-	throughput = await get_throughput(user=user, session=session, days=days, granularity="day")
-	quality = await get_quality_trend(user=user, session=session, days=days, granularity="day")
-	operators = await get_operator_performance(user=user, session=session, days=days)
+	throughput = await get_throughput(
+		user=user,
+		session=session,
+		days=days,
+		date_from=date_from,
+		date_to=date_to,
+		granularity="day",
+	)
+	quality = await get_quality_trend(
+		user=user,
+		session=session,
+		days=days,
+		date_from=date_from,
+		date_to=date_to,
+		granularity="day",
+	)
+	operators = await get_operator_performance(
+		user=user,
+		session=session,
+		days=days,
+		date_from=date_from,
+		date_to=date_to,
+	)
 	capacity = await get_capacity(user=user, session=session)
 
 	return SummaryResponse(
