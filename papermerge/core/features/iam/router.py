@@ -52,11 +52,6 @@ class ActiveUserSession(BaseModel):
 	expires_at: str | None = None
 
 
-class ActiveUserSessionList(BaseModel):
-	items: list[ActiveUserSession]
-	total: int
-
-
 # ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
@@ -121,14 +116,14 @@ def _device_type(user_agent: str | None) -> str:
 	return "unknown"
 
 
-@router.get("/sessions", response_model=ActiveUserSessionList)
+@router.get("/sessions", response_model=list[ActiveUserSession])
 async def list_active_sessions(
 	user: require_scopes(scopes.USER_VIEW),
 	db_session: AsyncSession = Depends(get_db),
 	page: int = 1,
 	pageSize: int = 20,
 	active: bool = True,
-) -> ActiveUserSessionList:
+) -> list[ActiveUserSession]:
 	"""List user login sessions for the current tenant."""
 	from papermerge.core.features.iam.db.orm import UserSession
 
@@ -140,11 +135,6 @@ async def list_active_sessions(
 			UserSession.expires_at > now,
 		])
 
-	total_stmt = (
-		select(func.count(UserSession.id))
-		.join(UserORM, UserORM.id == UserSession.user_id)
-		.where(*conditions)
-	)
 	stmt = (
 		select(UserSession)
 		.join(UserORM, UserORM.id == UserSession.user_id)
@@ -154,27 +144,23 @@ async def list_active_sessions(
 		.limit(pageSize)
 	)
 	try:
-		total = await db_session.scalar(total_stmt) or 0
 		rows = (await db_session.execute(stmt)).scalars().all()
 	except SQLAlchemyError:
-		return ActiveUserSessionList(items=[], total=0)
-	return ActiveUserSessionList(
-		items=[
-			ActiveUserSession(
-				id=str(row.id),
-				user_id=str(row.user_id),
-				ip_address=row.ip_address,
-				user_agent=row.user_agent,
-				device_type=_device_type(row.user_agent),
-				is_current=row.user_id == user.id,
-				created_at=row.created_at.isoformat(),
-				last_active_at=row.created_at.isoformat(),
-				expires_at=row.expires_at.isoformat() if row.expires_at else None,
-			)
-			for row in rows
-		],
-		total=total,
-	)
+		return []
+	return [
+		ActiveUserSession(
+			id=str(row.id),
+			user_id=str(row.user_id),
+			ip_address=row.ip_address,
+			user_agent=row.user_agent,
+			device_type=_device_type(row.user_agent),
+			is_current=row.user_id == user.id,
+			created_at=row.created_at.isoformat(),
+			last_active_at=row.created_at.isoformat(),
+			expires_at=row.expires_at.isoformat() if row.expires_at else None,
+		)
+		for row in rows
+	]
 
 
 # ---------------------------------------------------------------------------

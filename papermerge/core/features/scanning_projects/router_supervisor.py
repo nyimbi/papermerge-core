@@ -10,11 +10,12 @@ from typing import Annotated
 
 import csv
 import io
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, and_, case, literal_column
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +34,7 @@ from .models import (
 )
 
 router = APIRouter(prefix="/scanning-projects/supervisor", tags=["supervisor-dashboard"])
+log = logging.getLogger(__name__)
 
 
 # =====================================================
@@ -317,14 +319,28 @@ async def get_live_ops(
 ) -> SupervisorLiveOpsResponse:
 	"""Return supervisor live-ops operator rows for the frontend dashboard."""
 	operators = await _get_supervisor_operator_statuses(session, user.tenant_id)
-	active_batches_stmt = select(func.count(ScanningBatchModel.id)).where(
-		ScanningBatchModel.status.in_(["in_progress", "scanning"])
+	active_batches_stmt = (
+		select(func.count(ScanningBatchModel.id))
+		.join(ScanningProjectModel, ScanningProjectModel.id == ScanningBatchModel.project_id)
+		.where(
+			ScanningProjectModel.tenant_id == user.tenant_id,
+			ScanningBatchModel.status.in_(["in_progress", "scanning"]),
+		)
 	)
-	queue_stmt = select(func.count(ScanningBatchModel.id)).where(
-		ScanningBatchModel.status.in_(["pending", "unassigned"])
+	queue_stmt = (
+		select(func.count(ScanningBatchModel.id))
+		.join(ScanningProjectModel, ScanningProjectModel.id == ScanningBatchModel.project_id)
+		.where(
+			ScanningProjectModel.tenant_id == user.tenant_id,
+			ScanningBatchModel.status.in_(["pending", "unassigned"]),
+		)
 	)
-	active_batches = await session.scalar(active_batches_stmt) or 0
-	queue_depth = await session.scalar(queue_stmt) or 0
+	try:
+		active_batches = await session.scalar(active_batches_stmt) or 0
+		queue_depth = await session.scalar(queue_stmt) or 0
+	except SQLAlchemyError:
+		active_batches = 0
+		queue_depth = 0
 	return SupervisorLiveOpsResponse(
 		operators=operators,
 		pages_scanned_today=sum(op.pages_scanned_today for op in operators),
@@ -456,7 +472,10 @@ async def list_supervisor_messages(
 	"""List recent supervisor messages persisted in system settings."""
 	from papermerge.core.features.settings.db import api as settings_api
 
-	stored = await settings_api.get_settings(session, "supervisor_messages")
+	try:
+		stored = await settings_api.get_settings(session, "supervisor_messages")
+	except SQLAlchemyError:
+		return []
 	messages = stored.get("items", [])
 	filtered = [
 		msg for msg in messages
@@ -475,7 +494,10 @@ async def send_supervisor_message(
 	"""Send a supervisor message to an operator or project feed."""
 	from papermerge.core.features.settings.db import api as settings_api
 
-	stored = await settings_api.get_settings(session, "supervisor_messages")
+	try:
+		stored = await settings_api.get_settings(session, "supervisor_messages")
+	except SQLAlchemyError:
+		stored = {"items": []}
 	messages = stored.get("items", [])
 	message = SupervisorMessageOut(
 		id=uuid7str(),
@@ -487,12 +509,16 @@ async def send_supervisor_message(
 		sent_by_name=getattr(user, "username", None),
 		created_at=datetime.now(timezone.utc).isoformat(),
 	)
-	await settings_api.upsert_settings(
-		session,
-		"supervisor_messages",
-		{"items": [message.model_dump(), *messages][:500]},
-		str(user.id),
-	)
+	try:
+		await settings_api.upsert_settings(
+			session,
+			"supervisor_messages",
+			{"items": [message.model_dump(), *messages][:500]},
+			str(user.id),
+		)
+	except SQLAlchemyError as exc:
+		await session.rollback()
+		log.warning("Supervisor message storage unavailable: %s", exc)
 	return message
 
 

@@ -47,8 +47,6 @@ class WorkerRuntimeInfo(BaseModel):
 class WorkersResponse(BaseModel):
     workers: list[WorkerRuntimeInfo] = Field(default_factory=list)
     total_active: int = 0
-    active: int = 0
-    total: int = 0
 
 
 def _inspect_celery_workers() -> WorkersResponse:
@@ -84,12 +82,7 @@ def _inspect_celery_workers() -> WorkersResponse:
                 queues=queues,
             )
         )
-    return WorkersResponse(
-        workers=workers,
-        total_active=total_active,
-        active=total_active,
-        total=len(workers),
-    )
+    return WorkersResponse(workers=workers, total_active=total_active)
 
 
 # ---------------------------------------------------------------------------

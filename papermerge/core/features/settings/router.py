@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,7 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from papermerge.core import schema
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.auth import scopes
 from papermerge.core.features.auth.dependencies import require_scopes
