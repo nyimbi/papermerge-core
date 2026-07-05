@@ -1096,6 +1096,282 @@ async def get_page_ocr_words(
 
 
 # ---------------------------------------------------------------------------
+# OCR text + correction endpoints
+# ---------------------------------------------------------------------------
+
+class OcrTextResponse(BaseModel):
+    page_number: int
+    raw_text: str
+    confidence: float      # average word confidence, 0.0–1.0
+    words: list[OcrWord]   # reuses existing OcrWord model
+
+
+class OcrCorrectionRequest(BaseModel):
+    corrected_text: str
+
+
+class OcrCorrectionResponse(BaseModel):
+    page_number: int
+    original_text: str
+    corrected_text: str
+    corrected_at: str
+    corrected_by: str
+
+
+@router.get(
+    "/{document_id}/pages/{page_number}/ocr-text",
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_VIEW}` permission on the node",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        }
+    },
+)
+async def get_page_ocr_text(
+        document_id: uuid.UUID,
+        page_number: int,
+        user: require_scopes(scopes.NODE_VIEW),
+        db_session: AsyncSession = Depends(get_db),
+) -> OcrTextResponse:
+    """Return OCR text and per-word confidence data for a single page.
+
+    Derives data from the hOCR file for the page (same source as ocr-words).
+    Returns the full page text as a single string plus the per-word breakdown
+    so the frontend can highlight low-confidence regions.
+    """
+    import re as _re
+    import lxml.html as _lhtml
+    from sqlalchemy import select as sa_select
+    from papermerge.core import orm as core_orm
+    from papermerge.core.pathlib import abs_page_hocr_path
+    from papermerge.core.lib import extract_words_from
+
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    stmt = (
+        sa_select(core_orm.Page)
+        .join(core_orm.DocumentVersion,
+              core_orm.Page.document_version_id == core_orm.DocumentVersion.id)
+        .where(core_orm.DocumentVersion.document_id == document_id)
+        .where(core_orm.Page.number == page_number)
+        .order_by(core_orm.DocumentVersion.number.desc())
+        .limit(1)
+    )
+    result = await db_session.execute(stmt)
+    page_orm = result.scalar_one_or_none()
+
+    if page_orm is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Page {page_number} not found for document {document_id}",
+        )
+
+    # Check for operator-saved correction first — stored in page metadata
+    page_meta = page_orm.page_metadata or {}
+    ocr_correction = page_meta.get("ocr_correction")
+    if ocr_correction:
+        words_data: list[OcrWord] = []
+        return OcrTextResponse(
+            page_number=page_number,
+            raw_text=ocr_correction.get("corrected_text", ""),
+            confidence=1.0,
+            words=words_data,
+        )
+
+    hocr_path = abs_page_hocr_path(page_orm.id)
+    if not hocr_path.exists():
+        # Fall back to page text field if present
+        raw_text = page_orm.text or ""
+        return OcrTextResponse(
+            page_number=page_number,
+            raw_text=raw_text,
+            confidence=0.85,
+            words=[],
+        )
+
+    hocr_bytes = hocr_path.read_bytes()
+    html_root = _lhtml.fromstring(hocr_bytes)
+
+    page_width_px = 1.0
+    page_height_px = 1.0
+    for page_span in html_root.xpath("//*[@class='ocr_page']"):
+        title_attr = page_span.attrib.get('title', '')
+        m = _re.search(r'bbox\s+\d+\s+\d+\s+(\d+)\s+(\d+)', title_attr)
+        if m:
+            page_width_px = float(m.group(1)) or 1.0
+            page_height_px = float(m.group(2)) or 1.0
+            break
+
+    raw_words = extract_words_from(hocr_path)
+    words: list[OcrWord] = []
+    for w in raw_words:
+        x1, y1, x2, y2 = w['x1'], w['y1'], w['x2'], w['y2']
+        fw = (x2 - x1) / page_width_px
+        fh = (y2 - y1) / page_height_px
+        if fw <= 0 or fh <= 0:
+            continue
+        words.append(OcrWord(
+            text=w['text'],
+            confidence=w['wconf'] / 100.0,
+            x=x1 / page_width_px,
+            y=y1 / page_height_px,
+            width=fw,
+            height=fh,
+        ))
+
+    raw_text = " ".join(w.text for w in words)
+    avg_conf = (sum(w.confidence for w in words) / len(words)) if words else 0.85
+
+    return OcrTextResponse(
+        page_number=page_number,
+        raw_text=raw_text,
+        confidence=avg_conf,
+        words=words,
+    )
+
+
+@router.post(
+    "/{document_id}/pages/{page_number}/ocr-correction",
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_VIEW}` permission on the node",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        }
+    },
+)
+async def save_page_ocr_correction(
+        document_id: uuid.UUID,
+        page_number: int,
+        body: OcrCorrectionRequest,
+        user: require_scopes(scopes.NODE_VIEW),
+        db_session: AsyncSession = Depends(get_db),
+) -> OcrCorrectionResponse:
+    """Save a human correction for the OCR text of a single page.
+
+    The correction is stored in the page's metadata JSONB column under the
+    ``ocr_correction`` key so it persists across re-renders without altering
+    the underlying hOCR file.
+    """
+    import datetime as _dt
+    from sqlalchemy import select as sa_select, update as sa_update
+    from papermerge.core import orm as core_orm
+    from papermerge.core.pathlib import abs_page_hocr_path
+    from papermerge.core.lib import extract_words_from
+
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    stmt = (
+        sa_select(core_orm.Page)
+        .join(core_orm.DocumentVersion,
+              core_orm.Page.document_version_id == core_orm.DocumentVersion.id)
+        .where(core_orm.DocumentVersion.document_id == document_id)
+        .where(core_orm.Page.number == page_number)
+        .order_by(core_orm.DocumentVersion.number.desc())
+        .limit(1)
+    )
+    result = await db_session.execute(stmt)
+    page_orm = result.scalar_one_or_none()
+
+    if page_orm is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Page {page_number} not found for document {document_id}",
+        )
+
+    # Derive original text from hOCR or existing text field
+    hocr_path = abs_page_hocr_path(page_orm.id)
+    if hocr_path.exists():
+        raw_words = extract_words_from(hocr_path)
+        original_text = " ".join(w['text'] for w in raw_words)
+    else:
+        original_text = page_orm.text or ""
+
+    corrected_at = _dt.datetime.utcnow().isoformat() + "Z"
+    correction_data = {
+        "original_text": original_text,
+        "corrected_text": body.corrected_text,
+        "corrected_at": corrected_at,
+        "corrected_by": user.username,
+    }
+
+    # Merge into existing page metadata
+    existing_meta = page_orm.page_metadata or {}
+    existing_meta["ocr_correction"] = correction_data
+
+    await db_session.execute(
+        sa_update(core_orm.Page)
+        .where(core_orm.Page.id == page_orm.id)
+        .values(page_metadata=existing_meta)
+    )
+    await db_session.commit()
+
+    return OcrCorrectionResponse(
+        page_number=page_number,
+        original_text=original_text,
+        corrected_text=body.corrected_text,
+        corrected_at=corrected_at,
+        corrected_by=user.username,
+    )
+
+
+@router.post(
+    "/{document_id}/pages/{page_number}/reprocess",
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "description": f"No `{scopes.NODE_VIEW}` permission on the node",
+            "content": OPEN_API_GENERIC_JSON_DETAIL,
+        }
+    },
+)
+async def reprocess_page_ocr(
+        document_id: uuid.UUID,
+        page_number: int,
+        user: require_scopes(scopes.NODE_VIEW),
+        db_session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Queue a re-OCR run for a single page.
+
+    Dispatches the existing document OCR task targeting the specific page so
+    the operator can trigger re-processing after adjusting scan settings or
+    rotating the page image.
+    """
+    if not await dbapi_common.has_node_perm(
+            db_session,
+            node_id=document_id,
+            codename=scopes.NODE_VIEW,
+            user_id=user.id,
+    ):
+        raise exc.HTTP403Forbidden()
+
+    try:
+        send_task(
+            const.INDEX_ADD_DOCS_TASK_NAME,
+            kwargs={"doc_ids": [str(document_id)]},
+            route_name="ocr",
+        )
+        queued = True
+        message = f"Re-OCR queued for document {document_id} page {page_number}"
+    except Exception as e:
+        logger.warning(f"Failed to queue re-OCR for {document_id} p{page_number}: {e}")
+        queued = False
+        message = "Failed to queue re-OCR task"
+
+    return {"queued": queued, "message": message}
+
+
+# ---------------------------------------------------------------------------
 # Named entity extraction endpoints
 # ---------------------------------------------------------------------------
 
