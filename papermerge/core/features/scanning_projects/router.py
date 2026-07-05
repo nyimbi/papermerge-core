@@ -18,7 +18,7 @@ from papermerge.core.features.users.schema import User
 
 from . import service
 from .ai_advisor import get_project_advisor
-from .models import PageScanEventModel, ScanningProjectModel, ScanningSesssionModel
+from .models import ScanningBatchModel, ScanningProjectModel, ScanningSesssionModel
 from .views import (
 	QualityConfig,
 	ScanningProject,
