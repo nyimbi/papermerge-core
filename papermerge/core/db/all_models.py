@@ -11,6 +11,7 @@
 from papermerge.core.features.annotations.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.api_keys.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.api_tokens.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.agents.models import *  # noqa: F401, F403
 from papermerge.core.features.audit.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.auto_routing.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.batches.db.orm import *  # noqa: F401, F403
@@ -68,6 +69,7 @@ from papermerge.core.features.webhooks.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.workflows.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.approvals.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.classification_feedback.db.orm import *  # noqa: F401, F403
+from papermerge.core.features.comments.orm import *  # noqa: F401, F403
 from papermerge.core.features.connectors.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.data_export.db.orm import *  # noqa: F401, F403
 from papermerge.core.features.dedup.db.orm import *  # noqa: F401, F403
