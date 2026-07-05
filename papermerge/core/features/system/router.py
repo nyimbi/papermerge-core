@@ -23,7 +23,6 @@ from papermerge.core.features.system.schema import (
 	SystemHealth,
 	WorkerConfig,
 	WorkerConfigUpdate,
-	WorkerInfo,
 )
 
 log = logging.getLogger(__name__)

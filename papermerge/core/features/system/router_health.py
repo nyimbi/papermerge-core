@@ -27,7 +27,6 @@ from papermerge.core.features.system import service as svc
 from papermerge.core.features.system.schema import (
     QueueInfo,
     SystemHealth,
-    WorkerInfo,
 )
 
 log = logging.getLogger(__name__)
