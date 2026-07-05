@@ -172,6 +172,15 @@ class QualityStatsInfo(BaseModel):
 	trend_7d: list[dict]  # Daily stats for last 7 days
 
 
+class ScannerStat(BaseModel):
+	"""Per-scanner quality statistics."""
+	scannerId: str
+	scannerName: str
+	docsScanned: int
+	avgQualityScore: float
+	errorRate: float
+
+
 # VLM-based quality assessment schemas
 class VLMAssessmentRequest(BaseModel):
 	"""Request for VLM-powered quality assessment."""

@@ -12,7 +12,9 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Security, status
+from pydantic import BaseModel
 from sqlalchemy import func, select, update as sa_update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +22,7 @@ from papermerge.core import schema, orm, dbapi
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.auth import get_current_user
 from papermerge.core.features.auth import scopes
+from papermerge.core.features.auth.dependencies import require_scopes
 from papermerge.core.features.users.db import api as users_dbapi
 from papermerge.core.features.roles.db import api as roles_dbapi
 from papermerge.core.features.groups.db import api as groups_dbapi
@@ -34,6 +37,24 @@ from papermerge.core.features.iam.db.orm import UserInvitation
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/iam", tags=["iam"])
+
+
+class ActiveUserSession(BaseModel):
+	id: str
+	user_id: str
+	ip_address: str | None = None
+	user_agent: str | None = None
+	device_type: str = "unknown"
+	location: str | None = None
+	is_current: bool = False
+	created_at: str
+	last_active_at: str
+	expires_at: str | None = None
+
+
+class ActiveUserSessionList(BaseModel):
+	items: list[ActiveUserSession]
+	total: int
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +108,73 @@ async def get_iam_stats(
 		"total_groups": total_groups,
 		"total_departments": total_departments,
 	}
+
+
+def _device_type(user_agent: str | None) -> str:
+	agent = (user_agent or "").lower()
+	if "ipad" in agent or "tablet" in agent:
+		return "tablet"
+	if "mobile" in agent or "iphone" in agent or "android" in agent:
+		return "mobile"
+	if agent:
+		return "desktop"
+	return "unknown"
+
+
+@router.get("/sessions", response_model=ActiveUserSessionList)
+async def list_active_sessions(
+	user: require_scopes(scopes.USER_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+	page: int = 1,
+	pageSize: int = 20,
+	active: bool = True,
+) -> ActiveUserSessionList:
+	"""List user login sessions for the current tenant."""
+	from papermerge.core.features.iam.db.orm import UserSession
+
+	now = datetime.utcnow()
+	conditions = [UserORM.tenant_id == user.tenant_id, UserORM.deleted_at.is_(None)]
+	if active:
+		conditions.extend([
+			UserSession.revoked.is_(False),
+			UserSession.expires_at > now,
+		])
+
+	total_stmt = (
+		select(func.count(UserSession.id))
+		.join(UserORM, UserORM.id == UserSession.user_id)
+		.where(*conditions)
+	)
+	stmt = (
+		select(UserSession)
+		.join(UserORM, UserORM.id == UserSession.user_id)
+		.where(*conditions)
+		.order_by(UserSession.created_at.desc())
+		.offset((page - 1) * pageSize)
+		.limit(pageSize)
+	)
+	try:
+		total = await db_session.scalar(total_stmt) or 0
+		rows = (await db_session.execute(stmt)).scalars().all()
+	except SQLAlchemyError:
+		return ActiveUserSessionList(items=[], total=0)
+	return ActiveUserSessionList(
+		items=[
+			ActiveUserSession(
+				id=str(row.id),
+				user_id=str(row.user_id),
+				ip_address=row.ip_address,
+				user_agent=row.user_agent,
+				device_type=_device_type(row.user_agent),
+				is_current=row.user_id == user.id,
+				created_at=row.created_at.isoformat(),
+				last_active_at=row.created_at.isoformat(),
+				expires_at=row.expires_at.isoformat() if row.expires_at else None,
+			)
+			for row in rows
+		],
+		total=total,
+	)
 
 
 # ---------------------------------------------------------------------------

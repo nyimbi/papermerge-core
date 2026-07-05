@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import RootModel
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core import schema
@@ -11,7 +14,10 @@ from papermerge.core.db.engine import get_db
 from papermerge.core.features.auth import scopes
 from papermerge.core.features.auth.dependencies import require_scopes
 from papermerge.core.features.settings.db import api as settings_api
-from papermerge.core.features.settings.db.orm import WebhookConfig as WebhookORM
+from papermerge.core.features.settings.db.orm import (
+	SystemSettings,
+	WebhookConfig as WebhookORM,
+)
 from papermerge.core.features.settings.schema import (
 	EmailSettings,
 	EmailSettingsUpdate,
@@ -42,6 +48,14 @@ router = APIRouter(
 	prefix="/settings",
 	tags=["settings"],
 )
+
+
+class SettingsMap(RootModel[dict[str, Any]]):
+	"""Root settings map keyed by setting category."""
+
+
+class SettingsPatch(RootModel[dict[str, dict[str, Any]]]):
+	"""Patch payload keyed by setting category."""
 
 # ---------------------------------------------------------------------------
 # Defaults — returned when no DB row exists yet
@@ -82,6 +96,39 @@ def _orm_webhook_to_schema(hook: WebhookORM) -> WebhookConfig:
 		secret=hook.secret,
 		created_at=hook.created_at.isoformat(),
 	)
+
+
+async def _get_all_settings(db: AsyncSession) -> dict[str, Any]:
+	try:
+		result = await db.execute(select(SystemSettings))
+	except SQLAlchemyError:
+		return {}
+	return {row.id: row.settings or {} for row in result.scalars().all()}
+
+
+@router.get("", response_model=SettingsMap)
+async def get_settings(
+	_user: require_scopes(scopes.NODE_VIEW),
+	db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+	"""Return all persisted settings keyed by category."""
+	return await _get_all_settings(db)
+
+
+@router.patch("", response_model=SettingsMap)
+async def patch_settings(
+	body: SettingsPatch,
+	user: require_scopes(scopes.NODE_VIEW),
+	db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+	"""Patch settings categories and return the updated settings map."""
+	try:
+		for key, value in body.root.items():
+			await settings_api.upsert_settings(db, key, value, str(user.id))
+	except SQLAlchemyError:
+		await db.rollback()
+		return {}
+	return await _get_all_settings(db)
 
 
 # ---------------------------------------------------------------------------

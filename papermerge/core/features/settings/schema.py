@@ -325,3 +325,29 @@ class NotificationPreferencesUpdate(BaseModel):
 	notify_on_approval: bool | None = None
 	notify_on_comment: bool | None = None
 	notify_on_system_alerts: bool | None = None
+
+
+class SystemSettingsBundle(BaseModel):
+	model_config = ConfigDict(extra="forbid")
+
+	tenant: TenantSettings = Field(default_factory=TenantSettings)
+	storage: StorageSettings = Field(default_factory=StorageSettings)
+	ocr: OCRSettings = Field(default_factory=OCRSettings)
+	search: SearchSettings = Field(default_factory=SearchSettings)
+	workflow: WorkflowSettings = Field(default_factory=WorkflowSettings)
+	email: EmailSettings = Field(default_factory=EmailSettings)
+	security: SecuritySettings = Field(default_factory=SecuritySettings)
+	integrations: IntegrationSettings = Field(default_factory=IntegrationSettings)
+
+
+class SystemSettingsBundleUpdate(BaseModel):
+	model_config = ConfigDict(extra="forbid")
+
+	tenant: TenantSettingsUpdate | None = None
+	storage: StorageSettingsUpdate | None = None
+	ocr: OCRSettingsUpdate | None = None
+	search: SearchSettingsUpdate | None = None
+	workflow: WorkflowSettingsUpdate | None = None
+	email: EmailSettingsUpdate | None = None
+	security: SecuritySettingsUpdate | None = None
+	integrations: dict[str, Any] | None = None

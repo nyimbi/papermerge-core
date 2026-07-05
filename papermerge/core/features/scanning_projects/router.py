@@ -1,21 +1,24 @@
 # (c) Copyright Datacraft, 2026
 """FastAPI router for Scanning Projects feature."""
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.auth import get_current_user
 from papermerge.core.db.engine import get_db
+from papermerge.core.features.auth import scopes
+from papermerge.core.features.auth.dependencies import require_scopes
 from papermerge.core.features.users.schema import User
 
 from . import service
 from .ai_advisor import get_project_advisor
-from .models import ScanningProjectModel
+from .models import PageScanEventModel, ScanningProjectModel, ScanningSesssionModel
 from .views import (
 	QualityConfig,
 	ScanningProject,
@@ -2733,6 +2736,20 @@ class ActiveSessionResponse(BaseModel):
 	duration_minutes: float
 
 
+class RecentSessionResponse(BaseModel):
+	session_id: str
+	project_name: str
+	pages_scanned: int
+	started_at: str
+	ended_at: str | None
+	duration_minutes: float
+
+
+class ThroughputHourResponse(BaseModel):
+	hour: str
+	pages: int
+
+
 @router.post("/sessions/clock-in", response_model=ClockInResponse, status_code=status.HTTP_200_OK)
 async def clock_in(
 	body: ClockInRequest,
@@ -2874,6 +2891,95 @@ async def get_my_active_session(
 		started_at=session_record.started_at.isoformat(),
 		duration_minutes=round(duration, 2),
 	)
+
+
+@router.get("/sessions", response_model=list[RecentSessionResponse])
+async def list_recent_sessions(
+	user: require_scopes(scopes.NODE_VIEW),
+	db: Annotated[AsyncSession, Depends(get_db)],
+	limit: int = Query(20, ge=1, le=100),
+	ordering: str = Query("-started_at"),
+	active: bool | None = Query(None),
+) -> list[RecentSessionResponse]:
+	"""List recent operator scanning sessions across projects for the tenant."""
+	stmt = (
+		select(ScanningSesssionModel, ScanningProjectModel.name.label("project_name"))
+		.join(ScanningProjectModel, ScanningProjectModel.id == ScanningSesssionModel.project_id)
+		.where(ScanningProjectModel.tenant_id == user.tenant_id)
+	)
+	if active is True:
+		stmt = stmt.where(ScanningSesssionModel.ended_at.is_(None))
+	elif active is False:
+		stmt = stmt.where(ScanningSesssionModel.ended_at.isnot(None))
+
+	if ordering == "started_at":
+		stmt = stmt.order_by(ScanningSesssionModel.started_at.asc())
+	else:
+		stmt = stmt.order_by(ScanningSesssionModel.started_at.desc())
+
+	rows = (await db.execute(stmt.limit(limit))).all()
+	now = datetime.now(timezone.utc).replace(tzinfo=None)
+	results: list[RecentSessionResponse] = []
+	for session_record, project_name in rows:
+		ended_at = session_record.ended_at or now
+		duration = max((ended_at - session_record.started_at).total_seconds() / 60, 0)
+		results.append(
+			RecentSessionResponse(
+				session_id=session_record.id,
+				project_name=project_name,
+				pages_scanned=session_record.pages_scanned,
+				started_at=session_record.started_at.isoformat(),
+				ended_at=session_record.ended_at.isoformat() if session_record.ended_at else None,
+				duration_minutes=round(duration, 2),
+			)
+		)
+	return results
+
+
+@router.get("/throughput/hourly", response_model=list[ThroughputHourResponse])
+async def get_hourly_throughput(
+	user: require_scopes(scopes.NODE_VIEW),
+	db: Annotated[AsyncSession, Depends(get_db)],
+	hours: int = Query(8, ge=1, le=48),
+) -> list[ThroughputHourResponse]:
+	"""Return completed-batch page counts for each of the last N hours."""
+	now = datetime.now(timezone.utc).replace(tzinfo=None)
+	start = (now - timedelta(hours=hours - 1)).replace(minute=0, second=0, microsecond=0)
+
+	stmt = (
+		select(
+			ScanningBatchModel.completed_at,
+			ScanningBatchModel.scanned_pages,
+			ScanningBatchModel.actual_pages,
+		)
+		.join(
+			ScanningProjectModel,
+			ScanningProjectModel.id == ScanningBatchModel.project_id,
+		)
+		.where(
+			ScanningProjectModel.tenant_id == user.tenant_id,
+			ScanningBatchModel.completed_at.isnot(None),
+			ScanningBatchModel.completed_at >= start,
+		)
+	)
+	try:
+		rows = (await db.execute(stmt)).all()
+	except SQLAlchemyError:
+		rows = []
+
+	counts = {start + timedelta(hours=i): 0 for i in range(hours)}
+	for row in rows:
+		hour = row.completed_at.replace(minute=0, second=0, microsecond=0)
+		if hour in counts:
+			counts[hour] += int(row.actual_pages or row.scanned_pages or 0)
+
+	return [
+		ThroughputHourResponse(
+			hour=(start + timedelta(hours=i)).strftime("%H:00"),
+			pages=counts.get(start + timedelta(hours=i), 0),
+		)
+		for i in range(hours)
+	]
 
 
 # =====================================================

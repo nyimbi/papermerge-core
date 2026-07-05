@@ -6,7 +6,7 @@ from uuid import UUID
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy import select, func, and_
+from sqlalchemy import case, select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.engine import get_db
@@ -475,6 +475,58 @@ async def get_quality_stats(
 		issues_by_metric=issues_by_metric,
 		trend_7d=trend,
 	)
+
+
+@router.get("/scanner-stats", response_model=list[schema.ScannerStat])
+async def get_scanner_stats(
+	user: require_scopes(scopes.NODE_VIEW),
+	db_session: AsyncSession = Depends(get_db),
+	days: int = 7,
+) -> list[schema.ScannerStat]:
+	"""Return per-scanner quality metrics from scanned batch documents."""
+	from papermerge.core.features.scanning_projects.models import (
+		ScanningBatchDocumentModel,
+		ScanningBatchModel,
+		ScanningProjectModel,
+	)
+
+	since = datetime.utcnow() - timedelta(days=days)
+	issue_count = func.sum(
+		case((ScanningBatchDocumentModel.has_issues == True, 1), else_=0)
+	).label("issue_count")
+	stmt = (
+		select(
+			ScanningBatchModel.assigned_scanner_id,
+			ScanningBatchModel.assigned_scanner_name,
+			func.count(ScanningBatchDocumentModel.id).label("docs_scanned"),
+			func.avg(ScanningBatchDocumentModel.quality_score).label("avg_quality"),
+			issue_count,
+		)
+		.join(ScanningBatchModel, ScanningBatchModel.id == ScanningBatchDocumentModel.batch_id)
+		.join(ScanningProjectModel, ScanningProjectModel.id == ScanningBatchModel.project_id)
+		.where(
+			ScanningProjectModel.tenant_id == user.tenant_id,
+			ScanningBatchDocumentModel.scanned_at >= since,
+			ScanningBatchModel.assigned_scanner_id.isnot(None),
+		)
+		.group_by(ScanningBatchModel.assigned_scanner_id, ScanningBatchModel.assigned_scanner_name)
+		.order_by(func.count(ScanningBatchDocumentModel.id).desc())
+	)
+	rows = (await db_session.execute(stmt)).all()
+	stats: list[schema.ScannerStat] = []
+	for row in rows:
+		docs_scanned = int(row.docs_scanned or 0)
+		issues = int(row.issue_count or 0)
+		stats.append(
+			schema.ScannerStat(
+				scannerId=str(row.assigned_scanner_id),
+				scannerName=row.assigned_scanner_name or str(row.assigned_scanner_id),
+				docsScanned=docs_scanned,
+				avgQualityScore=round(float(row.avg_quality or 0.0), 2),
+				errorRate=round(issues / docs_scanned, 4) if docs_scanned else 0.0,
+			)
+		)
+	return stats
 
 
 def _get_grade(score: float) -> str:

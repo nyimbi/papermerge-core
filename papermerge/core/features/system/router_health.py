@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.engine import get_db
@@ -35,6 +36,61 @@ router = APIRouter(
     prefix="/system",
     tags=["system-health"],
 )
+
+
+class WorkerRuntimeInfo(BaseModel):
+    name: str
+    status: str = "running"
+    active_tasks: int = 0
+    queues: list[str] = Field(default_factory=list)
+
+
+class WorkersResponse(BaseModel):
+    workers: list[WorkerRuntimeInfo] = Field(default_factory=list)
+    total_active: int = 0
+    active: int = 0
+    total: int = 0
+
+
+def _inspect_celery_workers() -> WorkersResponse:
+    try:
+        try:
+            from papermerge.celery_app import app as celery_app
+        except Exception:
+            from celery import current_app as celery_app  # type: ignore[import-untyped]
+
+        inspect = celery_app.control.inspect(timeout=2)
+        active = inspect.active() or {}
+        active_queues = inspect.active_queues() or {}
+    except Exception as exc:
+        log.debug("Celery worker inspect failed (non-fatal): %s", exc)
+        return WorkersResponse()
+
+    workers: list[WorkerRuntimeInfo] = []
+    total_active = 0
+    for worker_name, tasks in active.items():
+        queue_items = active_queues.get(worker_name) or []
+        queues = [
+            queue.get("name")
+            for queue in queue_items
+            if isinstance(queue, dict) and queue.get("name")
+        ]
+        active_count = len(tasks or [])
+        total_active += active_count
+        workers.append(
+            WorkerRuntimeInfo(
+                name=worker_name,
+                status="running",
+                active_tasks=active_count,
+                queues=queues,
+            )
+        )
+    return WorkersResponse(
+        workers=workers,
+        total_active=total_active,
+        active=total_active,
+        total=len(workers),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -83,13 +139,13 @@ async def get_queues(
 # Worker list
 # ---------------------------------------------------------------------------
 
-@router.get("/workers", response_model=list[WorkerInfo])
+@router.get("/workers", response_model=WorkersResponse)
 async def get_workers(
     _user: require_scopes(scopes.NODE_VIEW),
-) -> list[WorkerInfo]:
+) -> WorkersResponse:
     """
     Returns live worker data via Celery inspect (timeout = 2 s).
 
     Returns an empty list when no workers are reachable rather than raising.
     """
-    return await svc.get_workers()
+    return _inspect_celery_workers()

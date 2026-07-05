@@ -15,10 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, and_, case, literal_column
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.auth import get_current_user
 from papermerge.core.db.engine import get_db
+from papermerge.core.features.auth import scopes
+from papermerge.core.features.auth.dependencies import require_scopes
 from papermerge.core.features.users.schema import User
 from papermerge.core.utils.uuid_compat import uuid7str
 
@@ -84,6 +87,24 @@ class LiveOpsResponse(BaseModel):
 	queue_depth: int  # batches pending/unassigned
 
 
+class SupervisorOperatorStatus(BaseModel):
+	operator_id: str
+	operator_name: str = ""
+	status: str = "idle"
+	pages_scanned_today: int = 0
+	quality_score: float = 100.0
+	last_activity: str | None = None
+	project_name: str | None = None
+	batch_id: str | None = None
+
+
+class SupervisorLiveOpsResponse(BaseModel):
+	operators: list[SupervisorOperatorStatus] = Field(default_factory=list)
+	pages_scanned_today: int = 0
+	active_batches: int = 0
+	queue_depth: int = 0
+
+
 class OperatorKPI(BaseModel):
 	operator_id: str
 	operator_name: str = ""
@@ -126,6 +147,24 @@ class BatchPipelineResponse(BaseModel):
 	in_progress: list[BatchKanbanItem]
 	qc_review: list[BatchKanbanItem]
 	complete: list[BatchKanbanItem]
+
+
+class SupervisorMessageCreate(BaseModel):
+	operator_id: str | None = None
+	project_id: str | None = None
+	message: str = Field(min_length=1, max_length=2000)
+	priority: str = Field(default="normal", pattern="^(low|normal|high|urgent)$")
+
+
+class SupervisorMessageOut(BaseModel):
+	id: str
+	operator_id: str | None
+	project_id: str | None
+	message: str
+	priority: str
+	sent_by_id: str
+	sent_by_name: str | None = None
+	created_at: str
 
 
 # =====================================================
@@ -179,78 +218,116 @@ def _compute_operator_kpi(
 	)
 
 
+async def _get_supervisor_operator_statuses(
+	session: AsyncSession,
+	tenant_id: object,
+) -> list[SupervisorOperatorStatus]:
+	now = datetime.now(timezone.utc).replace(tzinfo=None)
+	today_start = datetime(now.year, now.month, now.day)
+	active_cutoff = now - timedelta(minutes=60)
+
+	try:
+		stmt = (
+			select(
+				ScanningBatchModel.id,
+				ScanningBatchModel.assigned_operator_id,
+				ScanningBatchModel.assigned_operator_name,
+				ScanningBatchModel.status,
+				ScanningBatchModel.scanned_pages,
+				ScanningBatchModel.actual_pages,
+				ScanningBatchModel.completed_at,
+				ScanningBatchModel.started_at,
+				ScanningBatchModel.updated_at,
+				ScanningBatchModel.created_at,
+				ScanningProjectModel.name.label("project_name"),
+			)
+			.join(
+				ScanningProjectModel,
+				ScanningProjectModel.id == ScanningBatchModel.project_id,
+			)
+			.where(
+				ScanningProjectModel.tenant_id == tenant_id,
+				ScanningBatchModel.assigned_operator_id.isnot(None),
+			)
+		)
+		rows = (await session.execute(stmt)).all()
+	except SQLAlchemyError:
+		return []
+
+	by_operator: dict[str, dict] = {}
+	for row in rows:
+		operator_id = str(row.assigned_operator_id)
+		last_activity = row.completed_at or row.updated_at or row.started_at or row.created_at
+		status_value = getattr(row.status, "value", row.status) or "idle"
+		pages = int(row.scanned_pages or row.actual_pages or 0)
+
+		entry = by_operator.setdefault(
+			operator_id,
+			{
+				"operator_id": operator_id,
+				"operator_name": row.assigned_operator_name or "",
+				"status": "idle",
+				"pages_scanned_today": 0,
+				"quality_score": 100.0,
+				"last_activity": None,
+				"project_name": None,
+				"batch_id": None,
+			},
+		)
+		if (row.completed_at and row.completed_at >= today_start) or (
+			last_activity and last_activity >= today_start and status_value in {"in_progress", "scanning", "completed"}
+		):
+			entry["pages_scanned_today"] += pages
+		if last_activity and (
+			entry["last_activity"] is None or last_activity > entry["last_activity"]
+		):
+			entry["last_activity"] = last_activity
+			entry["project_name"] = row.project_name
+			entry["batch_id"] = str(row.id)
+			entry["status"] = (
+				"scanning"
+				if last_activity >= active_cutoff and status_value in {"in_progress", "scanning"}
+				else "idle"
+			)
+
+	return [
+		SupervisorOperatorStatus(
+			**{
+				**entry,
+				"last_activity": (
+					entry["last_activity"].isoformat()
+					if entry["last_activity"]
+					else None
+				),
+			}
+		)
+		for entry in by_operator.values()
+	]
+
+
 # =====================================================
 # Endpoints
 # =====================================================
 
 
-@router.get("/live-ops", response_model=LiveOpsResponse)
+@router.get("/live-ops", response_model=SupervisorLiveOpsResponse)
 async def get_live_ops(
-	user: Annotated[User, Depends(get_current_user)],
+	user: require_scopes(scopes.NODE_VIEW),
 	session: Annotated[AsyncSession, Depends(get_db)],
-) -> LiveOpsResponse:
-	"""Real-time operations overview: active operators, pages today, active/queued batches."""
-	today_start = _today_utc_start()
-	tenant_id = str(user.tenant_id)
-
-	# Pages scanned today + active operators (last event in last 60 min)
-	sixty_min_ago = datetime.now(timezone.utc) - timedelta(minutes=60)
-
-	active_stmt = (
-		select(
-			PageScanEventModel.operator_id,
-			func.count(PageScanEventModel.id).label("pages_today"),
-			func.max(PageScanEventModel.occurred_at).label("last_event_at"),
-		)
-		.where(
-			and_(
-				PageScanEventModel.tenant_id == tenant_id,
-				PageScanEventModel.occurred_at >= today_start,
-				PageScanEventModel.event_type == "scanned",
-				PageScanEventModel.operator_id.isnot(None),
-			)
-		)
-		.group_by(PageScanEventModel.operator_id)
-	)
-	result = await session.execute(active_stmt)
-	rows = result.all()
-
-	operators = []
-	pages_scanned_today = 0
-	for row in rows:
-		pages_scanned_today += row.pages_today
-		last = row.last_event_at
-		if last and last.tzinfo is None:
-			last = last.replace(tzinfo=timezone.utc)
-		is_active = last and last >= sixty_min_ago
-		operators.append(
-			ActiveOperator(
-				operator_id=str(row.operator_id),
-				operator_name="",
-				status="scanning" if is_active else "idle",
-				current_batch=None,
-				pages_this_session=row.pages_today,
-				last_activity_at=last.isoformat() if last else "",
-			)
-		)
-
-	# Active batches (in_progress / scanning status)
+) -> SupervisorLiveOpsResponse:
+	"""Return supervisor live-ops operator rows for the frontend dashboard."""
+	operators = await _get_supervisor_operator_statuses(session, user.tenant_id)
 	active_batches_stmt = select(func.count(ScanningBatchModel.id)).where(
 		ScanningBatchModel.status.in_(["in_progress", "scanning"])
 	)
-	active_batches_result = await session.execute(active_batches_stmt)
-	active_batches = active_batches_result.scalar() or 0
-
-	# Queue depth: pending/unassigned batches
 	queue_stmt = select(func.count(ScanningBatchModel.id)).where(
 		ScanningBatchModel.status.in_(["pending", "unassigned"])
 	)
-	queue_result = await session.execute(queue_stmt)
-	queue_depth = queue_result.scalar() or 0
-
-	return LiveOpsResponse(
+	active_batches = await session.scalar(active_batches_stmt) or 0
+	queue_depth = await session.scalar(queue_stmt) or 0
+	return SupervisorLiveOpsResponse(
 		operators=operators,
-		pages_scanned_today=pages_scanned_today,
+		pages_scanned_today=sum(op.pages_scanned_today for op in operators),
 		active_batches=active_batches,
 		queue_depth=queue_depth,
 	)
@@ -349,6 +426,74 @@ async def get_operator_kpis(
 		kpis.append(_compute_operator_kpi(op_id, op_rows, sh))
 
 	return kpis
+
+
+@router.get("/kpis", response_model=list[SupervisorOperatorStatus])
+async def get_kpis_alias(
+	user: require_scopes(scopes.NODE_VIEW),
+	session: AsyncSession = Depends(get_db),
+	project_id: str | None = Query(None),
+	period: str | None = Query(None),
+	date_from: date | None = Query(None),
+	date_to: date | None = Query(None),
+	operator_id: str | None = Query(None),
+) -> list[SupervisorOperatorStatus]:
+	"""Compatibility KPI endpoint with the frontend supervisor field shape."""
+	operators = await _get_supervisor_operator_statuses(session, user.tenant_id)
+	if operator_id:
+		operators = [item for item in operators if item.operator_id == operator_id]
+	return operators
+
+
+@router.get("/messages", response_model=list[SupervisorMessageOut])
+async def list_supervisor_messages(
+	user: require_scopes(scopes.NODE_VIEW),
+	session: AsyncSession = Depends(get_db),
+	operator_id: str | None = Query(None),
+	project_id: str | None = Query(None),
+	limit: int = Query(50, ge=1, le=200),
+) -> list[SupervisorMessageOut]:
+	"""List recent supervisor messages persisted in system settings."""
+	from papermerge.core.features.settings.db import api as settings_api
+
+	stored = await settings_api.get_settings(session, "supervisor_messages")
+	messages = stored.get("items", [])
+	filtered = [
+		msg for msg in messages
+		if (operator_id is None or msg.get("operator_id") == operator_id)
+		and (project_id is None or msg.get("project_id") == project_id)
+	]
+	return [SupervisorMessageOut(**msg) for msg in filtered[:limit]]
+
+
+@router.post("/messages", response_model=SupervisorMessageOut, status_code=status.HTTP_201_CREATED)
+async def send_supervisor_message(
+	body: SupervisorMessageCreate,
+	user: require_scopes(scopes.NODE_VIEW),
+	session: AsyncSession = Depends(get_db),
+) -> SupervisorMessageOut:
+	"""Send a supervisor message to an operator or project feed."""
+	from papermerge.core.features.settings.db import api as settings_api
+
+	stored = await settings_api.get_settings(session, "supervisor_messages")
+	messages = stored.get("items", [])
+	message = SupervisorMessageOut(
+		id=uuid7str(),
+		operator_id=body.operator_id,
+		project_id=body.project_id,
+		message=body.message,
+		priority=body.priority,
+		sent_by_id=str(user.id),
+		sent_by_name=getattr(user, "username", None),
+		created_at=datetime.now(timezone.utc).isoformat(),
+	)
+	await settings_api.upsert_settings(
+		session,
+		"supervisor_messages",
+		{"items": [message.model_dump(), *messages][:500]},
+		str(user.id),
+	)
+	return message
 
 
 
