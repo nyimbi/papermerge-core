@@ -1,5 +1,5 @@
 # (c) Copyright Datacraft, 2026
-"""Tests for OCR proxy endpoints (Ollama/LiteLLM passthrough)."""
+"""Tests for the OCR proxy endpoint (OpenAI-compatible LiteLLM passthrough)."""
 import os
 import uuid
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -27,29 +27,8 @@ app.dependency_overrides[get_current_user] = lambda: _user
 client = TestClient(app, raise_server_exceptions=False)
 
 
-def test_ollama_tags_proxied():
-    """GET /ocr-proxy/ollama/tags calls upstream and returns response."""
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"models": []}
-    mock_response.headers = {"content-type": "application/json"}
-
-    with patch("httpx.get", return_value=mock_response), \
-         patch("httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_client.return_value.get = AsyncMock(return_value=mock_response)
-        response = client.get("/ocr-proxy/ollama/tags")
-
-    assert response.status_code in (200, 500, 503)
-
-
-def test_ollama_chat_requires_body():
-    """POST /ocr-proxy/ollama/chat returns 422 without required body."""
-    response = client.post("/ocr-proxy/ollama/chat", json={})
-    assert response.status_code in (200, 422, 500, 503)
-
-
-def test_openai_chat_requires_body():
+def test_openai_chat_returns_service_unavailable_when_unconfigured():
+    """POST /ocr-proxy/openai/chat/completions without LiteLLM config → 503."""
     response = client.post("/ocr-proxy/openai/chat/completions", json={})
-    assert response.status_code in (200, 400, 422, 500, 503)
+    assert response.status_code == 503
+

@@ -8,12 +8,11 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.features.document_chat.db.orm import DocumentChatMessage
+from papermerge.core.config import get_settings
 from papermerge.core.utils.tz import utc_now
 
 logger = logging.getLogger(__name__)
 
-LITELLM_BASE_URL = "http://84.247.181.100:4000/v1"
-LITELLM_API_KEY = "sk-pjs-litellm-master-key"
 LITELLM_MODEL = "qwen2.5-VL"
 
 
@@ -110,7 +109,8 @@ async def chat_with_document(
 	messages.append({"role": "user", "content": question})
 
 	# 4. Call LiteLLM
-	client = openai.OpenAI(base_url=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
+	cfg = get_settings()
+	client = openai.OpenAI(base_url=cfg.litellm_base_url, api_key=cfg.litellm_api_key)
 	try:
 		resp = client.chat.completions.create(
 			model=LITELLM_MODEL,

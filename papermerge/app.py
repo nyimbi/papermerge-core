@@ -73,10 +73,10 @@ app = FastAPI(
 	lifespan=lifespan,
 )
 
-# Add CORS middleware
+# Add CORS middleware (explicit origin allowlist via PM_CORS_ORIGINS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=config.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -157,6 +157,10 @@ async def ws_notifications(
     )
     from papermerge.core.features.notifications.websocket import notifications_handler
 
+    # Accept the token via Sec-WebSocket-Protocol to keep it out of URLs and
+    # access logs, with the query param kept as a backward-compatible fallback.
+    token = websocket.headers.get("sec-websocket-protocol") or token
+
     if not token:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
@@ -197,6 +201,10 @@ async def ws_workflow_notifications(
         _authenticate_with_jwt,
     )
     from papermerge.core.features.workflows.websocket import workflow_notifications_handler
+
+    # Accept the token via Sec-WebSocket-Protocol to keep it out of URLs and
+    # access logs, with the query param kept as a backward-compatible fallback.
+    token = websocket.headers.get("sec-websocket-protocol") or token
 
     if not token:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)

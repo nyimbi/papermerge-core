@@ -4,7 +4,6 @@ API Keys router — /api-keys
 Provides CRUD for tenant-scoped API keys used by external integrations.
 Keys are identified by a dak_ prefix. Plaintext is returned only on creation.
 """
-import hashlib
 import json
 import logging
 import secrets
@@ -18,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core import db, scopes
 from papermerge.core.features.api_keys.db.orm import ApiKey
+from papermerge.core.features.api_keys.hashing import hash_key
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class ApiKeyCreated(ApiKeyResponse):
 def _generate_key() -> tuple[str, str, str]:
 	"""Returns (plaintext, key_hash, key_prefix)."""
 	plaintext = API_KEY_PREFIX + secrets.token_urlsafe(32)
-	key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
+	key_hash = hash_key(plaintext)
 	key_prefix = plaintext[:8]
 	return plaintext, key_hash, key_prefix
 

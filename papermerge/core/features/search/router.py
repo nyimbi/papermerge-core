@@ -18,8 +18,6 @@ from .db.orm import SavedSearch, DocumentSearchIndex
 from .db.api import get_search_facets, semantic_search_db, hybrid_search_db, get_similar_documents_db
 
 
-LITELLM_BASE_URL = "http://84.247.181.100:4000/v1"
-LITELLM_API_KEY = "sk-pjs-litellm-master-key"
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 
@@ -32,7 +30,9 @@ class SearchMode(str, Enum):
 def _embed_query(query_text: str) -> list[float]:
     """Synchronous call to LiteLLM embedding endpoint. Called in a thread pool."""
     from openai import OpenAI
-    client = OpenAI(base_url=LITELLM_BASE_URL, api_key=LITELLM_API_KEY)
+    from papermerge.core.config import get_settings
+    cfg = get_settings()
+    client = OpenAI(base_url=cfg.litellm_base_url, api_key=cfg.litellm_api_key)
     resp = client.embeddings.create(model=EMBEDDING_MODEL, input=query_text)
     return resp.data[0].embedding
 

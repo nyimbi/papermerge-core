@@ -7,12 +7,23 @@ if [ -z $CMD ]; then
   exit 1
 fi
 
-# Auto-generate secret key if not provided (for non-production use)
-if [ -z "${PM_SECRET_KEY}" ]; then
-  echo "WARNING: PM_SECRET_KEY not set. Auto-generating a random key."
-  echo "This is NOT suitable for production. Please set PM_SECRET_KEY explicitly."
-  export PM_SECRET_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 64)
-  echo "Generated secret key: ${PM_SECRET_KEY:0:16}... (truncated for display)"
+# Auto-generate secret keys if not provided (for non-production use)
+if [ -z "${PM_JWT_SECRET_KEY}" ]; then
+  echo "WARNING: PM_JWT_SECRET_KEY not set. Auto-generating a random key."
+  echo "This is NOT suitable for production. Please set PM_JWT_SECRET_KEY explicitly."
+  export PM_JWT_SECRET_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 64)
+fi
+
+if [ -z "${PM_CSRF_SECRET_KEY}" ]; then
+  echo "WARNING: PM_CSRF_SECRET_KEY not set. Auto-generating a random key."
+  echo "This is NOT suitable for production. Please set PM_CSRF_SECRET_KEY explicitly."
+  export PM_CSRF_SECRET_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 64)
+fi
+
+if [ -z "${PM_ENCRYPTION_SECRET_KEY}" ]; then
+  echo "WARNING: PM_ENCRYPTION_SECRET_KEY not set. Auto-generating a random key."
+  echo "This is NOT suitable for production. Please set PM_ENCRYPTION_SECRET_KEY explicitly."
+  export PM_ENCRYPTION_SECRET_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 64)
 fi
 
 # Set default auth username and email if not provided

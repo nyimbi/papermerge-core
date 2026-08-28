@@ -3,21 +3,22 @@ OCR Proxy Router
 
 Proxies browser-side VLM OCR requests to avoid CORS issues.
 Supports the configured OpenAI-compatible LiteLLM gateway.
+
+Credentials and the gateway URL are taken from server configuration only —
+clients cannot redirect the proxy to an arbitrary host (SSRF prevention) or
+inject their own API key.
 """
 import logging
-import os
 from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Security, HTTPException, Request, Response
 
 from papermerge.core import schema
-from papermerge.core.features.auth import get_current_user, scopes
+from papermerge.core.config import get_settings
+from papermerge.core.features.auth import get_current_user
 
 logger = logging.getLogger(__name__)
-
-LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "http://84.247.181.100:4000/v1").rstrip("/")
-LITELLM_API_KEY = os.getenv("LITELLM_API_KEY", "sk-pjs-litellm-master-key")
 
 router = APIRouter(
 	prefix="/ocr-proxy",
@@ -33,13 +34,17 @@ async def proxy_openai_chat(
 	"""
 	Proxy OpenAI-compatible OCR requests through the configured LiteLLM gateway.
 	"""
-	api_key = request.headers.get("X-OpenAI-Api-Key", "") or LITELLM_API_KEY
-	base_url = request.headers.get("X-OpenAI-Base-URL", "") or LITELLM_BASE_URL
-	if not api_key:
-		raise HTTPException(status_code=400, detail="LiteLLM API key required")
+	settings = get_settings()
+	api_key = settings.litellm_api_key
+	base_url = (settings.litellm_base_url or "").rstrip("/")
+
+	if not api_key or not base_url:
+		raise HTTPException(
+			status_code=503,
+			detail="LiteLLM gateway not configured",
+		)
 
 	body = await request.body()
-	base_url = base_url.rstrip("/")
 
 	headers = {
 		"Content-Type": "application/json",
@@ -64,4 +69,3 @@ async def proxy_openai_chat(
 	except httpx.RequestError as e:
 		logger.error(f"LiteLLM proxy error: {e}")
 		raise HTTPException(status_code=502, detail=f"Failed to connect to LiteLLM: {str(e)}")
-

@@ -19,6 +19,9 @@ from papermerge.core.features.encryption.db.orm import (
 
 logger = logging.getLogger(__name__)
 
+# AES-GCM nonce length (96 bits as per NIST SP 800-38D)
+GCM_NONCE_LENGTH = 12
+
 
 class EncryptionService:
 	"""Envelope encryption for documents.
@@ -56,7 +59,7 @@ class EncryptionService:
 
 		# Encrypt content with DEK
 		aesgcm = AESGCM(dek)
-		nonce = os.urandom(12)
+		nonce = os.urandom(GCM_NONCE_LENGTH)
 		encrypted_content = aesgcm.encrypt(nonce, content, None)
 
 		# Decrypt KEK first
@@ -64,7 +67,7 @@ class EncryptionService:
 
 		# Encrypt DEK with tenant KEK
 		kek_aesgcm = AESGCM(decrypted_kek)
-		dek_nonce = os.urandom(12)
+		dek_nonce = os.urandom(GCM_NONCE_LENGTH)
 		encrypted_dek = dek_nonce + kek_aesgcm.encrypt(
 			dek_nonce,
 			dek,
@@ -98,14 +101,14 @@ class EncryptionService:
 		decrypted_kek = self._decrypt_kek(kek.encrypted_kek)
 
 		# Decrypt DEK
-		dek_nonce = key_record.encrypted_key[:12]
-		dek_ciphertext = key_record.encrypted_key[12:]
+		dek_nonce = key_record.encrypted_key[:GCM_NONCE_LENGTH]
+		dek_ciphertext = key_record.encrypted_key[GCM_NONCE_LENGTH:]
 		kek_aesgcm = AESGCM(decrypted_kek)
 		dek = kek_aesgcm.decrypt(dek_nonce, dek_ciphertext, document_id.bytes)
 
 		# Decrypt content
-		nonce = encrypted_content[:12]
-		ciphertext = encrypted_content[12:]
+		nonce = encrypted_content[:GCM_NONCE_LENGTH]
+		ciphertext = encrypted_content[GCM_NONCE_LENGTH:]
 		aesgcm = AESGCM(dek)
 
 		return aesgcm.decrypt(nonce, ciphertext, None)
@@ -129,13 +132,13 @@ class EncryptionService:
 
 		# Encrypt content with new DEK
 		aesgcm = AESGCM(new_dek)
-		nonce = os.urandom(12)
+		nonce = os.urandom(GCM_NONCE_LENGTH)
 		encrypted_content = aesgcm.encrypt(nonce, content, None)
 
 		# Encrypt new DEK with KEK
 		decrypted_kek = self._decrypt_kek(kek.encrypted_kek)
 		kek_aesgcm = AESGCM(decrypted_kek)
-		dek_nonce = os.urandom(12)
+		dek_nonce = os.urandom(GCM_NONCE_LENGTH)
 		encrypted_dek = dek_nonce + kek_aesgcm.encrypt(
 			dek_nonce,
 			new_dek,
@@ -181,13 +184,13 @@ class EncryptionService:
 	def _encrypt_kek(self, kek: bytes) -> bytes:
 		"""Encrypt KEK with master key."""
 		aesgcm = AESGCM(self.master_key)
-		nonce = os.urandom(12)
+		nonce = os.urandom(GCM_NONCE_LENGTH)
 		return nonce + aesgcm.encrypt(nonce, kek, None)
 
 	def _decrypt_kek(self, encrypted_kek: bytes) -> bytes:
 		"""Decrypt KEK with master key."""
-		nonce = encrypted_kek[:12]
-		ciphertext = encrypted_kek[12:]
+		nonce = encrypted_kek[:GCM_NONCE_LENGTH]
+		ciphertext = encrypted_kek[GCM_NONCE_LENGTH:]
 		aesgcm = AESGCM(self.master_key)
 		return aesgcm.decrypt(nonce, ciphertext, None)
 

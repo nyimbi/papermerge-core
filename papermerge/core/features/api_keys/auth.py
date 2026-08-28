@@ -5,7 +5,6 @@ Checks Authorization: Bearer dak_... header, looks up by SHA-256 hash,
 updates last_used_at, and returns (tenant_id, created_by_id) for use
 as the acting identity on authenticated endpoints.
 """
-import hashlib
 import logging
 from datetime import datetime, timezone
 from uuid import UUID
@@ -17,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from papermerge.core.db.engine import get_db
 from papermerge.core.features.api_keys.db.orm import ApiKey
+from papermerge.core.features.api_keys.hashing import hash_key
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,6 @@ API_KEY_PREFIX = "dak_"
 
 def _is_api_key(token: str) -> bool:
 	return token.startswith(API_KEY_PREFIX)
-
-
-def _hash_key(plaintext: str) -> str:
-	return hashlib.sha256(plaintext.encode()).hexdigest()
 
 
 async def get_api_key_identity(
@@ -51,7 +47,7 @@ async def get_api_key_identity(
 	if not _is_api_key(token):
 		return None
 
-	key_hash = _hash_key(token)
+	key_hash = hash_key(token)
 
 	stmt = select(ApiKey).where(
 		ApiKey.key_hash == key_hash,

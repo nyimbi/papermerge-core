@@ -8,6 +8,10 @@ __pycache__
 build
 dist
 tmp
+.env
+.env.*
+*.env
+.envrc
 ui2/.yarn/sdks/
 ui2/.yarn/*.gz
 ui2/.yarn/unplugged/

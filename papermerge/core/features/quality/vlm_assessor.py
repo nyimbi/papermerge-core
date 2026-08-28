@@ -26,8 +26,8 @@ def _log_vlm_request(model: str) -> str:
 @dataclass
 class VLMQualityConfig:
 	"""Configuration for VLM-based quality assessment."""
-	litellm_base_url: str = "http://84.247.181.100:4000/v1"
-	litellm_api_key: str = "sk-pjs-litellm-master-key"
+	litellm_base_url: str = ""
+	litellm_api_key: str | None = None
 	model: str = "qwen2.5-VL"
 	timeout: float = 120.0
 	temperature: float = 0.3

@@ -18,6 +18,7 @@ def _make_settings(**kwargs):
     defaults = dict(
         db_url="postgresql+asyncpg://x:x@localhost/x",
         jwt_secret_key="test-secret",
+        csrf_secret_key="test-csrf-secret",
         jwt_algorithm="HS256",
         jwt_expire_hours=1,
     )
@@ -38,7 +39,8 @@ def test_create_jwt_token_payload_contains_expected_fields():
     with patch("papermerge.core.features.auth.router.get_settings", return_value=settings):
         token = create_jwt_token("user-1", "alice", "alice@test.com", ["read", "write"])
 
-    token_data = extract_token_data(token)
+    with patch("papermerge.core.features.auth.get_settings", return_value=settings):
+        token_data = extract_token_data(token)
     assert token_data is not None
     assert token_data.user_id == "user-1"
     assert token_data.username == "alice"
@@ -63,14 +65,15 @@ def test_expired_token_raises_401():
     with patch("papermerge.core.features.auth.router.get_settings", return_value=settings):
         token = create_jwt_token("user-1", "alice", "alice@test.com", [])
 
-    with pytest.raises(HTTPException) as exc_info:
-        extract_token_data(token)
+    with patch("papermerge.core.features.auth.get_settings", return_value=settings):
+        with pytest.raises(HTTPException) as exc_info:
+            extract_token_data(token)
     assert exc_info.value.status_code == 401
     assert "expired" in exc_info.value.detail.lower()
 
 
-def test_token_without_exp_field_passes():
-    """Tokens from external OIDC providers may not have exp — should not be rejected."""
+def test_token_without_valid_signature_is_rejected():
+    """Forged tokens (e.g. alg:none, or signed with a different key) are rejected."""
     import base64, json
 
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
@@ -79,5 +82,25 @@ def test_token_without_exp_field_passes():
     token = f"{header}.{payload}.sig"
 
     result = extract_token_data(token)
-    assert result is not None
-    assert result.user_id == "ext-user"
+    assert result is None
+
+
+def test_token_signed_with_wrong_key_is_rejected():
+    """A token signed with a different key must not be accepted."""
+    from papermerge.core.features.auth.router import create_jwt_token
+    settings = _make_settings()
+    with patch("papermerge.core.features.auth.router.get_settings", return_value=settings):
+        token = create_jwt_token("user-1", "alice", "alice@test.com", ["read"])
+
+    # Attacker signs with their own key
+    from jose import jwt as _jwt
+    forged = _jwt.encode(
+        {"sub": "admin", "preferred_username": "admin", "scopes": [], "exp": int(time.time()) + 3600},
+        "attacker-key",
+        algorithm="HS256",
+    )
+
+    # Patch get_settings (used by extract_token_data) to the victim's key
+    with patch("papermerge.core.features.auth.get_settings", return_value=settings):
+        assert extract_token_data(forged) is None
+        assert extract_token_data(token) is not None

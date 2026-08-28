@@ -43,7 +43,7 @@ class StorageConfig:
 	r2_account_id: str = ""
 
 	# MinIO specific
-	minio_endpoint: str = "http://62.84.181.55:9002"
+	minio_endpoint: str = ""
 
 	@classmethod
 	def from_env(cls) -> "StorageConfig":
@@ -59,7 +59,7 @@ class StorageConfig:
 		minio_access = os.getenv("PM_MINIO_ACCESS_KEY", "")
 		minio_secret = os.getenv("PM_MINIO_SECRET_KEY", "")
 		minio_bucket = os.getenv("PM_MINIO_BUCKET", "darchiva")
-		minio_endpoint = os.getenv("PM_MINIO_ENDPOINT", "http://62.84.181.55:9002")
+		minio_endpoint = os.getenv("PM_MINIO_ENDPOINT", "")
 
 		# If backend is minio, use the minio-specific keys as access/secret/bucket
 		if backend == StorageBackendType.MINIO:

@@ -59,7 +59,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                     token, 
                     httponly=False,  # Frontend needs to read it
                     samesite="lax",
-                    secure=False  # Changed to False for local development
+                    secure=settings.csrf_cookie_secure,
                 )
             return response
 

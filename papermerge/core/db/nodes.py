@@ -35,20 +35,6 @@ def get_nodes(
             stmt = select(Node)
 
         nodes = session.scalars(stmt).all()
-        # colored_tags_stmt = select(ColoredTag).where(
-        #    ColoredTag.object_id.in_([n.id for n in nodes])
-        # )
-        # colored_tags = session.scalars(colored_tags_stmt).all()
-
-        # for node in nodes:
-        #    tags = _get_tags_for(colored_tags, node.id)
-        #    ancestors = get_ancestors(db_session, node.id, include_self=False)
-        #    node.tags = tags
-        #    node.breadcrumb = ancestors
-        #    if node.ctype == "folder":
-        #        items.append(nodes_schema.Folder.model_validate(node))
-        #    else:
-        #        items.append(doc_schema.Document.model_validate(node))
 
     return items
 

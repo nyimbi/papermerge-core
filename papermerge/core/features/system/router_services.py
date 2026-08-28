@@ -171,8 +171,12 @@ async def _probe_celery_queue_depth() -> ServiceStatus:
 async def _probe_litellm() -> ServiceStatus:
 	try:
 		import httpx
-
-		litellm_url = "http://84.247.181.100:4000/health"
+		from papermerge.core.config import get_settings
+		cfg = get_settings()
+		litellm_base = (cfg.litellm_base_url or "").rstrip("/")
+		if not litellm_base:
+			return ServiceStatus(name="litellm", status="unavailable")
+		litellm_url = f"{litellm_base}/health"
 		t0 = time.monotonic()
 		async with httpx.AsyncClient(timeout=2.0) as client:
 			resp = await client.get(litellm_url)

@@ -1,6 +1,6 @@
 """add email_ingest_configs table
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: 763584d70dbf
 Revises: fa71c2c795a9
 Create Date: 2026-06-17 00:00:00.000000
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = 'a1b2c3d4e5f6'
+revision: str = '763584d70dbf'
 down_revision: Union[str, None] = 'fa71c2c795a9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

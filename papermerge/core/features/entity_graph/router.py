@@ -251,9 +251,10 @@ async def get_entity_documents(
     if matched_docs:
         try:
             doc_ids = list(matched_docs.keys())
-            id_list = ", ".join(f"'{d}'" for d in doc_ids)
+            # Parameterized to prevent SQL injection (doc_ids are UUID strings)
             title_result = await db_session.execute(
-                text(f"SELECT id, title, created_at FROM nodes WHERE id IN ({id_list}) AND ctype = 'document'")
+                text("SELECT id, title, created_at FROM nodes WHERE id::text = ANY(:ids) AND ctype = 'document'"),
+                {"ids": doc_ids},
             )
             title_rows = title_result.fetchall()
             title_map = {str(r.id): (r.title, r.created_at) for r in title_rows}

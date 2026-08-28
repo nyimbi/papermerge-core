@@ -2,7 +2,7 @@
 """Application settings configuration."""
 from pathlib import Path
 
-from pydantic import PostgresDsn, RedisDsn, Field, computed_field
+from pydantic import PostgresDsn, RedisDsn, Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from papermerge.core.types import DocumentLang, StorageBackend
@@ -53,14 +53,14 @@ class Settings(BaseSettings):
 	# Semantic search / embeddings settings
 	embedding_provider: str = 'ollama'
 	embedding_model: str = 'nomic-embed-text'
-	ollama_base_url: str = 'http://62.169.25.77:11434'
+	ollama_base_url: str = 'http://localhost:11434'
 	semantic_search_enabled: bool = False
 	semantic_search_threshold: float = 0.5
 	hybrid_search_semantic_weight: float = 0.5
 
 	# LiteLLM / AI gateway settings
-	litellm_base_url: str = 'http://84.247.181.100:4000/v1'
-	litellm_api_key: str = 'sk-pjs-litellm-master-key'
+	litellm_base_url: str = ''
+	litellm_api_key: str | None = None
 	litellm_ner_model: str = 'qwen2.5-VL'
 	embedding_base_url: str = 'http://localhost:11434'
 	litellm_default_model: str = 'gpt-4o'
@@ -78,18 +78,18 @@ class Settings(BaseSettings):
 	require_tenant: bool = False
 
 	# MinIO / S3-compatible object storage
-	minio_endpoint: str = "http://62.84.181.55:9002"
-	minio_access_key: str = "pjsadmin"
-	minio_secret_key: str = "Car3Ana1234PJS"
+	minio_endpoint: str = "http://localhost:9000"
+	minio_access_key: str | None = None
+	minio_secret_key: str | None = None
 	minio_bucket: str = "darchiva"
 	minio_secure: bool = False
 
-	# SMTP (Stalwart at mail.lindela.io)
-	smtp_host: str = "mail.lindela.io"
+	# SMTP
+	smtp_host: str = ""
 	smtp_port: int = 587
-	smtp_user: str = "noreply@lindela.io"
-	smtp_password: str = "dArchiva2026!noreply"
-	smtp_from: str = "noreply@lindela.io"
+	smtp_user: str = ""
+	smtp_password: str | None = None
+	smtp_from: str = ""
 	smtp_from_name: str = "dArchiva"
 	smtp_use_tls: bool = True  # STARTTLS on 587; set False + port 465 for implicit TLS
 
@@ -97,14 +97,20 @@ class Settings(BaseSettings):
 	app_base_url: str = "http://localhost"
 
 	# Security
-	csrf_secret_key: str = Field(default="change-me-in-production")
-	jwt_secret_key: str = Field(default="change-me-in-production")
+	csrf_secret_key: str | None = None
+	jwt_secret_key: str | None = None
 	jwt_algorithm: str = "HS256"
 	jwt_expire_hours: int = 24
+	encryption_secret_key: str | None = None
+	encryption_salt: str | None = None
 	rate_limit_requests_per_minute: int = Field(gt=0, default=100)
 	rate_limit_enabled: bool = False
+	cors_origins: list[str] = []
+	csrf_cookie_secure: bool = False
 
-	# Remote user config
+	# Remote user config (disabled by default; requires trusted proxy)
+	remote_user_enabled: bool = False
+	trusted_proxies: list[str] = []
 	remote_user_header: str = "X-Forwarded-User"
 	remote_groups_header: str = "X-Forwarded-Groups"
 	remote_roles_header: str = "X-Forwarded-Roles"
@@ -135,6 +141,16 @@ class Settings(BaseSettings):
 		if self.linode_cluster_id:
 			return f"https://{self.linode_cluster_id}.linodeobjects.com"
 		return None
+
+	@field_validator("jwt_secret_key", "csrf_secret_key", mode="before")
+	@classmethod
+	def _validate_secret_keys(cls, v: str | None) -> str:
+		if v is None or v == "" or v == "change-me-in-production":
+			raise ValueError(
+				"jwt_secret_key and csrf_secret_key must be set to a strong "
+				"random value (PM_JWT_SECRET_KEY / PM_CSRF_SECRET_KEY)"
+			)
+		return v
 
 	model_config = SettingsConfigDict(
 		env_prefix='pm_',

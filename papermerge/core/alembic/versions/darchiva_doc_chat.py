@@ -1,6 +1,6 @@
 """add document_chat_messages table
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: f30483b96d65
 Revises: fa71c2c795a9
 Create Date: 2026-06-17 00:00:00.000000
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = 'a1b2c3d4e5f6'
+revision: str = 'f30483b96d65'
 down_revision: Union[str, None] = 'fa71c2c795a9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

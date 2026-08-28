@@ -8,6 +8,18 @@ class RemoteUserScheme:
 
     async def __call__(self, request: Request) -> schema.RemoteUser | None:
         settings = get_settings()
+
+        # Remote-User auth is opt-in and must only be honoured when the
+        # request comes from a trusted reverse proxy (e.g. OAuth2-Proxy).
+        # This prevents unauthenticated clients from forging the forwarded
+        # identity headers.
+        if not settings.remote_user_enabled:
+            return None
+
+        client_host = request.client.host if request.client else None
+        if not settings.trusted_proxies or client_host not in settings.trusted_proxies:
+            return None
+
         user_header_name = settings.remote_user_header
         groups_header_name = settings.remote_groups_header
         roles_header_name = settings.remote_roles_header

@@ -18,13 +18,15 @@ from fastapi.security import OAuth2PasswordBearer, SecurityScopes, HTTPBearer, \
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import NoResultFound
 
+from jose import jwt, JWTError, ExpiredSignatureError
+
 from papermerge.core import exceptions as exc
 from papermerge.core import types
+from papermerge.core.config import get_settings
 from papermerge.core.features.users.db import api as usr_dbapi
 from papermerge.core.features.users import schema as users_schema
 from papermerge.core.features.auth.remote_scheme import RemoteUserScheme
 from papermerge.core.features.auth import scopes
-from papermerge.core.utils import base64
 from papermerge.core.db.engine import get_db
 # Import PAT validation
 from papermerge.core.features.api_tokens.db.api import is_pat_token, \
@@ -58,55 +60,29 @@ async def get_token_from_request(
 
 def extract_token_data(token: str) -> types.TokenData | None:
     """
-    Extract user data from a JWT token.
+    Extract and verify user data from a JWT token.
 
-    This handles tokens from:
-    - auth-server (docker/standard setup)
-    - OIDC providers via OAuth2-Proxy (docker/oidc setup)
-
-    Note: We only decode the payload - we don't verify the signature.
-    Signature verification is handled by:
-    - auth-server's /verify endpoint (standard setup)
-    - OAuth2-Proxy (OIDC setup)
+    The token signature is verified against the configured ``jwt_secret_key``
+    using the configured algorithm. Unverifiable or forged tokens are rejected.
     """
-    logger.debug(
-        f"extract_token_data called with token: {token[:50] if token else 'None'}..."
-    )
-
-    if "." not in token:
-        logger.error(f"Token doesn't contain dots: {token[:20]}...")
-        return None
-
-    logger.debug("Token contains dots, splitting...")
-    parts = token.split(".")
-    logger.debug(f"Token split into {len(parts)} parts")
-
-    if len(parts) != 3:
-        logger.error(f"Token has {len(parts)} parts, expected 3")
-        return None
-
-    _, payload, _ = parts
-    logger.debug(f"Decoding payload: {payload[:50]}...")
+    cfg = get_settings()
 
     try:
-        data = base64.decode(payload)
-    except Exception as e:
-        logger.error(f"Failed to decode token payload: {e}")
+        data = jwt.decode(
+            token,
+            cfg.jwt_secret_key,
+            algorithms=[cfg.jwt_algorithm],
+            options={"verify_signature": True, "verify_exp": True},
+        )
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except JWTError as e:
+        logger.warning("JWT verification failed: %s", e)
         return None
-
-    # Verify expiry if present
-    exp = data.get("exp")
-    if exp is not None:
-        import time
-        if int(time.time()) > int(exp):
-            logger.warning("JWT token has expired")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has expired",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-    logger.debug(f"Decoded data: {data}")
 
     user_id: str = data.get("sub")
     if user_id is None:
@@ -319,7 +295,6 @@ async def get_current_user(
         f"get_current_user called: token={'present' if token else 'None'}, "
         f"remote_user={'present' if remote_user else 'None'}"
     )
-    logger.debug(f"Request headers: {dict(request.headers)}")
 
     if token:
         # Check if it's a PAT token first

@@ -37,12 +37,12 @@ def test_minio_backend_creates_s3_backend():
         access_key_id="pjsadmin",
         secret_access_key="secret",
         bucket="darchiva",
-        minio_endpoint="http://62.84.181.55:9002",
+        minio_endpoint="http://localhost:9000",
     )
     backend = _create_backend(config)
     assert isinstance(backend, S3StorageBackend)
     assert backend.bucket == "darchiva"
-    assert backend._endpoint_url == "http://62.84.181.55:9002"
+    assert backend._endpoint_url == "http://localhost:9000"
 
 
 def test_minio_from_env(monkeypatch):

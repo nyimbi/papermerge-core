@@ -1,6 +1,6 @@
 """add document_templates table
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: fb5d56c279a9
 Revises: fa71c2c795a9
 Create Date: 2026-06-17 00:00:00.000000
 
@@ -12,7 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = 'a1b2c3d4e5f6'
+revision: str = 'fb5d56c279a9'
 down_revision: Union[str, None] = 'fa71c2c795a9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

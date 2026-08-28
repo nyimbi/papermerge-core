@@ -14,6 +14,8 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from papermerge.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,28 +29,34 @@ def _log_decrypt() -> str:
 
 @lru_cache(maxsize=1)
 def _get_encryption_key() -> bytes:
-	"""
-	Get or derive the encryption key from environment.
+    """
+    Get or derive the encryption key from configuration.
 
-	Uses SECRET_KEY env var with PBKDF2 to derive a Fernet-compatible key.
-	"""
-	secret_key = os.environ.get("SECRET_KEY", "")
-	if not secret_key:
-		raise ValueError("SECRET_KEY environment variable must be set for encryption")
+    Uses the configured ``encryption_secret_key`` with PBKDF2 to derive a
+    Fernet-compatible key. Fails fast if the secret is not configured.
+    """
+    settings = get_settings()
+    secret_key = settings.encryption_secret_key
+    if not secret_key:
+        raise ValueError(
+            "PM_ENCRYPTION_SECRET_KEY must be set for encryption"
+        )
 
-	# Use a fixed salt (stored with the app, not in env for simplicity)
-	# In production, this could be a separate env var
-	salt = os.environ.get("ENCRYPTION_SALT", "darchiva-encryption-salt-2026").encode()
+    salt = (
+        settings.encryption_salt
+        if settings.encryption_salt
+        else "darchiva-encryption-salt"
+    ).encode()
 
-	kdf = PBKDF2HMAC(
-		algorithm=hashes.SHA256(),
-		length=32,
-		salt=salt,
-		iterations=480000,
-	)
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=480000,
+    )
 
-	key = base64.urlsafe_b64encode(kdf.derive(secret_key.encode()))
-	return key
+    key = base64.urlsafe_b64encode(kdf.derive(secret_key.encode()))
+    return key
 
 
 def get_fernet() -> Fernet:

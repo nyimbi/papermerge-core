@@ -103,12 +103,9 @@ export const apiSliceWithDocuments = apiSlice.injectEndpoints({
               type: ServerNotifType
               payload: ServerNotifPayload
             } = JSON.parse(event.data)
-            console.log(`${message.type} received`)
-            console.log(message.payload)
             switch (message.type) {
               case "document_moved": {
                 const payload = message.payload as ServerNotifDocumentMoved
-                console.log(`Invalidating Document ${payload.document_id}`)
                 lifecycleApi.dispatch(
                   apiSlice.util.invalidateTags([
                     {
