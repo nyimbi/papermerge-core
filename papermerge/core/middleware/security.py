@@ -1,8 +1,7 @@
 # (c) Copyright Datacraft, 2026
 """Security middleware for CSRF protection and Rate Limiting."""
 import hmac
-import hashlib
-import time
+import secrets
 import logging
 from typing import Optional
 
@@ -85,7 +84,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
     def _generate_token(self) -> str:
-        return hashlib.sha256(f"{settings.csrf_secret_key}{time.time()}".encode()).hexdigest()
+        return secrets.token_urlsafe(32)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

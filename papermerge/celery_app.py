@@ -127,31 +127,37 @@ app.conf.task_routes = {
     "darchiva.reports.run_scheduled": {"queue": prefixed("core")},
 }
 
+# Celery beat intervals (seconds)
+CELERY_5M = 300.0
+CELERY_15M = 900.0
+CELERY_1H = 3600.0
+CELERY_1D = 86400.0
+
 # Celery beat schedule for periodic tasks
 app.conf.beat_schedule = {
     "workflow-deadline-monitor": {
         "task": "workflow.deadline_monitor",
-        "schedule": 300.0,  # Every 5 minutes
+        "schedule": CELERY_5M,
     },
     "workflow-metrics-collector": {
         "task": "workflow.metrics_collector",
-        "schedule": 900.0,  # Every 15 minutes
+        "schedule": CELERY_15M,
     },
     "workflow-sla-dashboard-refresh": {
         "task": "workflow.sla_dashboard_refresh",
-        "schedule": 3600.0,  # Every hour
+        "schedule": CELERY_1H,
     },
     "sync-all-email-accounts": {
         "task": "darchiva.email.poll_all_accounts",
-        "schedule": 300.0,  # Every 5 minutes — respects per-account sync_interval_minutes
+        "schedule": CELERY_5M,
     },
     "retention-policy-sweep": {
         "task": "darchiva.retention.sweep",
-        "schedule": 86400.0,  # Daily
+        "schedule": CELERY_1D,
     },
     "expiry-reminders": {
         "task": "darchiva.expiry.check_reminders",
-        "schedule": 86400.0,  # Daily
+        "schedule": CELERY_1D,
     },
     "weekly-kpi-reports": {
         "task": "darchiva.reports.weekly_kpi",
@@ -159,18 +165,18 @@ app.conf.beat_schedule = {
     },
     "poll-all-sftp": {
         "task": "darchiva.ingestion.poll_all_sftp",
-        "schedule": 300.0,
+        "schedule": CELERY_5M,
     },
     "email-ingest": {
         "task": "darchiva.email_ingest.check_all",
-        "schedule": 900.0,  # Every 15 minutes
+        "schedule": CELERY_15M,
     },
     "connector-sync": {
         "task": "darchiva.connectors.sync_all",
-        "schedule": 3600.0,  # Every hour
+        "schedule": CELERY_1H,
     },
     "scheduled-reports": {
         "task": "darchiva.reports.run_scheduled",
-        "schedule": 3600.0,  # Every hour
+        "schedule": CELERY_1H,
     },
 }
